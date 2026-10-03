@@ -3,8 +3,10 @@
 namespace App\Services;
 
 use App\Enums\RosterAssignmentRole;
+use App\Models\DoctorMonthlyWorkload;
 use App\Models\Roster;
 use App\Models\RosterShift;
+use Carbon\CarbonImmutable;
 
 class RosterDraftValidationService
 {
@@ -65,6 +67,14 @@ class RosterDraftValidationService
                     $doctor = $this->context->doctors->get((int) $doctorId);
                     $items[] = $this->item('Warning', "$doctor->name has multiple Main duties in the weekend of $weekend.", 'shift-'.$shifts[0]->id);
                 }
+            }
+        }
+
+        if ($roster->status->value === 'draft' && $roster->last_generated_at !== null) {
+            $previous = CarbonImmutable::create($roster->year, $roster->month, 1)->subMonth();
+            $historyUpdatedAt = DoctorMonthlyWorkload::query()->where('year', $previous->year)->where('month', $previous->month)->max('updated_at');
+            if ($historyUpdatedAt !== null && CarbonImmutable::parse($historyUpdatedAt)->greaterThan($roster->last_generated_at)) {
+                $items[] = $this->item('Warning', "{$previous->format('F Y')} history changed after this roster was generated. Regenerate or review the roster because fairness calculations may be stale.", 'conflicts');
             }
         }
 

@@ -3,6 +3,8 @@ import { dashboard } from '@/routes';
 import { show as monthlySetup } from '@/routes/monthly-setup';
 import { assignmentOptions, generate, regenerate } from '@/routes/rosters';
 import { edit, undo } from '@/routes/rosters/assignments';
+import { show as showActualWork } from '@/routes/rosters/actual-work';
+import { show as showInitialWorkload } from '@/routes/initial-workload';
 import { Form, Head, Link, router, useForm } from '@inertiajs/react';
 import { useState } from 'react';
 
@@ -36,6 +38,13 @@ type Day = {
 type RosterProps = {
     month: { year: number; month: number; label: string };
     status: 'draft' | 'final';
+    history_readiness: {
+        ready: boolean;
+        message: string | null;
+        year: number;
+        month: number;
+        action: 'review' | 'initial_setup';
+    };
     has_generated: boolean;
     has_assignments: boolean;
     last_generated_at: string | null;
@@ -118,6 +127,7 @@ async function jsonRequest<T>(
 export default function Roster({
     month,
     status,
+    history_readiness,
     has_generated,
     has_assignments,
     last_generated_at,
@@ -343,6 +353,14 @@ export default function Roster({
                     >
                         Monthly Setup
                     </Link>
+                    {status === 'final' && (
+                        <Link
+                            href={showActualWork.url(month)}
+                            className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold hover:bg-slate-50"
+                        >
+                            Actual Work Review
+                        </Link>
+                    )}
                     <Link
                         href={dashboard.url()}
                         className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold hover:bg-slate-50"
@@ -351,6 +369,27 @@ export default function Roster({
                     </Link>
                 </div>
             </div>
+
+            {status === 'draft' && !history_readiness.ready && (
+                <div
+                    role="alert"
+                    className="mb-5 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900"
+                >
+                    <p>{history_readiness.message}</p>
+                    <Link
+                        href={
+                            history_readiness.action === 'review'
+                                ? showActualWork.url(history_readiness)
+                                : showInitialWorkload.url(history_readiness)
+                        }
+                        className="mt-2 inline-block font-semibold underline"
+                    >
+                        {history_readiness.action === 'review'
+                            ? 'Review previous month'
+                            : 'Open Initial Setup'}
+                    </Link>
+                </div>
+            )}
 
             {message && (
                 <div

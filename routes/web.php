@@ -1,10 +1,12 @@
 <?php
 
+use App\Http\Controllers\ActualWorkReviewController;
 use App\Http\Controllers\Auth\LoginController;
 use App\Http\Controllers\Auth\LogoutController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\DoctorMonthlyExclusionController;
 use App\Http\Controllers\DoctorRequestController;
+use App\Http\Controllers\InitialWorkloadSetupController;
 use App\Http\Controllers\MonthlySetupController;
 use App\Http\Controllers\RosterAssignmentGenerationController;
 use App\Http\Controllers\RosterAssignmentOptionsController;
@@ -33,9 +35,20 @@ Route::middleware('auth')->group(function (): void {
             Route::post('/', [RosterController::class, 'store'])->name('rosters.store');
             Route::post('/generate', RosterAssignmentGenerationController::class)->name('rosters.generate');
             Route::post('/regenerate', RosterAssignmentRegenerationController::class)->name('rosters.regenerate');
+            Route::get('/actual-work', [ActualWorkReviewController::class, 'show'])->name('rosters.actual-work.show');
+            Route::put('/actual-work/assignments/{assignment}', [ActualWorkReviewController::class, 'save'])->name('rosters.actual-work.save');
+            Route::delete('/actual-work/exceptions/{exception}', [ActualWorkReviewController::class, 'remove'])->name('rosters.actual-work.remove');
+            Route::post('/actual-work/confirm', [ActualWorkReviewController::class, 'confirm'])->name('rosters.actual-work.confirm');
             Route::get('/assignment-options', RosterAssignmentOptionsController::class)->name('rosters.assignment-options');
             Route::post('/assignments/edit', [RosterManualEditController::class, 'edit'])->name('rosters.assignments.edit');
             Route::post('/assignments/undo', [RosterManualEditController::class, 'undo'])->name('rosters.assignments.undo');
+        });
+
+    Route::prefix('/initial-workload/{year}/{month}')
+        ->where(['year' => '[1-9][0-9]{3}', 'month' => '(?:[1-9]|1[0-2])'])
+        ->group(function (): void {
+            Route::get('/', [InitialWorkloadSetupController::class, 'show'])->name('initial-workload.show');
+            Route::post('/', [InitialWorkloadSetupController::class, 'save'])->name('initial-workload.save');
         });
 
     Route::prefix('/monthly-setup/{year}/{month}')

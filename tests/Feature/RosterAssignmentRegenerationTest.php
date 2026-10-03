@@ -18,6 +18,7 @@ use Database\Seeders\ShiftTypesSeeder;
 function regenerationRoster(): array
 {
     test()->seed([DoctorsSeeder::class, ShiftTypesSeeder::class]);
+    seedInitialHistoryForGeneration();
     $admin = User::factory()->create();
 
     return [$admin, app(RosterStructureService::class)->create(2026, 10, $admin)];
@@ -54,7 +55,7 @@ it('replaces assignment rows atomically and preserves setup and workload history
         'shift_type_id' => $shift->shift_type_id,
     ]);
     $exclusion = DoctorMonthlyExclusion::create(['doctor_id' => $doctor->id, 'year' => 2026, 'month' => 10]);
-    $history = DoctorMonthlyWorkload::create([
+    $history = DoctorMonthlyWorkload::query()->updateOrCreate(['doctor_id' => $doctor->id, 'year' => 2026, 'month' => 9], [
         'doctor_id' => $doctor->id,
         'year' => 2026,
         'month' => 9,

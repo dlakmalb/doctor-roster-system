@@ -18,6 +18,7 @@ use Database\Seeders\ShiftTypesSeeder;
 function editingFixture(): array
 {
     test()->seed([DoctorsSeeder::class, ShiftTypesSeeder::class]);
+    seedInitialHistoryForGeneration();
     $admin = User::factory()->create();
     $roster = app(RosterStructureService::class)->create(2026, 10, $admin);
     $day = RosterShift::query()->whereDate('shift_date', '2026-10-06')
@@ -147,7 +148,7 @@ it('blocks hard conflicts even with confirmation and reports current setup confl
 it('returns picker metrics and exact Preferred Work while keeping ineligible doctors visible', function () {
     [$admin, , $shift, , $doctors] = editingFixture();
     $doctor = $doctors[0];
-    DoctorMonthlyWorkload::create(['doctor_id' => $doctor->id, 'year' => 2026, 'month' => 9, 'actual_worked_minutes' => 0, 'closing_balance_minutes' => 120, 'actual_night_duty_count' => 2, 'optional_assignment_count' => 3]);
+    DoctorMonthlyWorkload::query()->updateOrCreate(['doctor_id' => $doctor->id, 'year' => 2026, 'month' => 9], ['actual_worked_minutes' => 0, 'closing_balance_minutes' => 120, 'actual_night_duty_count' => 2, 'optional_assignment_count' => 3]);
     DoctorRequest::create(['doctor_id' => $doctor->id, 'request_type' => DoctorRequestType::PreferredWork, 'request_date' => $shift->shift_date, 'shift_type_id' => $shift->shift_type_id]);
     $this->actingAs($admin)->getJson(optionsUrl($shift, 'main', 1))
         ->assertOk()->assertJsonFragment(['name' => $doctor->name, 'short_code' => $doctor->short_code, 'preferred_work' => true, 'effective_workload_minutes' => 120, 'night_count' => 2, 'optional_count' => 3]);

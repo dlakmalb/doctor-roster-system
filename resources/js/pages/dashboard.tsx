@@ -1,6 +1,8 @@
 import AppLayout from '@/components/app-layout';
 import { show as monthlySetup } from '@/routes/monthly-setup';
 import { show as showRoster } from '@/routes/rosters';
+import { show as showActualWork } from '@/routes/rosters/actual-work';
+import { show as showInitialWorkload } from '@/routes/initial-workload';
 import { Head, Link } from '@inertiajs/react';
 
 type MonthSummary = {
@@ -8,6 +10,14 @@ type MonthSummary = {
     month: number;
     label: string;
     status: 'not_started' | 'draft' | 'final';
+    actual_work_confirmed: boolean;
+    history_readiness: {
+        ready: boolean;
+        message: string | null;
+        year: number;
+        month: number;
+        action: 'review' | 'initial_setup';
+    };
 };
 
 const statusLabels: Record<MonthSummary['status'], string> = {
@@ -40,6 +50,25 @@ export default function Dashboard({ months }: { months: MonthSummary[] }) {
                             </span>
                         </div>
                         <div className="mt-8 flex flex-wrap gap-2">
+                            {!month.history_readiness.ready && (
+                                <Link
+                                    href={
+                                        month.history_readiness.action ===
+                                        'review'
+                                            ? showActualWork.url(
+                                                  month.history_readiness,
+                                              )
+                                            : showInitialWorkload.url(
+                                                  month.history_readiness,
+                                              )
+                                    }
+                                    className="inline-flex rounded-lg border border-amber-400 bg-amber-50 px-4 py-2.5 text-sm font-semibold text-amber-900"
+                                >
+                                    {month.history_readiness.action === 'review'
+                                        ? 'Review Previous Month'
+                                        : 'Initial Setup'}
+                                </Link>
+                            )}
                             <Link
                                 href={monthlySetup.url(month)}
                                 className="inline-flex rounded-lg bg-teal-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-teal-800"
@@ -52,6 +81,17 @@ export default function Dashboard({ months }: { months: MonthSummary[] }) {
                                     className="inline-flex rounded-lg border border-slate-300 px-4 py-2.5 text-sm font-semibold hover:bg-slate-50"
                                 >
                                     View Roster
+                                </Link>
+                            )}
+                            {month.status === 'final' && (
+                                <Link
+                                    href={showActualWork.url(month)}
+                                    className="inline-flex rounded-lg border border-slate-300 px-4 py-2.5 text-sm font-semibold hover:bg-slate-50"
+                                >
+                                    Actual Work Review
+                                    {month.actual_work_confirmed
+                                        ? ' · Confirmed'
+                                        : ' · Unconfirmed'}
                                 </Link>
                             )}
                         </div>

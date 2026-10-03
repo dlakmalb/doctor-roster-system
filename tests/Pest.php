@@ -1,5 +1,8 @@
 <?php
 
+use App\Enums\DoctorMonthlyWorkloadSource;
+use App\Models\Doctor;
+use App\Models\DoctorMonthlyWorkload;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
@@ -47,4 +50,14 @@ expect()->extend('toBeOne', function () {
 function something()
 {
     // ..
+}
+
+function seedInitialHistoryForGeneration(): void
+{
+    foreach (Doctor::query()->get() as $doctor) {
+        DoctorMonthlyWorkload::query()->firstOrCreate(
+            ['doctor_id' => $doctor->id, 'year' => 2026, 'month' => 9],
+            ['source' => DoctorMonthlyWorkloadSource::ManualInitial, 'actual_worked_minutes' => 0],
+        );
+    }
 }

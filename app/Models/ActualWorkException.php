@@ -7,6 +7,7 @@ use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
+/** @property ActualWorkExceptionType $exception_type */
 #[Fillable(['roster_shift_id', 'planned_assignment_id', 'exception_type', 'actual_doctor_id', 'note', 'recorded_by'])]
 class ActualWorkException extends Model
 {

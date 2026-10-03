@@ -8,6 +8,7 @@ use App\Models\RosterAssignment;
 use App\Models\RosterShift;
 use App\Models\User;
 use App\Services\RosterDraftValidationService;
+use App\Services\RosterHistoryReadinessService;
 use App\Services\RosterManualEditService;
 use App\Services\RosterStructureService;
 use Carbon\CarbonImmutable;
@@ -36,7 +37,7 @@ class RosterController extends Controller
         return to_route('rosters.show', ['year' => $year, 'month' => $month]);
     }
 
-    public function show(int $year, int $month, RosterDraftValidationService $validation): Response
+    public function show(int $year, int $month, RosterDraftValidationService $validation, RosterHistoryReadinessService $history): Response
     {
         $roster = Roster::query()
             ->where('year', $year)
@@ -73,6 +74,7 @@ class RosterController extends Controller
         return Inertia::render('roster', [
             'month' => ['year' => $year, 'month' => $month, 'label' => CarbonImmutable::create($year, $month, 1)->format('F Y')],
             'status' => $roster->status->value,
+            'history_readiness' => $history->forMonth($year, $month),
             'has_generated' => $roster->last_generated_at !== null,
             'has_assignments' => $roster->shifts->contains(fn (RosterShift $shift): bool => $shift->assignments->isNotEmpty()),
             'last_generated_at' => $roster->last_generated_at?->toDateTimeString(),

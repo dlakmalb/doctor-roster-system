@@ -18,6 +18,7 @@ use Database\Seeders\ShiftTypesSeeder;
 function recoveryScenario(array $shifts, int $doctorCount = 2): array
 {
     test()->seed([DoctorsSeeder::class, ShiftTypesSeeder::class]);
+    seedInitialHistoryForGeneration();
     $admin = User::factory()->create();
     $roster = app(RosterStructureService::class)->create(2026, 10, $admin);
     $doctors = Doctor::query()->orderBy('id')->take($doctorCount)->get()->all();
@@ -88,7 +89,7 @@ it('uses the best ranked feasible alternative during recovery', function () {
     recoveryRequest($a, $day, DoctorRequestType::PreferredWork);
     recoveryRequest($b, $evening, DoctorRequestType::DayOff);
     recoveryRequest($c, $evening, DoctorRequestType::DayOff);
-    DoctorMonthlyWorkload::create([
+    DoctorMonthlyWorkload::query()->updateOrCreate(['doctor_id' => $c->id, 'year' => 2026, 'month' => 9], [
         'doctor_id' => $c->id,
         'year' => 2026,
         'month' => 9,

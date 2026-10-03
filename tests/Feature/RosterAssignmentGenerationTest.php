@@ -22,6 +22,7 @@ use Inertia\Testing\AssertableInertia as Assert;
 function assignmentRoster(): array
 {
     test()->seed([DoctorsSeeder::class, ShiftTypesSeeder::class]);
+    seedInitialHistoryForGeneration();
     $admin = User::factory()->create();
 
     return [$admin, app(RosterStructureService::class)->create(2026, 10, $admin)];
@@ -190,7 +191,7 @@ it('applies only relevant previous-month night history', function () {
 it('honors stored previous-month night history during generation', function () {
     [$admin] = assignmentRoster();
     $doctor = Doctor::query()->orderBy('id')->firstOrFail();
-    DoctorMonthlyWorkload::create([
+    DoctorMonthlyWorkload::query()->updateOrCreate(['doctor_id' => $doctor->id, 'year' => 2026, 'month' => 9], [
         'doctor_id' => $doctor->id,
         'year' => 2026,
         'month' => 9,
@@ -201,7 +202,7 @@ it('honors stored previous-month night history during generation', function () {
     $this->actingAs($admin)->post(generateUrl())->assertRedirect();
     $firstDateShiftIds = RosterShift::query()->whereDate('shift_date', '2026-10-01')->pluck('id');
     expect(RosterAssignment::query()->where('doctor_id', $doctor->id)->whereIn('roster_shift_id', $firstDateShiftIds)->exists())->toBeFalse();
-    $this->assertDatabaseCount('doctor_monthly_workloads', 1);
+    $this->assertDatabaseCount('doctor_monthly_workloads', Doctor::query()->count());
 });
 
 it('persists partial assignments and displays missing slots as errors', function () {
@@ -209,7 +210,7 @@ it('persists partial assignments and displays missing slots as errors', function
     Doctor::query()->where('id', '!=', Doctor::query()->min('id'))->update(['is_active' => false]);
     $this->actingAs($admin)->post(generateUrl())->assertRedirect();
     expect(RosterAssignment::query()->count())->toBeGreaterThan(0);
-    $this->assertDatabaseCount('doctor_monthly_workloads', 0);
+    $this->assertDatabaseCount('doctor_monthly_workloads', Doctor::query()->count());
     $this->get(route('rosters.show', ['year' => 2026, 'month' => 10]))
         ->assertInertia(fn (Assert $page) => $page->component('roster')
             ->where('has_generated', true)

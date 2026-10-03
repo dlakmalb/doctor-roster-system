@@ -18,6 +18,7 @@ use Database\Seeders\ShiftTypesSeeder;
 function smartRoster(): array
 {
     test()->seed([DoctorsSeeder::class, ShiftTypesSeeder::class]);
+    seedInitialHistoryForGeneration();
     $admin = User::factory()->create();
     $roster = app(RosterStructureService::class)->create(2026, 10, $admin);
     $doctors = Doctor::query()->orderBy('id')->take(2)->get();
@@ -57,7 +58,7 @@ function smartPreference(Doctor $doctor, RosterShift $shift): DoctorRequest
 
 function smartHistory(Doctor $doctor, array $attributes): DoctorMonthlyWorkload
 {
-    return DoctorMonthlyWorkload::create(array_merge([
+    return DoctorMonthlyWorkload::query()->updateOrCreate(['doctor_id' => $doctor->id, 'year' => 2026, 'month' => 9], array_merge([
         'doctor_id' => $doctor->id,
         'year' => 2026,
         'month' => 9,
@@ -301,7 +302,7 @@ it('uses existing Draft assignments and preserves historical rows on repeat gene
     expect($ranker->dimensions($doctor, $day, RosterAssignmentRole::Optional, collect()))->toBe([0, 1, 660]);
     $this->actingAs($admin)->post(route('rosters.generate', ['year' => 2026, 'month' => 10]))->assertRedirect();
     expect($existing->fresh()->doctor_id)->toBe($doctor->id);
-    expect(DoctorMonthlyWorkload::query()->count())->toBe(1);
+    expect(DoctorMonthlyWorkload::query()->count())->toBe(Doctor::query()->count());
     expect($history->fresh()->closing_balance_minutes)->toBe(-300);
 });
 
@@ -323,5 +324,5 @@ it('generates a full smart roster with preferences and historical fairness input
         expect($shiftAssignments->where('role', RosterAssignmentRole::Main)->count())->toBeLessThanOrEqual($shiftType->main_count);
         expect($shiftAssignments->where('role', RosterAssignmentRole::Optional)->count())->toBeLessThanOrEqual($shiftType->optional_count);
     }
-    expect(DoctorMonthlyWorkload::query()->count())->toBe(2);
+    expect(DoctorMonthlyWorkload::query()->count())->toBe(Doctor::query()->count());
 });
