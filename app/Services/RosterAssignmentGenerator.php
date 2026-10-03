@@ -19,7 +19,7 @@ use Illuminate\Validation\ValidationException;
 
 class RosterAssignmentGenerator
 {
-    public function __construct(private DoctorAssignmentEligibilityService $eligibility) {}
+    public function __construct(private DoctorAssignmentEligibilityService $eligibility, private RosterCandidateRanker $ranker) {}
 
     public function generate(Roster $roster, User $admin): void
     {
@@ -31,7 +31,7 @@ class RosterAssignmentGenerator
             }
 
             $shifts = $roster->shifts()->with(['shiftType', 'assignments'])->get();
-            $doctors = Doctor::query()->where('is_active', true)->orderBy('id')->get();
+            $doctors = Doctor::query()->where('is_active', true)->get();
             $excludedDoctorIds = DoctorMonthlyExclusion::query()
                 ->where('year', $roster->year)->where('month', $roster->month)
                 ->pluck('doctor_id')->flip();
@@ -42,9 +42,13 @@ class RosterAssignmentGenerator
                 ->whereBetween('request_date', [$firstDate->subDay(), $lastDate->addDay()])
                 ->get()->toBase()->groupBy('doctor_id');
             $previousMonth = $firstDate->subMonth();
-            $previousNights = DoctorMonthlyWorkload::query()
+            $previousHistory = DoctorMonthlyWorkload::query()
                 ->where('year', $previousMonth->year)->where('month', $previousMonth->month)
-                ->whereNotNull('most_recent_night_shift_at')->get()->keyBy('doctor_id');
+                ->get()->keyBy('doctor_id');
+            $preferredRequests = DoctorRequest::query()
+                ->where('request_type', DoctorRequestType::PreferredWork->value)
+                ->whereBetween('request_date', [$firstDate, $lastDate])->get();
+            $this->ranker->initialize($shifts, $preferredRequests, $previousHistory, $firstDate);
 
             /** @var Collection<int, Collection<int, RosterShift>> $assignedByDoctor */
             $assignedByDoctor = collect();
@@ -60,17 +64,17 @@ class RosterAssignmentGenerator
             }
 
             $stages = [
-                ['weekend_day', 'weekend_night'],
-                ['weekday_night'],
-                ['weekday_day'],
-                ['weekday_evening'],
+                $shifts->filter(fn (RosterShift $shift): bool => $this->ranker->weekendKey($shift) !== null),
+                $shifts->filter(fn (RosterShift $shift): bool => $shift->shiftType->code === 'weekday_night' && $this->ranker->weekendKey($shift) === null),
+                $shifts->filter(fn (RosterShift $shift): bool => $shift->shiftType->code === 'weekday_day'),
+                $shifts->filter(fn (RosterShift $shift): bool => $shift->shiftType->code === 'weekday_evening'),
             ];
 
-            foreach ($stages as $codes) {
-                $this->fill($shifts->filter(fn (RosterShift $shift): bool => in_array($shift->shiftType->code, $codes, true)), RosterAssignmentRole::Main, $doctors, $excludedDoctorIds, $dayOffRequests, $previousNights, $assignedByDoctor);
+            foreach ($stages as $stage) {
+                $this->fill($stage, RosterAssignmentRole::Main, $doctors, $excludedDoctorIds, $dayOffRequests, $previousHistory, $assignedByDoctor);
             }
 
-            $this->fill($shifts, RosterAssignmentRole::Optional, $doctors, $excludedDoctorIds, $dayOffRequests, $previousNights, $assignedByDoctor);
+            $this->fill($shifts, RosterAssignmentRole::Optional, $doctors, $excludedDoctorIds, $dayOffRequests, $previousHistory, $assignedByDoctor);
 
             $roster->update(['last_generated_at' => now(), 'updated_by' => $admin->id]);
         });
@@ -81,10 +85,10 @@ class RosterAssignmentGenerator
      * @param  Collection<int, Doctor>  $doctors
      * @param  Collection<int, int>  $excludedDoctorIds
      * @param  Collection<int|string, Collection<int, DoctorRequest>>  $dayOffRequests
-     * @param  Collection<int, DoctorMonthlyWorkload>  $previousNights
+     * @param  Collection<int, DoctorMonthlyWorkload>  $previousHistory
      * @param  Collection<int, Collection<int, RosterShift>>  $assignedByDoctor
      */
-    private function fill(Collection $shifts, RosterAssignmentRole $role, Collection $doctors, Collection $excludedDoctorIds, Collection $dayOffRequests, Collection $previousNights, Collection $assignedByDoctor): void
+    private function fill(Collection $shifts, RosterAssignmentRole $role, Collection $doctors, Collection $excludedDoctorIds, Collection $dayOffRequests, Collection $previousHistory, Collection $assignedByDoctor): void
     {
         $orderedShifts = $shifts->sortBy(fn (RosterShift $shift): string => $shift->shift_date->toDateString().' '.$shift->shiftType->start_time);
 
@@ -96,8 +100,8 @@ class RosterAssignmentGenerator
                     continue;
                 }
 
-                foreach ($doctors as $doctor) {
-                    $history = $previousNights->get($doctor->id);
+                $eligible = $doctors->filter(function (Doctor $doctor) use ($shift, $excludedDoctorIds, $dayOffRequests, $previousHistory, $assignedByDoctor): bool {
+                    $history = $previousHistory->get($doctor->id);
                     $conflicts = $this->eligibility->conflicts(
                         $doctor,
                         $shift,
@@ -107,20 +111,22 @@ class RosterAssignmentGenerator
                         $history?->most_recent_night_shift_at,
                     );
 
-                    if ($conflicts !== []) {
-                        continue;
-                    }
-
-                    $assignment = $shift->assignments()->create(['doctor_id' => $doctor->id, 'role' => $role, 'slot_number' => $slot]);
-                    $shift->assignments->push($assignment);
-                    $doctorShifts = $assignedByDoctor->get($doctor->id);
-                    if ($doctorShifts === null) {
-                        $assignedByDoctor->put($doctor->id, collect([$shift]));
-                    } else {
-                        $doctorShifts->push($shift);
-                    }
-                    break;
+                    return $conflicts === [];
+                });
+                $doctor = $this->ranker->select($eligible, $shift, $role, $assignedByDoctor);
+                if ($doctor === null) {
+                    continue;
                 }
+
+                $assignment = $shift->assignments()->create(['doctor_id' => $doctor->id, 'role' => $role, 'slot_number' => $slot]);
+                $shift->assignments->push($assignment);
+                $doctorShifts = $assignedByDoctor->get($doctor->id);
+                if ($doctorShifts === null) {
+                    $assignedByDoctor->put($doctor->id, collect([$shift]));
+                } else {
+                    $doctorShifts->push($shift);
+                }
+                $this->ranker->record($doctor->id, $shift, $role);
             }
         }
     }
