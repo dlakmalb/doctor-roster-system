@@ -6,7 +6,22 @@ use App\Enums\DoctorRequestType;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Support\Carbon;
 
+/**
+ * @property int $id
+ * @property int $doctor_id
+ * @property DoctorRequestType $request_type
+ * @property Carbon $request_date
+ * @property int|null $shift_type_id
+ * @property string|null $note
+ * @property int|null $created_by
+ * @property int|null $updated_by
+ * @property Carbon|null $created_at
+ * @property Carbon|null $updated_at
+ * @property-read Doctor $doctor
+ * @property-read ShiftType|null $shiftType
+ */
 #[Fillable(['doctor_id', 'request_type', 'request_date', 'shift_type_id', 'note', 'created_by', 'updated_by'])]
 class DoctorRequest extends Model
 {

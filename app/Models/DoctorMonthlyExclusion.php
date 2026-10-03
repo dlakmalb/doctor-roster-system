@@ -5,7 +5,20 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Support\Carbon;
 
+/**
+ * @property int $id
+ * @property int $doctor_id
+ * @property int $year
+ * @property int $month
+ * @property string|null $note
+ * @property int|null $created_by
+ * @property int|null $updated_by
+ * @property Carbon|null $created_at
+ * @property Carbon|null $updated_at
+ * @property-read Doctor $doctor
+ */
 #[Fillable(['doctor_id', 'year', 'month', 'note', 'created_by', 'updated_by'])]
 class DoctorMonthlyExclusion extends Model
 {

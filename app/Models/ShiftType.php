@@ -5,7 +5,22 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Support\Carbon;
 
+/**
+ * @property int $id
+ * @property string $code
+ * @property string $name
+ * @property string $start_time
+ * @property string $end_time
+ * @property int $duration_minutes
+ * @property int $main_count
+ * @property int $optional_count
+ * @property bool $is_overnight
+ * @property bool $is_active
+ * @property Carbon|null $created_at
+ * @property Carbon|null $updated_at
+ */
 #[Fillable(['code', 'name', 'start_time', 'end_time', 'duration_minutes', 'main_count', 'optional_count', 'is_overnight', 'is_active'])]
 class ShiftType extends Model
 {

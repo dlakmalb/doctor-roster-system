@@ -7,7 +7,16 @@ use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Support\Carbon;
 
+/**
+ * @property int $id
+ * @property int $year
+ * @property int $month
+ * @property RosterStatus $status
+ * @property Carbon|null $created_at
+ * @property Carbon|null $updated_at
+ */
 #[Fillable(['year', 'month', 'status', 'last_generated_at', 'finalized_at', 'reopened_at', 'actual_work_confirmed_at', 'created_by', 'updated_by', 'finalized_by', 'reopened_by', 'actual_work_confirmed_by'])]
 class Roster extends Model
 {
