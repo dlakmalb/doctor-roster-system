@@ -1,8 +1,8 @@
 import AppLayout from '@/components/app-layout';
 import { dashboard } from '@/routes';
 import { show as monthlySetup } from '@/routes/monthly-setup';
-import { generate } from '@/routes/rosters';
-import { Form, Head, Link } from '@inertiajs/react';
+import { generate, regenerate } from '@/routes/rosters';
+import { Form, Head, Link, useForm } from '@inertiajs/react';
 
 type Slot = {
     slot_number: number;
@@ -32,6 +32,7 @@ type RosterProps = {
     month: { year: number; month: number; label: string };
     status: 'draft' | 'final';
     has_generated: boolean;
+    has_assignments: boolean;
     last_generated_at: string | null;
     summary: {
         shifts: number;
@@ -49,10 +50,12 @@ export default function Roster({
     month,
     status,
     has_generated,
+    has_assignments,
     last_generated_at,
     summary,
     days,
 }: RosterProps) {
+    const regeneration = useForm<Record<string, string>>({});
     const summaryItems = [
         ['Total shifts', summary.shifts],
         [
@@ -106,6 +109,35 @@ export default function Roster({
                                 </div>
                             )}
                         </Form>
+                    )}
+                    {status === 'draft' && has_assignments && (
+                        <div>
+                            <button
+                                disabled={regeneration.processing}
+                                type="button"
+                                onClick={() => {
+                                    if (
+                                        window.confirm(
+                                            'Regenerating will replace all current Draft assignments for this month. Continue?',
+                                        )
+                                    ) {
+                                        regeneration.post(
+                                            regenerate.url(month),
+                                        );
+                                    }
+                                }}
+                                className="rounded-lg border border-red-600 bg-white px-4 py-2 text-sm font-semibold text-red-700 hover:bg-red-50 disabled:opacity-50"
+                            >
+                                {regeneration.processing
+                                    ? 'Regenerating…'
+                                    : 'Regenerate Assignments'}
+                            </button>
+                            {regeneration.errors.roster && (
+                                <p className="text-sm text-red-700">
+                                    {regeneration.errors.roster}
+                                </p>
+                            )}
+                        </div>
                     )}
                     <Link
                         href={monthlySetup.url(month)}

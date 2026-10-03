@@ -65,6 +65,21 @@ function smartHistory(Doctor $doctor, array $attributes): DoctorMonthlyWorkload
     ], $attributes));
 }
 
+it('orders deterministic dimensions and retains every exact tie without doctor ID priority', function () {
+    [, , $first, $second] = smartRoster();
+    $shift = smartShift('2026-10-06', 'weekday_day');
+    $ranker = smartRanker([smartPreference($second, $shift)]);
+
+    expect($ranker->ordered(collect([$first, $second]), $shift, RosterAssignmentRole::Main, collect())->pluck('id')->all())
+        ->toBe([$second->id, $first->id]);
+
+    $tiedRanker = smartRanker();
+    $ordered = $tiedRanker->ordered(collect([$first, $second]), $shift, RosterAssignmentRole::Main, collect());
+    expect($ordered->pluck('id')->sort()->values()->all())->toBe([$first->id, $second->id])
+        ->and($tiedRanker->dimensions($first, $shift, RosterAssignmentRole::Main, collect()))
+        ->toBe($tiedRanker->dimensions($second, $shift, RosterAssignmentRole::Main, collect()));
+});
+
 it('puts exact Main preference before workload and Night fairness but gives Optional no direct boost', function () {
     [, , $preferred, $other] = smartRoster();
     $night = smartShift('2026-10-05', 'weekday_night');

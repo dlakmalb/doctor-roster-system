@@ -45,7 +45,8 @@ class RosterCandidateRanker
      */
     public function initialize(Collection $shifts, Collection $preferredRequests, Collection $history, CarbonImmutable $firstDate): void
     {
-        $this->preferences = $this->fulfilled = $this->scheduledMinutes = $this->nightCounts = $this->optionalCounts = $this->weekendCounts = [];
+        $this->preferences = [];
+        $this->resetRecordedAssignments();
         $this->history = $history->all();
         $this->firstDate = $firstDate;
 
@@ -66,6 +67,11 @@ class RosterCandidateRanker
                 $this->record($assignment->doctor_id, $shift, $assignment->role);
             }
         }
+    }
+
+    public function resetRecordedAssignments(): void
+    {
+        $this->fulfilled = $this->scheduledMinutes = $this->nightCounts = $this->optionalCounts = $this->weekendCounts = [];
     }
 
     public function record(int $doctorId, RosterShift $shift, RosterAssignmentRole $role): void
@@ -169,18 +175,24 @@ class RosterCandidateRanker
      */
     public function select(Collection $doctors, RosterShift $shift, RosterAssignmentRole $role, Collection $assignedByDoctor): ?Doctor
     {
-        $best = [];
-        $bestDimensions = null;
-        foreach ($doctors as $doctor) {
-            $dimensions = $this->dimensions($doctor, $shift, $role, $assignedByDoctor->get($doctor->id, collect()));
-            if ($bestDimensions === null || $dimensions < $bestDimensions) {
-                $bestDimensions = $dimensions;
-                $best = [$doctor];
-            } elseif ($dimensions === $bestDimensions) {
-                $best[] = $doctor;
-            }
-        }
+        return $this->ordered($doctors, $shift, $role, $assignedByDoctor)->first();
+    }
 
-        return $best === [] ? null : $best[random_int(0, count($best) - 1)];
+    /**
+     * @param  Collection<int, Doctor>  $doctors
+     * @param  Collection<int, Collection<int, RosterShift>>  $assignedByDoctor
+     * @return Collection<int, Doctor>
+     */
+    public function ordered(Collection $doctors, RosterShift $shift, RosterAssignmentRole $role, Collection $assignedByDoctor): Collection
+    {
+        $ranked = $doctors->map(fn (Doctor $doctor): array => [
+            'doctor' => $doctor,
+            'dimensions' => $this->dimensions($doctor, $shift, $role, $assignedByDoctor->get($doctor->id, collect())),
+        ])->values()->all();
+
+        shuffle($ranked);
+        usort($ranked, fn (array $left, array $right): int => $left['dimensions'] <=> $right['dimensions']);
+
+        return collect(array_map(fn (array $candidate): Doctor => $candidate['doctor'], $ranked));
     }
 }

@@ -69,6 +69,7 @@ class RosterController extends Controller
             'month' => ['year' => $year, 'month' => $month, 'label' => CarbonImmutable::create($year, $month, 1)->format('F Y')],
             'status' => $roster->status->value,
             'has_generated' => $roster->last_generated_at !== null,
+            'has_assignments' => $roster->shifts->contains(fn (RosterShift $shift): bool => $shift->assignments->isNotEmpty()),
             'last_generated_at' => $roster->last_generated_at?->toDateTimeString(),
             'summary' => [
                 'shifts' => $roster->shifts->count(),
