@@ -16,6 +16,10 @@ use Illuminate\Support\Carbon;
  * @property RosterStatus $status
  * @property Carbon|null $last_generated_at
  * @property Carbon|null $actual_work_confirmed_at
+ * @property Carbon|null $finalized_at
+ * @property int|null $finalized_by
+ * @property Carbon|null $reopened_at
+ * @property int|null $reopened_by
  * @property int|null $updated_by
  * @property Carbon|null $created_at
  * @property Carbon|null $updated_at

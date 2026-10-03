@@ -173,10 +173,11 @@ function AssignmentCard({
                     )}
                     {assignment.exception && (
                         <Form
-                            {...remove.form({
+                            action={remove.url({
                                 ...month,
                                 exception: assignment.exception.id,
                             })}
+                            method="delete"
                             options={{ preserveScroll: true }}
                         >
                             {({ processing: removing }) => (
@@ -330,7 +331,11 @@ export default function ActualWorkReview({
                 </div>
             </section>
             {status === 'final' && (
-                <Form {...confirm.form(month)} className="mt-6">
+                <Form
+                    action={confirm.url(month)}
+                    method="post"
+                    className="mt-6"
+                >
                     {({ processing }) => (
                         <button
                             disabled={processing}

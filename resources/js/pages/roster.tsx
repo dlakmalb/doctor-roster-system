@@ -1,7 +1,15 @@
 import AppLayout from '@/components/app-layout';
 import { dashboard } from '@/routes';
 import { show as monthlySetup } from '@/routes/monthly-setup';
-import { assignmentOptions, generate, regenerate } from '@/routes/rosters';
+import {
+    assignmentOptions,
+    finalize,
+    generate,
+    pdf,
+    print,
+    regenerate,
+    reopen,
+} from '@/routes/rosters';
 import { edit, undo } from '@/routes/rosters/assignments';
 import { show as showActualWork } from '@/routes/rosters/actual-work';
 import { show as showInitialWorkload } from '@/routes/initial-workload';
@@ -38,6 +46,7 @@ type Day = {
 type RosterProps = {
     month: { year: number; month: number; label: string };
     status: 'draft' | 'final';
+    can_reopen: boolean;
     history_readiness: {
         ready: boolean;
         message: string | null;
@@ -127,6 +136,7 @@ async function jsonRequest<T>(
 export default function Roster({
     month,
     status,
+    can_reopen,
     history_readiness,
     has_generated,
     has_assignments,
@@ -137,12 +147,19 @@ export default function Roster({
     days,
 }: RosterProps) {
     const regeneration = useForm<Record<string, string>>({});
+    const reopening = useForm<Record<string, string>>({});
     const [picker, setPicker] = useState<SelectedSlot | null>(null);
     const [options, setOptions] = useState<DoctorOption[]>([]);
     const [swapSource, setSwapSource] = useState<SelectedSlot | null>(null);
     const [busy, setBusy] = useState(false);
     const [message, setMessage] = useState<string | null>(null);
     const [warnings, setWarnings] = useState<string[]>([]);
+    const [finalizationWarnings, setFinalizationWarnings] = useState<
+        RosterProps['conflicts']
+    >([]);
+    const [warningSignature, setWarningSignature] = useState<string | null>(
+        null,
+    );
     const [pending, setPending] = useState<Record<
         string,
         string | number | boolean | null
@@ -233,6 +250,51 @@ export default function Roster({
         }
     }
 
+    async function finalizeRoster(signature: string | null = null) {
+        setBusy(true);
+        setMessage(null);
+        try {
+            const result = await jsonRequest<{
+                status:
+                    | 'finalized'
+                    | 'errors'
+                    | 'confirmation_required'
+                    | 'stale_confirmation';
+                errors: RosterProps['conflicts'];
+                warnings: RosterProps['conflicts'];
+                warning_signature: string | null;
+            }>(finalize.url(month), 'POST', { warning_signature: signature });
+            if (result.status === 'finalized') {
+                setFinalizationWarnings([]);
+                setWarningSignature(null);
+                setPicker(null);
+                setSwapSource(null);
+                router.reload();
+            } else if (result.status === 'errors') {
+                setFinalizationWarnings([]);
+                setWarningSignature(null);
+                setMessage(
+                    `This roster cannot be finalized because it has ${result.errors.length} validation error(s). Review Live validation. ${result.errors
+                        .slice(0, 3)
+                        .map((error) => error.message)
+                        .join(' ')}`,
+                );
+            } else {
+                setFinalizationWarnings(result.warnings);
+                setWarningSignature(result.warning_signature);
+                if (result.status === 'stale_confirmation') {
+                    setMessage(
+                        'Warnings changed. Review the current warnings before confirming again.',
+                    );
+                }
+            }
+        } catch (error) {
+            setMessage(errorMessage(error));
+        } finally {
+            setBusy(false);
+        }
+    }
+
     function clickSwapTarget(target: SelectedSlot) {
         if (!swapSource || !target.expected_assignment_id) return;
         void save({
@@ -285,7 +347,7 @@ export default function Roster({
                             Undo Last Change
                         </button>
                     )}
-                    {swapSource && (
+                    {status === 'draft' && swapSource && (
                         <button
                             type="button"
                             onClick={() => setSwapSource(null)}
@@ -347,6 +409,48 @@ export default function Roster({
                             )}
                         </div>
                     )}
+                    {status === 'draft' && (
+                        <button
+                            type="button"
+                            disabled={busy}
+                            onClick={() => void finalizeRoster()}
+                            className="rounded-lg bg-slate-800 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+                        >
+                            Finalize Roster
+                        </button>
+                    )}
+                    {status === 'final' && can_reopen && (
+                        <button
+                            type="button"
+                            disabled={reopening.processing}
+                            onClick={() => {
+                                if (
+                                    window.confirm(
+                                        'Reopening will return this roster to Draft and allow the assignments to be changed. Continue?',
+                                    )
+                                ) {
+                                    reopening.post(reopen.url(month));
+                                }
+                            }}
+                            className="rounded-lg border border-slate-500 bg-white px-4 py-2 text-sm font-semibold disabled:opacity-50"
+                        >
+                            Reopen Roster
+                        </button>
+                    )}
+                    <a
+                        href={print.url(month)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold"
+                    >
+                        Preview / Print
+                    </a>
+                    <a
+                        href={pdf.url(month)}
+                        className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold"
+                    >
+                        Download PDF
+                    </a>
                     <Link
                         href={monthlySetup.url(month)}
                         className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold hover:bg-slate-50"
@@ -399,7 +503,18 @@ export default function Roster({
                     {message}
                 </div>
             )}
-            {swapSource && (
+            {reopening.errors.roster && (
+                <p role="alert" className="mb-4 text-sm text-red-700">
+                    {reopening.errors.roster}
+                </p>
+            )}
+            {status === 'final' && !can_reopen && (
+                <p className="mb-4 text-sm text-slate-600">
+                    Actual-work review has started. Correct historical actual
+                    work from the Previous Month Review screen.
+                </p>
+            )}
+            {status === 'draft' && swapSource && (
                 <div
                     role="status"
                     className="mb-4 rounded-lg bg-sky-50 p-3 text-sm text-sky-900"
@@ -692,7 +807,7 @@ export default function Roster({
                 ))}
             </div>
 
-            {picker && (
+            {status === 'draft' && picker && (
                 <div
                     role="dialog"
                     aria-modal="true"
@@ -781,7 +896,7 @@ export default function Roster({
                     </div>
                 </div>
             )}
-            {pending && (
+            {status === 'draft' && pending && (
                 <div
                     role="dialog"
                     aria-modal="true"
@@ -811,6 +926,57 @@ export default function Roster({
                                 onClick={() => {
                                     setPending(null);
                                     setWarnings([]);
+                                }}
+                                className="rounded-lg border border-slate-300 px-4 py-2 text-sm"
+                            >
+                                Cancel
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+            {finalizationWarnings.length > 0 && warningSignature && (
+                <div
+                    role="dialog"
+                    aria-modal="true"
+                    aria-label="Finalize with warnings"
+                    className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-900/70 p-3"
+                >
+                    <div className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-xl bg-white p-5 shadow-xl">
+                        <h2 className="text-lg font-semibold">
+                            Finalize with warnings?
+                        </h2>
+                        {message && (
+                            <p
+                                role="alert"
+                                className="mt-2 text-sm text-red-700"
+                            >
+                                {message}
+                            </p>
+                        )}
+                        <ul className="mt-3 list-disc space-y-2 pl-5 text-sm">
+                            {finalizationWarnings.map((warning, index) => (
+                                <li key={`${warning.target}-${index}`}>
+                                    <strong>Warning</strong> — {warning.message}
+                                </li>
+                            ))}
+                        </ul>
+                        <div className="mt-5 flex flex-wrap gap-2">
+                            <button
+                                type="button"
+                                disabled={busy}
+                                onClick={() =>
+                                    void finalizeRoster(warningSignature)
+                                }
+                                className="rounded-lg bg-teal-700 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+                            >
+                                Finalize Anyway
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    setFinalizationWarnings([]);
+                                    setWarningSignature(null);
                                 }}
                                 className="rounded-lg border border-slate-300 px-4 py-2 text-sm"
                             >

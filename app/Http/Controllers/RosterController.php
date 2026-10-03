@@ -9,6 +9,7 @@ use App\Models\RosterShift;
 use App\Models\User;
 use App\Services\RosterDraftValidationService;
 use App\Services\RosterHistoryReadinessService;
+use App\Services\RosterLifecycleService;
 use App\Services\RosterManualEditService;
 use App\Services\RosterStructureService;
 use Carbon\CarbonImmutable;
@@ -29,7 +30,7 @@ class RosterController extends Controller
         try {
             $structure->create($year, $month, $creator);
         } catch (UniqueConstraintViolationException $exception) {
-            if (! Roster::query()->where('year', $year)->where('month', $month)->exists()) {
+            if (Roster::query()->where('year', $year)->where('month', $month)->doesntExist()) {
                 throw $exception;
             }
         }
@@ -37,7 +38,7 @@ class RosterController extends Controller
         return to_route('rosters.show', ['year' => $year, 'month' => $month]);
     }
 
-    public function show(int $year, int $month, RosterDraftValidationService $validation, RosterHistoryReadinessService $history): Response
+    public function show(int $year, int $month, RosterDraftValidationService $validation, RosterHistoryReadinessService $history, RosterLifecycleService $lifecycle): Response
     {
         $roster = Roster::query()
             ->where('year', $year)
@@ -74,6 +75,7 @@ class RosterController extends Controller
         return Inertia::render('roster', [
             'month' => ['year' => $year, 'month' => $month, 'label' => CarbonImmutable::create($year, $month, 1)->format('F Y')],
             'status' => $roster->status->value,
+            'can_reopen' => $roster->status->value === 'final' && $lifecycle->canReopen($roster),
             'history_readiness' => $history->forMonth($year, $month),
             'has_generated' => $roster->last_generated_at !== null,
             'has_assignments' => $roster->shifts->contains(fn (RosterShift $shift): bool => $shift->assignments->isNotEmpty()),

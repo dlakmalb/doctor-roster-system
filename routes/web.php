@@ -12,7 +12,11 @@ use App\Http\Controllers\RosterAssignmentGenerationController;
 use App\Http\Controllers\RosterAssignmentOptionsController;
 use App\Http\Controllers\RosterAssignmentRegenerationController;
 use App\Http\Controllers\RosterController;
+use App\Http\Controllers\RosterFinalizationController;
 use App\Http\Controllers\RosterManualEditController;
+use App\Http\Controllers\RosterPdfController;
+use App\Http\Controllers\RosterPrintController;
+use App\Http\Controllers\RosterReopenController;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Support\Facades\Route;
 
@@ -35,6 +39,10 @@ Route::middleware('auth')->group(function (): void {
             Route::post('/', [RosterController::class, 'store'])->name('rosters.store');
             Route::post('/generate', RosterAssignmentGenerationController::class)->name('rosters.generate');
             Route::post('/regenerate', RosterAssignmentRegenerationController::class)->name('rosters.regenerate');
+            Route::post('/finalize', RosterFinalizationController::class)->name('rosters.finalize');
+            Route::post('/reopen', RosterReopenController::class)->name('rosters.reopen');
+            Route::get('/print', RosterPrintController::class)->name('rosters.print');
+            Route::get('/pdf', RosterPdfController::class)->name('rosters.pdf');
             Route::get('/actual-work', [ActualWorkReviewController::class, 'show'])->name('rosters.actual-work.show');
             Route::put('/actual-work/assignments/{assignment}', [ActualWorkReviewController::class, 'save'])->name('rosters.actual-work.save');
             Route::delete('/actual-work/exceptions/{exception}', [ActualWorkReviewController::class, 'remove'])->name('rosters.actual-work.remove');
