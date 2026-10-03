@@ -9,6 +9,7 @@ import {
 } from '@/actions/App/Http/Controllers/DoctorRequestController';
 import AppLayout from '@/components/app-layout';
 import { show as monthlySetup } from '@/routes/monthly-setup';
+import { show as showRoster, store as storeRoster } from '@/routes/rosters';
 import { Head, Link, router, useForm } from '@inertiajs/react';
 import type { FormEvent } from 'react';
 import { useMemo, useState } from 'react';
@@ -544,6 +545,7 @@ function ExclusionsSection({
 }
 
 export default function MonthlySetup(props: PageProps) {
+    const rosterForm = useForm<{ roster?: string }>({});
     const summaryItems = [
         ['Active Doctors', props.summary.active_doctors],
         ['Day-Off Requests', props.summary.day_off_requests],
@@ -579,6 +581,45 @@ export default function MonthlySetup(props: PageProps) {
                     Next Month →
                 </Link>
             </div>
+
+            <section className="mb-6 flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-teal-200 bg-teal-50 p-5 sm:p-6">
+                <div>
+                    <h2 className="text-lg font-semibold text-teal-950">
+                        Monthly roster structure
+                    </h2>
+                    <p className="mt-1 text-sm text-teal-800">
+                        {props.rosterStatus === 'not_started'
+                            ? 'Create the dates and required shifts after reviewing monthly setup.'
+                            : 'The shift structure is ready for review.'}
+                    </p>
+                    {rosterForm.errors.roster && (
+                        <p className="mt-2 text-sm font-medium text-red-700">
+                            {rosterForm.errors.roster}
+                        </p>
+                    )}
+                </div>
+                {props.rosterStatus === 'not_started' ? (
+                    <button
+                        type="button"
+                        disabled={rosterForm.processing}
+                        onClick={() =>
+                            rosterForm.post(storeRoster.url(props.month))
+                        }
+                        className="rounded-lg bg-teal-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-teal-800 disabled:opacity-60"
+                    >
+                        {rosterForm.processing
+                            ? 'Creating...'
+                            : 'Create Draft Roster'}
+                    </button>
+                ) : (
+                    <Link
+                        href={showRoster.url(props.month)}
+                        className="rounded-lg bg-teal-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-teal-800"
+                    >
+                        View Roster
+                    </Link>
+                )}
+            </section>
 
             <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
                 {summaryItems.map(([label, value]) => (

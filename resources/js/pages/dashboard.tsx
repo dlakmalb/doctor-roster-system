@@ -1,5 +1,6 @@
 import AppLayout from '@/components/app-layout';
 import { show as monthlySetup } from '@/routes/monthly-setup';
+import { show as showRoster } from '@/routes/rosters';
 import { Head, Link } from '@inertiajs/react';
 
 type MonthSummary = {
@@ -38,12 +39,22 @@ export default function Dashboard({ months }: { months: MonthSummary[] }) {
                                 {statusLabels[month.status]}
                             </span>
                         </div>
-                        <Link
-                            href={monthlySetup.url(month)}
-                            className="mt-8 inline-flex rounded-lg bg-teal-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-teal-800"
-                        >
-                            Manage Monthly Setup
-                        </Link>
+                        <div className="mt-8 flex flex-wrap gap-2">
+                            <Link
+                                href={monthlySetup.url(month)}
+                                className="inline-flex rounded-lg bg-teal-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-teal-800"
+                            >
+                                Manage Monthly Setup
+                            </Link>
+                            {month.status !== 'not_started' && (
+                                <Link
+                                    href={showRoster.url(month)}
+                                    className="inline-flex rounded-lg border border-slate-300 px-4 py-2.5 text-sm font-semibold hover:bg-slate-50"
+                                >
+                                    View Roster
+                                </Link>
+                            )}
+                        </div>
                     </section>
                 ))}
             </div>

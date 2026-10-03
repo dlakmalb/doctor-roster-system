@@ -6,6 +6,7 @@ use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\DoctorMonthlyExclusionController;
 use App\Http\Controllers\DoctorRequestController;
 use App\Http\Controllers\MonthlySetupController;
+use App\Http\Controllers\RosterController;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Support\Facades\Route;
 
@@ -20,6 +21,13 @@ Route::middleware('guest')->group(function (): void {
 Route::middleware('auth')->group(function (): void {
     Route::post('/logout', LogoutController::class)->name('logout');
     Route::get('/dashboard', DashboardController::class)->name('dashboard');
+
+    Route::prefix('/rosters/{year}/{month}')
+        ->where(['year' => '[1-9][0-9]{3}', 'month' => '(?:[1-9]|1[0-2])'])
+        ->group(function (): void {
+            Route::get('/', [RosterController::class, 'show'])->name('rosters.show');
+            Route::post('/', [RosterController::class, 'store'])->name('rosters.store');
+        });
 
     Route::prefix('/monthly-setup/{year}/{month}')
         ->where(['year' => '[1-9][0-9]{3}', 'month' => '(?:[1-9]|1[0-2])'])
