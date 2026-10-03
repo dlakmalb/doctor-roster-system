@@ -6,7 +6,9 @@ use App\Enums\DoctorMonthlyWorkloadSource;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Support\Carbon;
 
+/** @property Carbon|null $most_recent_night_shift_at */
 #[Fillable(['doctor_id', 'roster_id', 'year', 'month', 'source', 'actual_worked_minutes', 'opening_balance_minutes', 'monthly_adjustment_minutes', 'closing_balance_minutes', 'actual_night_duty_count', 'optional_assignment_count', 'worked_final_weekend', 'most_recent_night_shift_at', 'is_month_excluded'])]
 class DoctorMonthlyWorkload extends Model
 {

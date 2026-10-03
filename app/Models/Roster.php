@@ -14,6 +14,8 @@ use Illuminate\Support\Carbon;
  * @property int $year
  * @property int $month
  * @property RosterStatus $status
+ * @property Carbon|null $last_generated_at
+ * @property int|null $updated_by
  * @property Carbon|null $created_at
  * @property Carbon|null $updated_at
  */

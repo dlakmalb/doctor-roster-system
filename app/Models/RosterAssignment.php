@@ -8,6 +8,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
+/** @property RosterAssignmentRole $role */
 #[Fillable(['roster_shift_id', 'doctor_id', 'role', 'slot_number'])]
 class RosterAssignment extends Model
 {

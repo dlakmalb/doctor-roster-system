@@ -1,7 +1,14 @@
 import AppLayout from '@/components/app-layout';
 import { dashboard } from '@/routes';
 import { show as monthlySetup } from '@/routes/monthly-setup';
-import { Head, Link } from '@inertiajs/react';
+import { generate } from '@/routes/rosters';
+import { Form, Head, Link } from '@inertiajs/react';
+
+type Slot = {
+    slot_number: number;
+    doctor: { name: string; short_code: string } | null;
+    error: boolean;
+};
 
 type Shift = {
     code: string;
@@ -11,6 +18,8 @@ type Shift = {
     end_date_label: string | null;
     main_count: number;
     optional_count: number;
+    main: Slot[];
+    optional: Slot[];
 };
 
 type Day = {
@@ -22,19 +31,38 @@ type Day = {
 type RosterProps = {
     month: { year: number; month: number; label: string };
     status: 'draft' | 'final';
+    has_generated: boolean;
+    last_generated_at: string | null;
     summary: {
         shifts: number;
         main_positions: number;
         optional_positions: number;
+        filled_main: number;
+        filled_optional: number;
+        missing_main: number;
+        missing_optional: number;
     };
     days: Day[];
 };
 
-export default function Roster({ month, status, summary, days }: RosterProps) {
+export default function Roster({
+    month,
+    status,
+    has_generated,
+    last_generated_at,
+    summary,
+    days,
+}: RosterProps) {
     const summaryItems = [
         ['Total shifts', summary.shifts],
-        ['Required Main positions', summary.main_positions],
-        ['Required Optional positions', summary.optional_positions],
+        [
+            'Main positions',
+            `${summary.filled_main} / ${summary.main_positions} filled`,
+        ],
+        [
+            'Optional positions',
+            `${summary.filled_optional} / ${summary.optional_positions} filled`,
+        ],
     ];
 
     return (
@@ -48,11 +76,37 @@ export default function Roster({ month, status, summary, days }: RosterProps) {
                     </span>
                     <p className="text-sm text-slate-600">
                         {status === 'draft'
-                            ? 'The monthly shift structure is ready. Doctor assignments will be generated in the next scheduling step.'
+                            ? has_generated
+                                ? `Last generated: ${last_generated_at}`
+                                : 'The monthly shift structure is ready for assignments.'
                             : 'This roster has been finalized.'}
                     </p>
                 </div>
                 <div className="flex flex-wrap gap-2">
+                    {status === 'draft' && (
+                        <Form {...generate.form(month)}>
+                            {({ processing, errors }) => (
+                                <div>
+                                    <button
+                                        disabled={processing}
+                                        type="submit"
+                                        className="rounded-lg bg-teal-700 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-800 disabled:opacity-50"
+                                    >
+                                        {processing
+                                            ? 'Generating…'
+                                            : has_generated
+                                              ? 'Fill Unfilled Slots'
+                                              : 'Generate Assignments'}
+                                    </button>
+                                    {errors.roster && (
+                                        <p className="text-sm text-red-700">
+                                            {errors.roster}
+                                        </p>
+                                    )}
+                                </div>
+                            )}
+                        </Form>
+                    )}
                     <Link
                         href={monthlySetup.url(month)}
                         className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold hover:bg-slate-50"
@@ -68,6 +122,18 @@ export default function Roster({ month, status, summary, days }: RosterProps) {
                 </div>
             </div>
 
+            {has_generated &&
+                (summary.missing_main > 0 || summary.missing_optional > 0) && (
+                    <div
+                        role="alert"
+                        className="mb-6 rounded-lg border border-red-200 bg-red-50 p-4 text-sm font-semibold text-red-800"
+                    >
+                        Error: {summary.missing_main} Main and{' '}
+                        {summary.missing_optional} Optional required positions
+                        remain unfilled.
+                    </div>
+                )}
+
             <div className="grid gap-4 sm:grid-cols-3">
                 {summaryItems.map(([label, value]) => (
                     <div
@@ -77,7 +143,7 @@ export default function Roster({ month, status, summary, days }: RosterProps) {
                         <p className="text-sm font-medium text-slate-500">
                             {label}
                         </p>
-                        <p className="mt-2 text-3xl font-semibold">{value}</p>
+                        <p className="mt-2 text-2xl font-semibold">{value}</p>
                     </div>
                 ))}
             </div>
@@ -91,10 +157,7 @@ export default function Roster({ month, status, summary, days }: RosterProps) {
                         <h2 className="text-lg font-semibold">{day.label}</h2>
                         <div className="mt-4 divide-y divide-slate-100">
                             {day.shifts.map((shift) => (
-                                <div
-                                    key={shift.code}
-                                    className="flex flex-wrap items-start justify-between gap-2 py-3"
-                                >
+                                <div key={shift.code} className="py-3">
                                     <div>
                                         <h3 className="font-semibold">
                                             {shift.name}
@@ -106,10 +169,43 @@ export default function Roster({ month, status, summary, days }: RosterProps) {
                                             {shift.end_time}
                                         </p>
                                     </div>
-                                    <p className="text-sm font-medium text-slate-700">
-                                        {shift.main_count} Main /{' '}
-                                        {shift.optional_count} Optional
-                                    </p>
+                                    <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                                        {(['main', 'optional'] as const).map(
+                                            (role) => (
+                                                <div key={role}>
+                                                    <h4 className="text-sm font-semibold text-slate-700 capitalize">
+                                                        {role}
+                                                    </h4>
+                                                    <ol className="mt-1 space-y-1 text-sm">
+                                                        {shift[role].map(
+                                                            (slot) => (
+                                                                <li
+                                                                    key={
+                                                                        slot.slot_number
+                                                                    }
+                                                                    className={
+                                                                        slot.error
+                                                                            ? 'font-semibold text-red-700'
+                                                                            : 'text-slate-700'
+                                                                    }
+                                                                >
+                                                                    {
+                                                                        slot.slot_number
+                                                                    }
+                                                                    .{' '}
+                                                                    {slot.doctor
+                                                                        ? `${slot.doctor.short_code} — ${slot.doctor.name}`
+                                                                        : slot.error
+                                                                          ? 'Unfilled — Error'
+                                                                          : 'Unfilled'}
+                                                                </li>
+                                                            ),
+                                                        )}
+                                                    </ol>
+                                                </div>
+                                            ),
+                                        )}
+                                    </div>
                                 </div>
                             ))}
                         </div>
