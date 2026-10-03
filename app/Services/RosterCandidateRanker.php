@@ -125,27 +125,7 @@ class RosterCandidateRanker
             $dimensions[] = isset($this->preferences[$doctorId][$shift->id]) ? 0 : 1;
         }
 
-        $destroyedPreferences = 0;
-        foreach ($this->preferences[$doctorId] ?? [] as $preferredShift) {
-            if (isset($this->fulfilled[$doctorId][$preferredShift->id])) {
-                continue;
-            }
-            if ($preferredShift->shift_date->lessThan($shift->shift_date)
-                || ($preferredShift->shift_date->isSameDay($shift->shift_date)
-                    && $preferredShift->shiftType->start_time < $shift->shiftType->start_time)) {
-                continue;
-            }
-            if ($preferredShift->id === $shift->id && $role === RosterAssignmentRole::Main) {
-                continue;
-            }
-            if ($assignedShifts->contains(fn (RosterShift $assigned): bool => $this->eligibility->shiftConflict($preferredShift, $assigned) !== null)) {
-                continue;
-            }
-            if ($this->eligibility->shiftConflict($preferredShift, $shift) !== null) {
-                $destroyedPreferences++;
-            }
-        }
-        $dimensions[] = $destroyedPreferences;
+        $dimensions[] = count($this->blockedPreferredShifts($doctor, $shift, $role, $assignedShifts));
 
         $weekend = $this->weekendKey($shift);
         if ($role === RosterAssignmentRole::Main && $weekend !== null) {
@@ -167,6 +147,37 @@ class RosterCandidateRanker
         $dimensions[] = ($history->closing_balance_minutes ?? 0) + ($this->scheduledMinutes[$doctorId] ?? 0);
 
         return $dimensions;
+    }
+
+    /**
+     * @param  Collection<int, RosterShift>  $assignedShifts
+     * @return list<RosterShift>
+     */
+    public function blockedPreferredShifts(Doctor $doctor, RosterShift $shift, RosterAssignmentRole $role, Collection $assignedShifts): array
+    {
+        $blocked = [];
+        $doctorId = $doctor->id;
+        foreach ($this->preferences[$doctorId] ?? [] as $preferredShift) {
+            if (isset($this->fulfilled[$doctorId][$preferredShift->id])) {
+                continue;
+            }
+            if ($preferredShift->shift_date->lessThan($shift->shift_date)
+                || ($preferredShift->shift_date->isSameDay($shift->shift_date)
+                    && $preferredShift->shiftType->start_time < $shift->shiftType->start_time)) {
+                continue;
+            }
+            if ($preferredShift->id === $shift->id && $role === RosterAssignmentRole::Main) {
+                continue;
+            }
+            if ($assignedShifts->contains(fn (RosterShift $assigned): bool => $this->eligibility->shiftConflict($preferredShift, $assigned) !== null)) {
+                continue;
+            }
+            if ($this->eligibility->shiftConflict($preferredShift, $shift) !== null) {
+                $blocked[] = $preferredShift;
+            }
+        }
+
+        return $blocked;
     }
 
     /**

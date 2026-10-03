@@ -74,5 +74,10 @@ class RosterAssignmentGenerator
 
             $roster->update(['last_generated_at' => now(), 'updated_by' => $admin->id]);
         });
+
+        $undo = session()->get(RosterManualEditService::UNDO_KEY);
+        if (is_array($undo) && ($undo['roster_id'] ?? null) === $roster->id) {
+            session()->forget(RosterManualEditService::UNDO_KEY);
+        }
     }
 }

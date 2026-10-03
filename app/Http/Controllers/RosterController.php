@@ -7,6 +7,8 @@ use App\Models\Roster;
 use App\Models\RosterAssignment;
 use App\Models\RosterShift;
 use App\Models\User;
+use App\Services\RosterDraftValidationService;
+use App\Services\RosterManualEditService;
 use App\Services\RosterStructureService;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\UniqueConstraintViolationException;
@@ -34,7 +36,7 @@ class RosterController extends Controller
         return to_route('rosters.show', ['year' => $year, 'month' => $month]);
     }
 
-    public function show(int $year, int $month): Response
+    public function show(int $year, int $month, RosterDraftValidationService $validation): Response
     {
         $roster = Roster::query()
             ->where('year', $year)
@@ -42,9 +44,11 @@ class RosterController extends Controller
             ->with(['shifts' => fn ($query) => $query->orderBy('shift_date'), 'shifts.shiftType', 'shifts.assignments.doctor'])
             ->firstOrFail();
 
+        $conflicts = $validation->validate($roster);
+        $undo = session()->get(RosterManualEditService::UNDO_KEY);
         $days = $roster->shifts
             ->groupBy(fn (RosterShift $shift): string => $shift->shift_date->toDateString())
-            ->map(function (Collection $shifts, string $date) use ($roster): array {
+            ->map(function (Collection $shifts, string $date): array {
                 $startDate = CarbonImmutable::parse($date);
 
                 return [
@@ -52,6 +56,7 @@ class RosterController extends Controller
                     'label' => $startDate->format('l, M j'),
                     'shifts' => $shifts->sortBy(fn (RosterShift $shift): string => $shift->shiftType->start_time)
                         ->map(fn (RosterShift $shift): array => [
+                            'id' => $shift->id,
                             'code' => $shift->shiftType->code,
                             'name' => $shift->shiftType->name,
                             'start_time' => substr($shift->shiftType->start_time, 0, 5),
@@ -59,8 +64,8 @@ class RosterController extends Controller
                             'end_date_label' => $shift->shiftType->is_overnight ? $startDate->addDay()->format('M j') : null,
                             'main_count' => $shift->shiftType->main_count,
                             'optional_count' => $shift->shiftType->optional_count,
-                            'main' => $this->slots($shift, RosterAssignmentRole::Main, $roster->last_generated_at !== null),
-                            'optional' => $this->slots($shift, RosterAssignmentRole::Optional, $roster->last_generated_at !== null),
+                            'main' => $this->slots($shift, RosterAssignmentRole::Main),
+                            'optional' => $this->slots($shift, RosterAssignmentRole::Optional),
                         ])->values(),
                 ];
             })->values();
@@ -71,6 +76,9 @@ class RosterController extends Controller
             'has_generated' => $roster->last_generated_at !== null,
             'has_assignments' => $roster->shifts->contains(fn (RosterShift $shift): bool => $shift->assignments->isNotEmpty()),
             'last_generated_at' => $roster->last_generated_at?->toDateTimeString(),
+            'can_undo' => $roster->status->value === 'draft' && is_array($undo) && ($undo['roster_id'] ?? null) === $roster->id
+                && ($undo['generated_at'] ?? null) === $roster->last_generated_at?->toDateTimeString(),
+            'conflicts' => $conflicts,
             'summary' => [
                 'shifts' => $roster->shifts->count(),
                 'main_positions' => $roster->shifts->sum(fn (RosterShift $shift): int => $shift->shiftType->main_count),
@@ -84,8 +92,8 @@ class RosterController extends Controller
         ]);
     }
 
-    /** @return list<array{slot_number: int, doctor: array{name: string, short_code: string}|null, error: bool}> */
-    private function slots(RosterShift $shift, RosterAssignmentRole $role, bool $hasGenerated): array
+    /** @return list<array{slot_number: int, assignment_id: int|null, doctor_id: int|null, doctor: array{name: string, short_code: string}|null, error: bool}> */
+    private function slots(RosterShift $shift, RosterAssignmentRole $role): array
     {
         $required = $role === RosterAssignmentRole::Main ? $shift->shiftType->main_count : $shift->shiftType->optional_count;
         $assignments = $shift->assignments->where('role', $role)->keyBy('slot_number');
@@ -96,8 +104,10 @@ class RosterController extends Controller
             $assignment = $assignments->get($slot);
             $slots[] = [
                 'slot_number' => $slot,
+                'assignment_id' => $assignment?->id,
+                'doctor_id' => $assignment?->doctor_id,
                 'doctor' => $assignment === null ? null : ['name' => $assignment->doctor->name, 'short_code' => $assignment->doctor->short_code],
-                'error' => $hasGenerated && $assignment === null,
+                'error' => $assignment === null,
             ];
         }
 

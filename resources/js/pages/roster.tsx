@@ -1,16 +1,21 @@
 import AppLayout from '@/components/app-layout';
 import { dashboard } from '@/routes';
 import { show as monthlySetup } from '@/routes/monthly-setup';
-import { generate, regenerate } from '@/routes/rosters';
-import { Form, Head, Link, useForm } from '@inertiajs/react';
+import { assignmentOptions, generate, regenerate } from '@/routes/rosters';
+import { edit, undo } from '@/routes/rosters/assignments';
+import { Form, Head, Link, router, useForm } from '@inertiajs/react';
+import { useState } from 'react';
 
 type Slot = {
     slot_number: number;
+    assignment_id: number | null;
+    doctor_id: number | null;
     doctor: { name: string; short_code: string } | null;
     error: boolean;
 };
 
 type Shift = {
+    id: number;
     code: string;
     name: string;
     start_time: string;
@@ -34,6 +39,12 @@ type RosterProps = {
     has_generated: boolean;
     has_assignments: boolean;
     last_generated_at: string | null;
+    can_undo: boolean;
+    conflicts: {
+        severity: 'Error' | 'Warning';
+        message: string;
+        target: string;
+    }[];
     summary: {
         shifts: number;
         main_positions: number;
@@ -46,16 +57,184 @@ type RosterProps = {
     days: Day[];
 };
 
+type SelectedSlot = {
+    shift_id: number;
+    role: 'main' | 'optional';
+    slot_number: number;
+    expected_assignment_id: number | null;
+    expected_doctor_id: number | null;
+};
+
+type DoctorOption = {
+    id: number;
+    short_code: string;
+    name: string;
+    eligible: boolean;
+    reasons: string[];
+    preferred_work: boolean;
+    source_assignment_id: number | null;
+    effective_workload_minutes: number;
+    night_count: number;
+    optional_count: number;
+};
+
+function errorMessage(error: unknown): string {
+    if (typeof error === 'object' && error !== null && 'errors' in error) {
+        const errors = error.errors;
+        if (typeof errors === 'object' && errors !== null) {
+            const first = Object.values(errors)[0];
+            if (Array.isArray(first) && typeof first[0] === 'string')
+                return first[0];
+        }
+    }
+    return 'The request could not be completed. Refresh and try again.';
+}
+
+async function jsonRequest<T>(
+    url: string,
+    method: 'GET' | 'POST',
+    data?: object,
+): Promise<T> {
+    const csrf = document.cookie
+        .split('; ')
+        .find((part) => part.startsWith('XSRF-TOKEN='))
+        ?.split('=')[1];
+    const response = await fetch(url, {
+        method,
+        credentials: 'same-origin',
+        headers: {
+            Accept: 'application/json',
+            'Content-Type': 'application/json',
+            'X-Requested-With': 'XMLHttpRequest',
+            ...(csrf ? { 'X-XSRF-TOKEN': decodeURIComponent(csrf) } : {}),
+        },
+        ...(data ? { body: JSON.stringify(data) } : {}),
+    });
+    const payload: unknown = await response.json();
+    if (!response.ok) throw payload;
+    return payload as T;
+}
+
 export default function Roster({
     month,
     status,
     has_generated,
     has_assignments,
     last_generated_at,
+    can_undo,
+    conflicts,
     summary,
     days,
 }: RosterProps) {
     const regeneration = useForm<Record<string, string>>({});
+    const [picker, setPicker] = useState<SelectedSlot | null>(null);
+    const [options, setOptions] = useState<DoctorOption[]>([]);
+    const [swapSource, setSwapSource] = useState<SelectedSlot | null>(null);
+    const [busy, setBusy] = useState(false);
+    const [message, setMessage] = useState<string | null>(null);
+    const [warnings, setWarnings] = useState<string[]>([]);
+    const [pending, setPending] = useState<Record<
+        string,
+        string | number | boolean | null
+    > | null>(null);
+    const errorCount = conflicts.filter(
+        (item) => item.severity === 'Error',
+    ).length;
+    const warningCount = conflicts.length - errorCount;
+
+    function selected(
+        shift: Shift,
+        role: 'main' | 'optional',
+        slot: Slot,
+    ): SelectedSlot {
+        return {
+            shift_id: shift.id,
+            role,
+            slot_number: slot.slot_number,
+            expected_assignment_id: slot.assignment_id,
+            expected_doctor_id: slot.doctor_id,
+        };
+    }
+
+    async function openPicker(target: SelectedSlot) {
+        setMessage(null);
+        setBusy(true);
+        try {
+            const query = new URLSearchParams(
+                Object.entries(target).map(([key, value]) => [
+                    key,
+                    value === null ? '' : String(value),
+                ]),
+            );
+            const result = await jsonRequest<{ options: DoctorOption[] }>(
+                `${assignmentOptions.url(month)}?${query}`,
+                'GET',
+            );
+            setOptions(result.options);
+            setPicker(target);
+        } catch (error) {
+            setMessage(errorMessage(error));
+        } finally {
+            setBusy(false);
+        }
+    }
+
+    async function save(
+        payload: Record<string, string | number | boolean | null>,
+        confirmed = false,
+    ) {
+        setBusy(true);
+        setMessage(null);
+        try {
+            const result = await jsonRequest<{
+                status: string;
+                warnings: string[];
+            }>(edit.url(month), 'POST', {
+                ...payload,
+                confirm_soft_override: confirmed,
+            });
+            if (result.status === 'confirmation_required') {
+                setWarnings(result.warnings);
+                setPending(payload);
+                return;
+            }
+            setPicker(null);
+            setSwapSource(null);
+            setWarnings([]);
+            setPending(null);
+            router.reload();
+        } catch (error) {
+            setMessage(errorMessage(error));
+        } finally {
+            setBusy(false);
+        }
+    }
+
+    async function undoLast() {
+        setBusy(true);
+        setMessage(null);
+        try {
+            await jsonRequest(undo.url(month), 'POST', {});
+            router.reload();
+        } catch (error) {
+            setMessage(errorMessage(error));
+        } finally {
+            setBusy(false);
+        }
+    }
+
+    function clickSwapTarget(target: SelectedSlot) {
+        if (!swapSource || !target.expected_assignment_id) return;
+        void save({
+            operation: 'swap',
+            ...swapSource,
+            target_shift_id: target.shift_id,
+            target_role: target.role,
+            target_slot_number: target.slot_number,
+            target_expected_assignment_id: target.expected_assignment_id,
+            target_expected_doctor_id: target.expected_doctor_id,
+        });
+    }
     const summaryItems = [
         ['Total shifts', summary.shifts],
         [
@@ -86,6 +265,25 @@ export default function Roster({
                     </p>
                 </div>
                 <div className="flex flex-wrap gap-2">
+                    {status === 'draft' && can_undo && (
+                        <button
+                            type="button"
+                            disabled={busy}
+                            onClick={() => void undoLast()}
+                            className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold disabled:opacity-50"
+                        >
+                            Undo Last Change
+                        </button>
+                    )}
+                    {swapSource && (
+                        <button
+                            type="button"
+                            onClick={() => setSwapSource(null)}
+                            className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold"
+                        >
+                            Cancel Swap
+                        </button>
+                    )}
                     {status === 'draft' && (
                         <Form {...generate.form(month)}>
                             {({ processing, errors }) => (
@@ -154,6 +352,62 @@ export default function Roster({
                 </div>
             </div>
 
+            {message && (
+                <div
+                    role="alert"
+                    className="mb-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800"
+                >
+                    {message}
+                </div>
+            )}
+            {swapSource && (
+                <div
+                    role="status"
+                    className="mb-4 rounded-lg bg-sky-50 p-3 text-sm text-sky-900"
+                >
+                    Swap mode: choose another occupied slot.
+                </div>
+            )}
+
+            {
+                <section
+                    id="conflicts"
+                    className="mb-6 rounded-xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5"
+                >
+                    <h2 className="font-semibold">Live validation</h2>
+                    <p className="mt-1 text-sm">
+                        Errors: {errorCount} · Warnings: {warningCount}
+                    </p>
+                    {conflicts.length === 0 ? (
+                        <p className="mt-2 text-sm text-teal-800">
+                            No roster conflicts detected.
+                        </p>
+                    ) : (
+                        <ul className="mt-3 max-h-72 space-y-2 overflow-y-auto text-sm">
+                            {conflicts.map((item, index) => (
+                                <li key={`${item.target}-${index}`}>
+                                    <button
+                                        type="button"
+                                        onClick={() =>
+                                            document
+                                                .getElementById(item.target)
+                                                ?.scrollIntoView({
+                                                    behavior: 'smooth',
+                                                    block: 'center',
+                                                })
+                                        }
+                                        className="text-left underline underline-offset-2"
+                                    >
+                                        <strong>{item.severity}</strong> —{' '}
+                                        {item.message}
+                                    </button>
+                                </li>
+                            ))}
+                        </ul>
+                    )}
+                </section>
+            }
+
             {has_generated &&
                 (summary.missing_main > 0 || summary.missing_optional > 0) && (
                     <div
@@ -189,7 +443,11 @@ export default function Roster({
                         <h2 className="text-lg font-semibold">{day.label}</h2>
                         <div className="mt-4 divide-y divide-slate-100">
                             {day.shifts.map((shift) => (
-                                <div key={shift.code} className="py-3">
+                                <div
+                                    key={shift.code}
+                                    id={`shift-${shift.id}`}
+                                    className="scroll-mt-6 py-3"
+                                >
                                     <div>
                                         <h3 className="font-semibold">
                                             {shift.name}
@@ -200,6 +458,21 @@ export default function Roster({
                                                 `${shift.end_date_label} `}
                                             {shift.end_time}
                                         </p>
+                                        {conflicts
+                                            .filter(
+                                                (item) =>
+                                                    item.target ===
+                                                    `shift-${shift.id}`,
+                                            )
+                                            .map((item, index) => (
+                                                <p
+                                                    key={index}
+                                                    className="mt-1 text-xs text-amber-800"
+                                                >
+                                                    {item.severity} —{' '}
+                                                    {item.message}
+                                                </p>
+                                            ))}
                                     </div>
                                     <div className="mt-3 grid gap-3 sm:grid-cols-2">
                                         {(['main', 'optional'] as const).map(
@@ -215,21 +488,156 @@ export default function Roster({
                                                                     key={
                                                                         slot.slot_number
                                                                     }
+                                                                    id={`slot-${shift.id}-${role}-${slot.slot_number}`}
                                                                     className={
                                                                         slot.error
-                                                                            ? 'font-semibold text-red-700'
-                                                                            : 'text-slate-700'
+                                                                            ? 'scroll-mt-6 rounded-lg border border-red-200 bg-red-50 p-2 font-semibold text-red-700'
+                                                                            : 'scroll-mt-6 rounded-lg border border-slate-100 p-2 text-slate-700'
                                                                     }
                                                                 >
-                                                                    {
-                                                                        slot.slot_number
-                                                                    }
-                                                                    .{' '}
+                                                                    <span className="font-medium capitalize">
+                                                                        {role}{' '}
+                                                                        slot{' '}
+                                                                        {
+                                                                            slot.slot_number
+                                                                        }
+                                                                        :{' '}
+                                                                    </span>
                                                                     {slot.doctor
                                                                         ? `${slot.doctor.short_code} — ${slot.doctor.name}`
                                                                         : slot.error
                                                                           ? 'Unfilled — Error'
                                                                           : 'Unfilled'}
+                                                                    {conflicts
+                                                                        .filter(
+                                                                            (
+                                                                                item,
+                                                                            ) =>
+                                                                                item.target ===
+                                                                                `slot-${shift.id}-${role}-${slot.slot_number}`,
+                                                                        )
+                                                                        .map(
+                                                                            (
+                                                                                item,
+                                                                                index,
+                                                                            ) => (
+                                                                                <p
+                                                                                    key={
+                                                                                        index
+                                                                                    }
+                                                                                    className="mt-1 text-xs"
+                                                                                >
+                                                                                    {
+                                                                                        item.severity
+                                                                                    }{' '}
+                                                                                    —{' '}
+                                                                                    {
+                                                                                        item.message
+                                                                                    }
+                                                                                </p>
+                                                                            ),
+                                                                        )}
+                                                                    {status ===
+                                                                        'draft' && (
+                                                                        <div className="mt-2 flex flex-wrap gap-2">
+                                                                            {swapSource ? (
+                                                                                slot.doctor && (
+                                                                                    <button
+                                                                                        type="button"
+                                                                                        disabled={
+                                                                                            busy
+                                                                                        }
+                                                                                        onClick={() =>
+                                                                                            clickSwapTarget(
+                                                                                                selected(
+                                                                                                    shift,
+                                                                                                    role,
+                                                                                                    slot,
+                                                                                                ),
+                                                                                            )
+                                                                                        }
+                                                                                        className="rounded border border-sky-300 px-2 py-1 text-xs font-semibold text-sky-800 disabled:opacity-50"
+                                                                                    >
+                                                                                        Select
+                                                                                        for
+                                                                                        Swap
+                                                                                    </button>
+                                                                                )
+                                                                            ) : (
+                                                                                <>
+                                                                                    <button
+                                                                                        type="button"
+                                                                                        disabled={
+                                                                                            busy
+                                                                                        }
+                                                                                        onClick={() =>
+                                                                                            void openPicker(
+                                                                                                selected(
+                                                                                                    shift,
+                                                                                                    role,
+                                                                                                    slot,
+                                                                                                ),
+                                                                                            )
+                                                                                        }
+                                                                                        className="rounded border border-teal-300 px-2 py-1 text-xs font-semibold text-teal-800 disabled:opacity-50"
+                                                                                    >
+                                                                                        {slot.doctor
+                                                                                            ? 'Replace'
+                                                                                            : 'Assign Doctor'}
+                                                                                    </button>
+                                                                                    {slot.doctor && (
+                                                                                        <button
+                                                                                            type="button"
+                                                                                            disabled={
+                                                                                                busy
+                                                                                            }
+                                                                                            onClick={() =>
+                                                                                                setSwapSource(
+                                                                                                    selected(
+                                                                                                        shift,
+                                                                                                        role,
+                                                                                                        slot,
+                                                                                                    ),
+                                                                                                )
+                                                                                            }
+                                                                                            className="rounded border border-sky-300 px-2 py-1 text-xs font-semibold text-sky-800 disabled:opacity-50"
+                                                                                        >
+                                                                                            Swap
+                                                                                        </button>
+                                                                                    )}
+                                                                                    {slot.doctor && (
+                                                                                        <button
+                                                                                            type="button"
+                                                                                            disabled={
+                                                                                                busy
+                                                                                            }
+                                                                                            onClick={() => {
+                                                                                                if (
+                                                                                                    window.confirm(
+                                                                                                        'Clearing this assignment will leave the slot unfilled. Continue?',
+                                                                                                    )
+                                                                                                )
+                                                                                                    void save(
+                                                                                                        {
+                                                                                                            operation:
+                                                                                                                'clear',
+                                                                                                            ...selected(
+                                                                                                                shift,
+                                                                                                                role,
+                                                                                                                slot,
+                                                                                                            ),
+                                                                                                        },
+                                                                                                    );
+                                                                                            }}
+                                                                                            className="rounded border border-red-300 px-2 py-1 text-xs font-semibold text-red-700 disabled:opacity-50"
+                                                                                        >
+                                                                                            Clear
+                                                                                        </button>
+                                                                                    )}
+                                                                                </>
+                                                                            )}
+                                                                        </div>
+                                                                    )}
                                                                 </li>
                                                             ),
                                                         )}
@@ -244,6 +652,135 @@ export default function Roster({
                     </section>
                 ))}
             </div>
+
+            {picker && (
+                <div
+                    role="dialog"
+                    aria-modal="true"
+                    aria-label="Choose a doctor"
+                    className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-3 sm:p-6"
+                >
+                    <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-xl bg-white p-4 shadow-xl sm:p-6">
+                        <div className="flex items-center justify-between gap-3">
+                            <h2 className="text-lg font-semibold">
+                                {picker.expected_assignment_id
+                                    ? 'Replace doctor'
+                                    : 'Assign doctor'}
+                            </h2>
+                            <button
+                                type="button"
+                                onClick={() => setPicker(null)}
+                                className="rounded border border-slate-300 px-3 py-1.5 text-sm"
+                            >
+                                Close
+                            </button>
+                        </div>
+                        <p className="mt-1 text-sm text-slate-600">
+                            Eligible doctors are ordered by scheduling
+                            preference. Choose any eligible doctor.
+                        </p>
+                        <ul className="mt-4 space-y-2">
+                            {options.map((doctor) => (
+                                <li
+                                    key={doctor.id}
+                                    className="rounded-lg border border-slate-200 p-3 text-sm"
+                                >
+                                    <div className="flex flex-wrap items-start justify-between gap-2">
+                                        <div>
+                                            <p className="font-semibold">
+                                                {doctor.short_code} —{' '}
+                                                {doctor.name}
+                                            </p>
+                                            <p className="text-slate-600">
+                                                Workload:{' '}
+                                                {
+                                                    doctor.effective_workload_minutes
+                                                }{' '}
+                                                min · Night:{' '}
+                                                {doctor.night_count} · Optional:{' '}
+                                                {doctor.optional_count}
+                                            </p>
+                                            {doctor.preferred_work && (
+                                                <p className="font-semibold text-teal-800">
+                                                    {picker.role === 'optional'
+                                                        ? 'Preferred Work — Main request'
+                                                        : 'Preferred Work'}
+                                                </p>
+                                            )}
+                                            {!doctor.eligible && (
+                                                <p className="text-red-700">
+                                                    Unavailable —{' '}
+                                                    {doctor.reasons.join(' ')}
+                                                </p>
+                                            )}
+                                        </div>
+                                        <button
+                                            type="button"
+                                            disabled={
+                                                busy ||
+                                                !doctor.eligible ||
+                                                doctor.id ===
+                                                    picker.expected_doctor_id
+                                            }
+                                            onClick={() =>
+                                                void save({
+                                                    operation: 'replace',
+                                                    ...picker,
+                                                    doctor_id: doctor.id,
+                                                    expected_source_assignment_id:
+                                                        doctor.source_assignment_id,
+                                                })
+                                            }
+                                            className="rounded-lg bg-teal-700 px-3 py-2 font-semibold text-white disabled:opacity-50"
+                                        >
+                                            Select
+                                        </button>
+                                    </div>
+                                </li>
+                            ))}
+                        </ul>
+                    </div>
+                </div>
+            )}
+            {pending && (
+                <div
+                    role="dialog"
+                    aria-modal="true"
+                    aria-label="Confirm scheduling warnings"
+                    className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/70 p-3"
+                >
+                    <div className="w-full max-w-lg rounded-xl bg-white p-5 shadow-xl">
+                        <h2 className="text-lg font-semibold">
+                            Confirm scheduling warning
+                        </h2>
+                        <ul className="mt-3 list-disc space-y-2 pl-5 text-sm">
+                            {warnings.map((warning) => (
+                                <li key={warning}>{warning}</li>
+                            ))}
+                        </ul>
+                        <div className="mt-5 flex flex-wrap gap-2">
+                            <button
+                                type="button"
+                                disabled={busy}
+                                onClick={() => void save(pending, true)}
+                                className="rounded-lg bg-teal-700 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+                            >
+                                Continue and save
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    setPending(null);
+                                    setWarnings([]);
+                                }}
+                                className="rounded-lg border border-slate-300 px-4 py-2 text-sm"
+                            >
+                                Cancel
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </AppLayout>
     );
 }

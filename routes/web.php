@@ -7,8 +7,10 @@ use App\Http\Controllers\DoctorMonthlyExclusionController;
 use App\Http\Controllers\DoctorRequestController;
 use App\Http\Controllers\MonthlySetupController;
 use App\Http\Controllers\RosterAssignmentGenerationController;
+use App\Http\Controllers\RosterAssignmentOptionsController;
 use App\Http\Controllers\RosterAssignmentRegenerationController;
 use App\Http\Controllers\RosterController;
+use App\Http\Controllers\RosterManualEditController;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Support\Facades\Route;
 
@@ -31,6 +33,9 @@ Route::middleware('auth')->group(function (): void {
             Route::post('/', [RosterController::class, 'store'])->name('rosters.store');
             Route::post('/generate', RosterAssignmentGenerationController::class)->name('rosters.generate');
             Route::post('/regenerate', RosterAssignmentRegenerationController::class)->name('rosters.regenerate');
+            Route::get('/assignment-options', RosterAssignmentOptionsController::class)->name('rosters.assignment-options');
+            Route::post('/assignments/edit', [RosterManualEditController::class, 'edit'])->name('rosters.assignments.edit');
+            Route::post('/assignments/undo', [RosterManualEditController::class, 'undo'])->name('rosters.assignments.undo');
         });
 
     Route::prefix('/monthly-setup/{year}/{month}')
