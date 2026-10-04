@@ -14,6 +14,7 @@ use App\Models\RosterAssignment;
 use App\Models\RosterShift;
 use App\Models\ShiftType;
 use App\Models\User;
+use App\Services\RosterDraftValidationService;
 use Inertia\Testing\AssertableInertia as Assert;
 
 function lifecycleFixture(bool $filled = true): array
@@ -36,6 +37,24 @@ function lifecycleUrl(string $action): string
     return route("rosters.$action", ['year' => 2026, 'month' => 10]);
 }
 
+it('validates missing Main and Optional slots by role and clears each warning when filled', function () {
+    [, $doctors, , $roster, $shift] = lifecycleFixture(false);
+    $validation = app(RosterDraftValidationService::class);
+
+    $missing = collect($validation->validate($roster))->whereIn('code', ['unfilled_main_slot', 'unfilled_optional_slot']);
+    expect($missing->pluck('severity', 'code')->all())->toBe([
+        'unfilled_main_slot' => 'Error',
+        'unfilled_optional_slot' => 'Warning',
+    ]);
+
+    RosterAssignment::create(['roster_shift_id' => $shift->id, 'doctor_id' => $doctors[0]->id, 'role' => RosterAssignmentRole::Main, 'slot_number' => 1]);
+    expect(collect($validation->validate($roster))->whereIn('code', ['unfilled_main_slot', 'unfilled_optional_slot'])->pluck('code')->values()->all())
+        ->toBe(['unfilled_optional_slot']);
+
+    RosterAssignment::create(['roster_shift_id' => $shift->id, 'doctor_id' => $doctors[1]->id, 'role' => RosterAssignmentRole::Optional, 'slot_number' => 1]);
+    expect(collect($validation->validate($roster))->whereIn('code', ['unfilled_main_slot', 'unfilled_optional_slot'])->isEmpty())->toBeTrue();
+});
+
 it('requires authentication for lifecycle and document routes', function () {
     lifecycleFixture();
 
@@ -45,14 +64,17 @@ it('requires authentication for lifecycle and document routes', function () {
     $this->get(lifecycleUrl('pdf'))->assertRedirect(route('login'));
 });
 
-it('blocks missing Main and Optional slots and hard invalid assignments', function () {
+it('blocks missing Main slots and hard invalid assignments while reporting Optional warnings', function () {
     [$admin, $doctors, , $roster, $shift] = lifecycleFixture(false);
     $this->actingAs($admin);
 
-    $this->postJson(lifecycleUrl('finalize'))->assertOk()->assertJsonPath('status', 'errors')->assertJsonCount(2, 'errors')
-        ->assertJsonPath('errors.0.message', 'Oct 5 Test Day main slot 1 is unfilled.');
+    $this->postJson(lifecycleUrl('finalize'))->assertOk()->assertJsonPath('status', 'errors')->assertJsonCount(1, 'errors')
+        ->assertJsonPath('errors.0.code', 'unfilled_main_slot')
+        ->assertJsonPath('errors.0.message', 'Oct 5 Test Day main slot 1 is unfilled.')
+        ->assertJsonCount(1, 'warnings')
+        ->assertJsonPath('warnings.0.code', 'unfilled_optional_slot');
     RosterAssignment::create(['roster_shift_id' => $shift->id, 'doctor_id' => $doctors[0]->id, 'role' => RosterAssignmentRole::Main, 'slot_number' => 1]);
-    $this->postJson(lifecycleUrl('finalize'))->assertJsonPath('status', 'errors')->assertJsonCount(1, 'errors');
+    $this->postJson(lifecycleUrl('finalize'))->assertJsonPath('status', 'confirmation_required')->assertJsonCount(0, 'errors')->assertJsonCount(1, 'warnings');
     RosterAssignment::create(['roster_shift_id' => $shift->id, 'doctor_id' => $doctors[1]->id, 'role' => RosterAssignmentRole::Optional, 'slot_number' => 1]);
     $doctors[0]->update(['is_active' => false]);
     $this->postJson(lifecycleUrl('finalize'))->assertJsonPath('status', 'errors')->assertJsonFragment(['target' => "slot-{$shift->id}-main-1"]);
@@ -60,6 +82,72 @@ it('blocks missing Main and Optional slots and hard invalid assignments', functi
     expect($roster->fresh()->status)->toBe(RosterStatus::Draft)
         ->and($roster->fresh()->finalized_at)->toBeNull()
         ->and($roster->fresh()->finalized_by)->toBeNull();
+});
+
+it('rejects finalization before generation and keeps the roster in Draft', function () {
+    [$admin, , , $roster] = lifecycleFixture(false);
+    $roster->update(['last_generated_at' => null]);
+
+    $this->actingAs($admin)->postJson(lifecycleUrl('finalize'))
+        ->assertOk()
+        ->assertJsonPath('status', 'errors')
+        ->assertJsonCount(1, 'errors')
+        ->assertJsonPath('errors.0.code', 'unfilled_main_slot')
+        ->assertJsonPath('warnings.0.code', 'unfilled_optional_slot');
+
+    expect($roster->fresh()->status)->toBe(RosterStatus::Draft)
+        ->and($roster->fresh()->last_generated_at)->toBeNull();
+
+    $this->get(lifecycleUrl('show'))->assertInertia(fn (Assert $page) => $page
+        ->component('roster')
+        ->where('has_generated', false)
+        ->where('conflicts.0.code', 'unfilled_main_slot'));
+});
+
+it('finalizes with an unfilled Optional slot after warning confirmation', function () {
+    [$admin, $doctors, , $roster, $shift] = lifecycleFixture(false);
+    RosterAssignment::create(['roster_shift_id' => $shift->id, 'doctor_id' => $doctors[0]->id, 'role' => RosterAssignmentRole::Main, 'slot_number' => 1]);
+    $this->actingAs($admin);
+
+    $first = $this->postJson(lifecycleUrl('finalize'))
+        ->assertJsonPath('status', 'confirmation_required')
+        ->assertJsonCount(0, 'errors')
+        ->assertJsonCount(1, 'warnings')
+        ->assertJsonPath('warnings.0.code', 'unfilled_optional_slot');
+    expect($first->json('warning_signature'))->toBeString()->not->toBeEmpty();
+    expect($roster->fresh()->status)->toBe(RosterStatus::Draft);
+
+    $this->postJson(lifecycleUrl('finalize'), ['warning_signature' => $first->json('warning_signature')])
+        ->assertJsonPath('status', 'finalized');
+    expect($roster->fresh()->status)->toBe(RosterStatus::Final);
+    $this->get(lifecycleUrl('show'))->assertInertia(fn (Assert $page) => $page
+        ->component('roster')
+        ->where('days.0.shifts.0.optional.0.severity', 'Warning'));
+});
+
+it('does not let warning confirmation bypass a missing Main slot', function () {
+    [$admin, , , $roster, $shift] = lifecycleFixture();
+    $shift->assignments()->where('role', RosterAssignmentRole::Main)->delete();
+    $this->actingAs($admin)->postJson(lifecycleUrl('finalize'), ['warning_signature' => str_repeat('a', 64)])
+        ->assertJsonPath('status', 'errors')
+        ->assertJsonPath('errors.0.code', 'unfilled_main_slot')
+        ->assertJsonCount(0, 'warnings');
+
+    expect($roster->fresh()->status)->toBe(RosterStatus::Draft);
+});
+
+it('rejects stale confirmation when Preferred Work joins an Optional vacancy', function () {
+    [$admin, $doctors, , $roster, $shift] = lifecycleFixture(false);
+    RosterAssignment::create(['roster_shift_id' => $shift->id, 'doctor_id' => $doctors[0]->id, 'role' => RosterAssignmentRole::Main, 'slot_number' => 1]);
+    $this->actingAs($admin);
+    $first = $this->postJson(lifecycleUrl('finalize'))->assertJsonPath('status', 'confirmation_required');
+    DoctorRequest::create(['doctor_id' => $doctors[2]->id, 'request_type' => DoctorRequestType::PreferredWork, 'request_date' => '2026-10-05', 'shift_type_id' => $shift->shift_type_id]);
+
+    $updated = $this->postJson(lifecycleUrl('finalize'), ['warning_signature' => $first->json('warning_signature')])
+        ->assertJsonPath('status', 'stale_confirmation')
+        ->assertJsonCount(2, 'warnings');
+    expect($updated->json('warning_signature'))->not->toBe($first->json('warning_signature'));
+    expect($roster->fresh()->status)->toBe(RosterStatus::Draft);
 });
 
 it('finalizes a valid roster without changing its plan and refuses a second finalization', function () {

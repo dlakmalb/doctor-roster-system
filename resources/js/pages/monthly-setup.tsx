@@ -102,6 +102,7 @@ function getShiftLabel(shiftType: ShiftType): string {
 }
 
 export default function MonthlySetup(props: PageProps) {
+    const isFinal = props.rosterStatus === 'final';
     const [requestKind, setRequestKind] = useState<RequestKind>('off_request');
     const [editingId, setEditingId] = useState<number | null>(null);
     const [exclusionProcessing, setExclusionProcessing] = useState(false);
@@ -276,17 +277,35 @@ export default function MonthlySetup(props: PageProps) {
                             ? 'Creating...'
                             : 'Create Draft Roster'}
                     </button>
-                ) : (
+                ) : props.rosterStatus === 'draft' ? (
                     <Link
                         href={showRoster.url(props.month)}
                         className="inline-flex min-h-11 items-center justify-center rounded-lg bg-teal-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-teal-800"
                     >
-                        {props.rosterStatus === 'draft'
-                            ? 'View Draft Roster'
-                            : 'View Final Roster'}
+                        View Draft Roster
                     </Link>
-                )}
+                ) : null}
             </div>
+
+            {isFinal && (
+                <div className="mb-5 flex flex-col gap-3 rounded-xl border border-amber-300 bg-amber-50 p-4 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                        <h2 className="font-semibold text-amber-950">
+                            Monthly Setup is locked
+                        </h2>
+                        <p className="mt-1 text-sm text-amber-900">
+                            This roster is Final. Reopen the roster before
+                            changing requests or exclusions.
+                        </p>
+                    </div>
+                    <Link
+                        href={showRoster.url(props.month)}
+                        className="inline-flex min-h-11 shrink-0 items-center justify-center rounded-lg border border-amber-700 px-4 py-2.5 text-sm font-semibold text-amber-950 hover:bg-amber-100"
+                    >
+                        View Final Roster
+                    </Link>
+                </div>
+            )}
 
             {rosterForm.errors.roster && (
                 <p className="mb-4 rounded-lg bg-red-50 p-3 text-sm text-red-700">
@@ -301,7 +320,9 @@ export default function MonthlySetup(props: PageProps) {
                             Doctor Requests
                         </h2>
                         <p className="mt-1 text-sm text-slate-600">
-                            Add and review requests for {props.month.label}.
+                            {isFinal
+                                ? `Review the requests and exclusions recorded for ${props.month.label}.`
+                                : `Add and review requests for ${props.month.label}.`}
                         </p>
                     </div>
                     <div className="flex flex-wrap gap-x-5 gap-y-1 text-sm text-slate-600">
@@ -316,189 +337,202 @@ export default function MonthlySetup(props: PageProps) {
                     </div>
                 </div>
 
-                <form
-                    onSubmit={submit}
-                    className="mt-5 grid gap-4 rounded-xl bg-slate-50 p-4 sm:grid-cols-2 xl:grid-cols-6"
-                >
-                    <label className="block xl:col-span-1">
-                        <span className="text-sm font-medium text-slate-800">
-                            Doctor
-                        </span>
-                        <select
-                            value={form.data.doctor_id}
-                            onChange={(event) =>
-                                form.setData(
-                                    'doctor_id',
-                                    event.target.value
-                                        ? Number(event.target.value)
-                                        : '',
-                                )
-                            }
-                            className={fieldClassName}
-                            required
-                        >
-                            <option value="">Select doctor</option>
-                            {selectedRequest?.doctor.is_active === false && (
-                                <option value={selectedRequest.doctor.id}>
-                                    {selectedRequest.doctor.name} (inactive)
-                                </option>
-                            )}
-                            {props.doctors
-                                .filter(
-                                    (doctor) =>
-                                        requestKind !== 'monthly_exclusion' ||
-                                        doctor.id === form.data.doctor_id ||
-                                        !excludedDoctorIds.has(doctor.id),
-                                )
-                                .map((doctor) => (
-                                    <option key={doctor.id} value={doctor.id}>
-                                        {doctor.short_code} - {doctor.name}
+                {!isFinal && (
+                    <form
+                        onSubmit={submit}
+                        className="mt-5 grid gap-4 rounded-xl bg-slate-50 p-4 sm:grid-cols-2 xl:grid-cols-6"
+                    >
+                        <label className="block xl:col-span-1">
+                            <span className="text-sm font-medium text-slate-800">
+                                Doctor
+                            </span>
+                            <select
+                                value={form.data.doctor_id}
+                                onChange={(event) =>
+                                    form.setData(
+                                        'doctor_id',
+                                        event.target.value
+                                            ? Number(event.target.value)
+                                            : '',
+                                    )
+                                }
+                                className={fieldClassName}
+                                required
+                            >
+                                <option value="">Select doctor</option>
+                                {selectedRequest?.doctor.is_active ===
+                                    false && (
+                                    <option value={selectedRequest.doctor.id}>
+                                        {selectedRequest.doctor.name} (inactive)
                                     </option>
-                                ))}
-                        </select>
-                        {form.errors.doctor_id && (
-                            <p className="mt-1 text-xs text-red-600">
-                                {form.errors.doctor_id}
-                            </p>
-                        )}
-                    </label>
-
-                    {requestKind !== 'monthly_exclusion' && (
-                        <>
-                            <label className="block">
-                                <span className="text-sm font-medium text-slate-800">
-                                    Date
-                                </span>
-                                <input
-                                    type="date"
-                                    value={form.data.request_date}
-                                    onChange={(event) => {
-                                        form.setData(
-                                            'request_date',
-                                            event.target.value,
-                                        );
-                                        form.setData('shift_type_id', '');
-                                    }}
-                                    className={fieldClassName}
-                                    required
-                                />
-                                {form.errors.request_date && (
-                                    <p className="mt-1 text-xs text-red-600">
-                                        {form.errors.request_date}
-                                    </p>
                                 )}
-                            </label>
-                            <label className="block">
-                                <span className="text-sm font-medium text-slate-800">
-                                    Shift
-                                </span>
-                                <select
-                                    value={form.data.shift_type_id}
-                                    onChange={(event) =>
-                                        form.setData(
-                                            'shift_type_id',
-                                            event.target.value
-                                                ? Number(event.target.value)
-                                                : '',
-                                        )
-                                    }
-                                    className={fieldClassName}
-                                    required={requestKind === 'preferred_work'}
-                                >
-                                    <option value="">
-                                        {requestKind === 'off_request'
-                                            ? 'Full Day'
-                                            : 'Select shift'}
-                                    </option>
-                                    {validShiftTypes.map((shiftType) => (
+                                {props.doctors
+                                    .filter(
+                                        (doctor) =>
+                                            requestKind !==
+                                                'monthly_exclusion' ||
+                                            doctor.id === form.data.doctor_id ||
+                                            !excludedDoctorIds.has(doctor.id),
+                                    )
+                                    .map((doctor) => (
                                         <option
-                                            key={shiftType.id}
-                                            value={shiftType.id}
+                                            key={doctor.id}
+                                            value={doctor.id}
                                         >
-                                            {getShiftLabel(shiftType)}
+                                            {doctor.short_code} - {doctor.name}
                                         </option>
                                     ))}
-                                </select>
-                                {form.errors.shift_type_id && (
-                                    <p className="mt-1 text-xs text-red-600">
-                                        {form.errors.shift_type_id}
-                                    </p>
-                                )}
-                            </label>
-                        </>
-                    )}
+                            </select>
+                            {form.errors.doctor_id && (
+                                <p className="mt-1 text-xs text-red-600">
+                                    {form.errors.doctor_id}
+                                </p>
+                            )}
+                        </label>
 
-                    <label className="block">
-                        <span className="text-sm font-medium text-slate-800">
-                            Request Type
-                        </span>
-                        <select
-                            value={requestKind}
-                            onChange={(event) =>
-                                changeRequestKind(
-                                    event.target.value as RequestKind,
-                                )
-                            }
-                            className={fieldClassName}
-                        >
-                            {(
-                                Object.keys(requestTypeLabels) as RequestKind[]
-                            ).map((kind) => (
-                                <option
-                                    key={kind}
-                                    value={kind}
-                                    disabled={
-                                        editingId !== null &&
-                                        kind === 'monthly_exclusion'
-                                    }
-                                >
-                                    {requestTypeLabels[kind]}
-                                </option>
-                            ))}
-                        </select>
-                    </label>
-
-                    <label className="block xl:col-span-2">
-                        <span className="text-sm font-medium text-slate-800">
-                            Note
-                        </span>
-                        <input
-                            value={form.data.note}
-                            onChange={(event) =>
-                                form.setData('note', event.target.value)
-                            }
-                            className={fieldClassName}
-                            placeholder="Optional"
-                            maxLength={2000}
-                        />
-                        {form.errors.note && (
-                            <p className="mt-1 text-xs text-red-600">
-                                {form.errors.note}
-                            </p>
+                        {requestKind !== 'monthly_exclusion' && (
+                            <>
+                                <label className="block">
+                                    <span className="text-sm font-medium text-slate-800">
+                                        Date
+                                    </span>
+                                    <input
+                                        type="date"
+                                        value={form.data.request_date}
+                                        onChange={(event) => {
+                                            form.setData(
+                                                'request_date',
+                                                event.target.value,
+                                            );
+                                            form.setData('shift_type_id', '');
+                                        }}
+                                        className={fieldClassName}
+                                        required
+                                    />
+                                    {form.errors.request_date && (
+                                        <p className="mt-1 text-xs text-red-600">
+                                            {form.errors.request_date}
+                                        </p>
+                                    )}
+                                </label>
+                                <label className="block">
+                                    <span className="text-sm font-medium text-slate-800">
+                                        Shift
+                                    </span>
+                                    <select
+                                        value={form.data.shift_type_id}
+                                        onChange={(event) =>
+                                            form.setData(
+                                                'shift_type_id',
+                                                event.target.value
+                                                    ? Number(event.target.value)
+                                                    : '',
+                                            )
+                                        }
+                                        className={fieldClassName}
+                                        required={
+                                            requestKind === 'preferred_work'
+                                        }
+                                    >
+                                        <option value="">
+                                            {requestKind === 'off_request'
+                                                ? 'Full Day'
+                                                : 'Select shift'}
+                                        </option>
+                                        {validShiftTypes.map((shiftType) => (
+                                            <option
+                                                key={shiftType.id}
+                                                value={shiftType.id}
+                                            >
+                                                {getShiftLabel(shiftType)}
+                                            </option>
+                                        ))}
+                                    </select>
+                                    {form.errors.shift_type_id && (
+                                        <p className="mt-1 text-xs text-red-600">
+                                            {form.errors.shift_type_id}
+                                        </p>
+                                    )}
+                                </label>
+                            </>
                         )}
-                    </label>
 
-                    <div className="flex items-end gap-2 sm:col-span-2 xl:col-span-6">
-                        <button
-                            type="submit"
-                            disabled={form.processing || exclusionProcessing}
-                            className="min-h-11 rounded-lg bg-teal-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-teal-800 disabled:opacity-60"
-                        >
-                            {editingId !== null
-                                ? 'Save changes'
-                                : 'Add Request'}
-                        </button>
-                        {editingId !== null && (
-                            <button
-                                type="button"
-                                onClick={resetForm}
-                                className="min-h-11 rounded-lg border border-slate-300 px-4 py-2.5 text-sm font-semibold text-slate-800"
+                        <label className="block">
+                            <span className="text-sm font-medium text-slate-800">
+                                Request Type
+                            </span>
+                            <select
+                                value={requestKind}
+                                onChange={(event) =>
+                                    changeRequestKind(
+                                        event.target.value as RequestKind,
+                                    )
+                                }
+                                className={fieldClassName}
                             >
-                                Cancel
+                                {(
+                                    Object.keys(
+                                        requestTypeLabels,
+                                    ) as RequestKind[]
+                                ).map((kind) => (
+                                    <option
+                                        key={kind}
+                                        value={kind}
+                                        disabled={
+                                            editingId !== null &&
+                                            kind === 'monthly_exclusion'
+                                        }
+                                    >
+                                        {requestTypeLabels[kind]}
+                                    </option>
+                                ))}
+                            </select>
+                        </label>
+
+                        <label className="block xl:col-span-2">
+                            <span className="text-sm font-medium text-slate-800">
+                                Note
+                            </span>
+                            <input
+                                value={form.data.note}
+                                onChange={(event) =>
+                                    form.setData('note', event.target.value)
+                                }
+                                className={fieldClassName}
+                                placeholder="Optional"
+                                maxLength={2000}
+                            />
+                            {form.errors.note && (
+                                <p className="mt-1 text-xs text-red-600">
+                                    {form.errors.note}
+                                </p>
+                            )}
+                        </label>
+
+                        <div className="flex items-end gap-2 sm:col-span-2 xl:col-span-6">
+                            <button
+                                type="submit"
+                                disabled={
+                                    form.processing || exclusionProcessing
+                                }
+                                className="min-h-11 rounded-lg bg-teal-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-teal-800 disabled:opacity-60"
+                            >
+                                {editingId !== null
+                                    ? 'Save changes'
+                                    : 'Add Request'}
                             </button>
-                        )}
-                    </div>
-                </form>
+                            {editingId !== null && (
+                                <button
+                                    type="button"
+                                    onClick={resetForm}
+                                    className="min-h-11 rounded-lg border border-slate-300 px-4 py-2.5 text-sm font-semibold text-slate-800"
+                                >
+                                    Cancel
+                                </button>
+                            )}
+                        </div>
+                    </form>
+                )}
 
                 {props.warnings.length > 0 && (
                     <details className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-4">
@@ -569,26 +603,28 @@ export default function MonthlySetup(props: PageProps) {
                                     </p>
                                 )}
                             </div>
-                            <div className="flex shrink-0 gap-2">
-                                {request.kind !== 'monthly_exclusion' && (
+                            {!isFinal && (
+                                <div className="flex shrink-0 gap-2">
+                                    {request.kind !== 'monthly_exclusion' && (
+                                        <button
+                                            type="button"
+                                            onClick={() => edit(request)}
+                                            className="min-h-10 rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-800 hover:bg-slate-50"
+                                        >
+                                            Edit
+                                        </button>
+                                    )}
                                     <button
                                         type="button"
-                                        onClick={() => edit(request)}
-                                        className="min-h-10 rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-800 hover:bg-slate-50"
+                                        onClick={() => remove(request)}
+                                        className="min-h-10 rounded-lg border border-red-200 px-4 py-2 text-sm font-medium text-red-700 hover:bg-red-50"
                                     >
-                                        Edit
+                                        {request.kind === 'monthly_exclusion'
+                                            ? 'Remove'
+                                            : 'Delete'}
                                     </button>
-                                )}
-                                <button
-                                    type="button"
-                                    onClick={() => remove(request)}
-                                    className="min-h-10 rounded-lg border border-red-200 px-4 py-2 text-sm font-medium text-red-700 hover:bg-red-50"
-                                >
-                                    {request.kind === 'monthly_exclusion'
-                                        ? 'Remove'
-                                        : 'Delete'}
-                                </button>
-                            </div>
+                                </div>
+                            )}
                         </article>
                     ))}
                 </div>

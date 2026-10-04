@@ -13,10 +13,13 @@ use App\Models\ShiftType;
 use App\Models\User;
 use App\Services\DoctorAssignmentEligibilityService;
 use App\Services\RequestIntervalService;
+use App\Services\RosterAssignmentRecoveryService;
+use App\Services\RosterDraftValidationService;
 use App\Services\RosterStructureService;
 use Carbon\CarbonImmutable;
 use Database\Seeders\DoctorsSeeder;
 use Database\Seeders\ShiftTypesSeeder;
+use Illuminate\Support\Facades\DB;
 use Inertia\Testing\AssertableInertia as Assert;
 
 function assignmentRoster(): array
@@ -39,6 +42,27 @@ function generateUrl(): string
 {
     return route('rosters.generate', ['year' => 2026, 'month' => 10]);
 }
+
+it('keeps missing Main errors and Optional warnings before generation while exposing an empty draft', function () {
+    [$admin, $roster] = assignmentRoster();
+    $issues = app(RosterDraftValidationService::class)->validate($roster);
+
+    expect(collect($issues)->where('severity', 'Error')->isNotEmpty())
+        ->toBeTrue()
+        ->and(collect($issues)->contains(fn (array $issue): bool => $issue['code'] === 'unfilled_main_slot' && $issue['severity'] === 'Error'))->toBeTrue()
+        ->and(collect($issues)->contains(fn (array $issue): bool => $issue['code'] === 'unfilled_optional_slot' && $issue['severity'] === 'Warning'))->toBeTrue();
+
+    $this->actingAs($admin)->get(route('rosters.show', ['year' => 2026, 'month' => 10]))
+        ->assertInertia(fn (Assert $page) => $page->component('roster')
+            ->where('has_generated', false)
+            ->where('has_assignments', false)
+            ->where('summary.filled_main', 0)
+            ->where('summary.filled_optional', 0)
+            ->where('summary.main_positions', fn (int $count): bool => $count > 0)
+            ->where('summary.optional_positions', fn (int $count): bool => $count > 0)
+            ->where('summary.missing_main', fn (int $count): bool => $count > 0)
+            ->where('conflicts.0.code', 'unfilled_main_slot'));
+});
 
 it('requires authentication and an existing Draft roster', function () {
     $this->post(generateUrl())->assertRedirect(route('login'));
@@ -84,6 +108,67 @@ it('generates valid Main and Optional assignments and preserves them on repeat',
     $ids = $assignments->modelKeys();
     $this->post(generateUrl())->assertRedirect();
     expect(RosterAssignment::query()->orderBy('id')->pluck('id')->all())->toBe($ids);
+});
+
+it('fills every required position in a feasible 14-doctor month', function () {
+    [$admin, $roster] = assignmentRoster();
+    $recovery = app(RosterAssignmentRecoveryService::class);
+    app()->instance(RosterAssignmentRecoveryService::class, $recovery);
+    $queries = 0;
+    DB::listen(function () use (&$queries): void {
+        $queries++;
+    });
+
+    $started = microtime(true);
+    $this->actingAs($admin)->post(generateUrl())->assertRedirect();
+    $elapsed = microtime(true) - $started;
+    if (getenv('ROSTER_BENCHMARK')) {
+        $diagnostics = $recovery->diagnostics();
+        fwrite(STDERR, 'ROSTER_BENCHMARK '.json_encode(['seconds' => $elapsed, 'queries' => $queries, 'totals' => $diagnostics['totals'], 'max_vacancy_states' => max(array_column($diagnostics['vacancies'], 'states')), 'unfilled' => count($recovery->unfilledDiagnostics())]).PHP_EOL);
+    }
+
+    $shifts = $roster->shifts()->with('shiftType')->get();
+    $requiredMain = $shifts->sum(fn (RosterShift $shift): int => $shift->shiftType->main_count);
+    $requiredOptional = $shifts->sum(fn (RosterShift $shift): int => $shift->shiftType->optional_count);
+    expect(RosterAssignment::query()->where('role', RosterAssignmentRole::Main)->count())->toBe($requiredMain);
+    expect(RosterAssignment::query()->where('role', RosterAssignmentRole::Optional)->count())->toBe($requiredOptional);
+    expect(collect(app(RosterDraftValidationService::class)->validate($roster))->where('severity', 'Error')->count())->toBe(0);
+});
+
+it('keeps the feasible month complete across randomized regeneration', function () {
+    [$admin, $roster] = assignmentRoster();
+    $recovery = app(RosterAssignmentRecoveryService::class);
+    app()->instance(RosterAssignmentRecoveryService::class, $recovery);
+    $timings = [];
+    $maximumStates = 0;
+    $maximumDepth = 0;
+    $totalStates = 0;
+    $limitHits = 0;
+    $unresolved = 0;
+    $shifts = $roster->shifts()->with('shiftType')->get();
+    $requiredMain = $shifts->sum(fn (RosterShift $shift): int => $shift->shiftType->main_count);
+    $requiredOptional = $shifts->sum(fn (RosterShift $shift): int => $shift->shiftType->optional_count);
+    $this->actingAs($admin);
+
+    for ($run = 0; $run < 20; $run++) {
+        $route = $run === 0 ? 'rosters.generate' : 'rosters.regenerate';
+        $started = microtime(true);
+        $this->post(route($route, ['year' => 2026, 'month' => 10]))->assertRedirect();
+        $timings[] = microtime(true) - $started;
+        $diagnostics = $recovery->diagnostics();
+        $maximumStates = max($maximumStates, ...array_column($diagnostics['vacancies'], 'states'));
+        $maximumDepth = max($maximumDepth, $diagnostics['totals']['max_depth']);
+        $totalStates += $diagnostics['totals']['states'];
+        $limitHits += $diagnostics['totals']['explored_state_limit'] + $diagnostics['totals']['chain_depth_limit'];
+        $unresolved += count($recovery->unfilledDiagnostics());
+
+        expect(RosterAssignment::query()->where('role', RosterAssignmentRole::Main)->count())->toBe($requiredMain, "Run $run has missing Main positions.");
+        expect(RosterAssignment::query()->where('role', RosterAssignmentRole::Optional)->count())->toBe($requiredOptional, "Run $run has missing Optional positions.");
+        expect(collect(app(RosterDraftValidationService::class)->validate($roster))->where('severity', 'Error')->count())->toBe(0, "Run $run has hard validation Errors.");
+    }
+    if (getenv('ROSTER_BENCHMARK')) {
+        fwrite(STDERR, 'ROSTER_20_RUN '.json_encode(['fastest' => min($timings), 'slowest' => max($timings), 'average' => array_sum($timings) / count($timings), 'max_vacancy_states' => $maximumStates, 'max_depth' => $maximumDepth, 'total_states' => $totalStates, 'limit_hits' => $limitHits, 'unresolved' => $unresolved]).PHP_EOL);
+    }
 });
 
 it('excludes inactive and monthly excluded doctors while retaining other month eligibility', function () {
@@ -205,7 +290,7 @@ it('honors stored previous-month night history during generation', function () {
     $this->assertDatabaseCount('doctor_monthly_workloads', Doctor::query()->count());
 });
 
-it('persists partial assignments and displays missing slots as errors', function () {
+it('persists partial assignments and distinguishes missing Main and Optional slots', function () {
     [$admin] = assignmentRoster();
     Doctor::query()->where('id', '!=', Doctor::query()->min('id'))->update(['is_active' => false]);
     $this->actingAs($admin)->post(generateUrl())->assertRedirect();
@@ -217,7 +302,9 @@ it('persists partial assignments and displays missing slots as errors', function
             ->where('status', 'draft')
             ->where('summary.missing_main', fn (int $count): bool => $count > 0)
             ->where('summary.missing_optional', fn (int $count): bool => $count > 0)
-            ->where('days.0.shifts.0.main.1.error', true));
+            ->where('conflicts.0.code', 'unfilled_main_slot')
+            ->where('days.0.shifts.0.main.1.severity', 'Error')
+            ->where('days.0.shifts.0.optional.0.severity', 'Warning'));
 });
 
 it('returns assigned names and short codes in both role groups', function () {

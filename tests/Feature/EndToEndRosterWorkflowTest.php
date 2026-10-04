@@ -18,6 +18,8 @@ use App\Services\RosterStructureService;
 use Carbon\CarbonImmutable;
 use Database\Seeders\DoctorsSeeder;
 use Database\Seeders\ShiftTypesSeeder;
+use Illuminate\Support\Collection;
+use Inertia\Testing\AssertableInertia as Assert;
 
 function workflowUrl(string $name, int $year, int $month, array $extra = []): string
 {
@@ -95,6 +97,10 @@ it('connects setup, generation, editing, finalization, actual work, documents, a
 
     $issues = app(RosterDraftValidationService::class)->validate($october->fresh());
     expect(collect($issues)->where('severity', 'Error')->isEmpty())->toBeTrue();
+    $this->get(route('rosters.show', ['year' => 2026, 'month' => 10]))
+        ->assertInertia(fn (Assert $page) => $page->component('roster')
+            ->where('has_generated', true)
+            ->where('conflicts', fn (Collection $items): bool => $items->where('severity', 'Error')->isEmpty()));
     $planned = RosterAssignment::query()->whereHas('rosterShift', fn ($query) => $query->where('roster_id', $october->id))
         ->orderBy('id')->pluck('doctor_id', 'id')->all();
     $finalize = $this->postJson(workflowUrl('rosters.finalize', 2026, 10))->assertOk();

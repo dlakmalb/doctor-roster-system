@@ -17,6 +17,7 @@ use App\Http\Controllers\RosterManualEditController;
 use App\Http\Controllers\RosterPdfController;
 use App\Http\Controllers\RosterPrintController;
 use App\Http\Controllers\RosterReopenController;
+use App\Http\Middleware\EnsureMonthlySetupEditable;
 use App\Http\Middleware\EnsureMonthlySetupPlanningPeriod;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Support\Facades\Route;
@@ -65,10 +66,10 @@ Route::middleware('auth')->group(function (): void {
         ->middleware(EnsureMonthlySetupPlanningPeriod::class)
         ->group(function (): void {
             Route::get('/', MonthlySetupController::class)->name('monthly-setup.show');
-            Route::post('/requests', [DoctorRequestController::class, 'store'])->name('doctor-requests.store');
-            Route::put('/requests/{doctorRequest}', [DoctorRequestController::class, 'update'])->name('doctor-requests.update');
-            Route::delete('/requests/{doctorRequest}', [DoctorRequestController::class, 'destroy'])->name('doctor-requests.destroy');
-            Route::post('/exclusions', [DoctorMonthlyExclusionController::class, 'store'])->name('monthly-exclusions.store');
-            Route::delete('/exclusions/{doctorMonthlyExclusion}', [DoctorMonthlyExclusionController::class, 'destroy'])->name('monthly-exclusions.destroy');
+            Route::post('/requests', [DoctorRequestController::class, 'store'])->middleware(EnsureMonthlySetupEditable::class)->name('doctor-requests.store');
+            Route::put('/requests/{doctorRequest}', [DoctorRequestController::class, 'update'])->middleware(EnsureMonthlySetupEditable::class)->name('doctor-requests.update');
+            Route::delete('/requests/{doctorRequest}', [DoctorRequestController::class, 'destroy'])->middleware(EnsureMonthlySetupEditable::class)->name('doctor-requests.destroy');
+            Route::post('/exclusions', [DoctorMonthlyExclusionController::class, 'store'])->middleware(EnsureMonthlySetupEditable::class)->name('monthly-exclusions.store');
+            Route::delete('/exclusions/{doctorMonthlyExclusion}', [DoctorMonthlyExclusionController::class, 'destroy'])->middleware(EnsureMonthlySetupEditable::class)->name('monthly-exclusions.destroy');
         });
 });

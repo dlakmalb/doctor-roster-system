@@ -14,6 +14,8 @@ use App\Services\RosterDraftValidationService;
 use App\Services\RosterStructureService;
 use Database\Seeders\DoctorsSeeder;
 use Database\Seeders\ShiftTypesSeeder;
+use Illuminate\Support\Collection;
+use Inertia\Testing\AssertableInertia;
 
 function editingFixture(): array
 {
@@ -88,6 +90,45 @@ it('assigns and replaces both roles, autosaves metadata, and undoes the most rec
     $this->postJson(editingUrl('undo'))->assertOk();
     expect(RosterAssignment::query()->where('roster_shift_id', $shift->id)->where('role', 'main')->where('slot_number', 1)->value('doctor_id'))->toBe($doctors[0]->id);
     $this->postJson(editingUrl('undo'))->assertUnprocessable();
+});
+
+it('keeps a manual assignment in the pre-generation presentation', function () {
+    [$admin, , $shift, , $doctors] = editingFixture();
+    $this->actingAs($admin)->postJson(editingUrl('edit'), [
+        'operation' => 'replace',
+        ...editPayload($shift, 'main', 1),
+        'doctor_id' => $doctors[0]->id,
+        'confirm_soft_override' => true,
+    ])->assertOk();
+
+    $this->get(route('rosters.show', ['year' => 2026, 'month' => 10]))
+        ->assertInertia(fn (AssertableInertia $page) => $page->component('roster')
+            ->where('has_generated', false)
+            ->where('has_assignments', true)
+            ->where('summary.filled_main', 1)
+            ->where('summary.filled_optional', 0)
+            ->where('conflicts.0.code', 'unfilled_main_slot'));
+});
+
+it('preserves genuine hard errors alongside pre-generation unfilled-slot errors', function () {
+    [$admin, , $shift, , $doctors] = editingFixture();
+    DoctorRequest::create([
+        'doctor_id' => $doctors[0]->id,
+        'request_type' => DoctorRequestType::DayOff,
+        'request_date' => $shift->shift_date,
+        'shift_type_id' => $shift->shift_type_id,
+    ]);
+    RosterAssignment::create([
+        'roster_shift_id' => $shift->id,
+        'doctor_id' => $doctors[0]->id,
+        'role' => RosterAssignmentRole::Main,
+        'slot_number' => 1,
+    ]);
+    $this->actingAs($admin)->get(route('rosters.show', ['year' => 2026, 'month' => 10]))
+        ->assertInertia(fn (AssertableInertia $page) => $page->component('roster')
+            ->where('has_generated', false)
+            ->where('conflicts', fn (Collection $items): bool => $items->contains(fn (array $item): bool => $item['code'] === 'hard_conflict')
+                && $items->contains(fn (array $item): bool => $item['code'] === 'unfilled_optional_slot')));
 });
 
 it('moves and swaps opposite roles without duplicate doctors, then undoes', function () {

@@ -22,7 +22,7 @@ type Slot = {
     assignment_id: number | null;
     doctor_id: number | null;
     doctor: { name: string; short_code: string } | null;
-    error: boolean;
+    severity: 'Error' | 'Warning' | null;
 };
 
 type Shift = {
@@ -62,6 +62,7 @@ type RosterProps = {
     can_undo: boolean;
     conflicts: {
         severity: 'Error' | 'Warning';
+        code: string;
         message: string;
         target: string;
     }[];
@@ -166,10 +167,18 @@ export default function Roster({
         string,
         string | number | boolean | null
     > | null>(null);
-    const errorCount = conflicts.filter(
+    const preGenerationDraft = status === 'draft' && !has_generated;
+    const visibleConflicts = preGenerationDraft
+        ? conflicts.filter(
+              (item) =>
+                  item.code !== 'unfilled_main_slot' &&
+                  item.code !== 'unfilled_optional_slot',
+          )
+        : conflicts;
+    const errorCount = visibleConflicts.filter(
         (item) => item.severity === 'Error',
     ).length;
-    const warningCount = conflicts.length - errorCount;
+    const warningCount = visibleConflicts.length - errorCount;
 
     function selected(
         shift: Shift,
@@ -276,10 +285,12 @@ export default function Roster({
                 setFinalizationWarnings([]);
                 setWarningSignature(null);
                 setMessage(
-                    `This roster cannot be finalized because it has ${result.errors.length} validation error(s). Review Live validation. ${result.errors
-                        .slice(0, 3)
-                        .map((error) => error.message)
-                        .join(' ')}`,
+                    preGenerationDraft
+                        ? 'This roster cannot be finalized because required assignments are still unfilled.'
+                        : `This roster cannot be finalized because it has ${result.errors.length} validation error(s). Review Live validation. ${result.errors
+                              .slice(0, 3)
+                              .map((error) => error.message)
+                              .join(' ')}`,
                 );
             } else {
                 setFinalizationWarnings(result.warnings);
@@ -320,6 +331,28 @@ export default function Roster({
             `${summary.filled_optional} / ${summary.optional_positions} filled`,
         ],
     ];
+    const validationItems = (
+        <ul className="mt-3 max-h-72 space-y-2 overflow-y-auto text-sm">
+            {visibleConflicts.map((item, index) => (
+                <li key={`${item.target}-${index}`}>
+                    <button
+                        type="button"
+                        onClick={() =>
+                            document
+                                .getElementById(item.target)
+                                ?.scrollIntoView({
+                                    behavior: 'smooth',
+                                    block: 'center',
+                                })
+                        }
+                        className="text-left underline underline-offset-2"
+                    >
+                        <strong>{item.severity}</strong> - {item.message}
+                    </button>
+                </li>
+            ))}
+        </ul>
+    );
 
     return (
         <AppLayout title={`${month.label} Roster`}>
@@ -529,56 +562,74 @@ export default function Roster({
                 </div>
             )}
 
-            {
-                <section
-                    id="conflicts"
-                    className="mb-6 rounded-xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5"
-                >
-                    <h2 className="font-semibold">Live validation</h2>
-                    <p className="mt-1 text-sm">
-                        Errors: {errorCount} · Warnings: {warningCount}
-                    </p>
-                    {conflicts.length === 0 ? (
-                        <p className="mt-2 text-sm text-teal-800">
-                            No roster conflicts detected.
+            <section
+                id="conflicts"
+                className="mb-6 rounded-xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5"
+            >
+                {preGenerationDraft ? (
+                    <>
+                        <h2 className="font-semibold">
+                            Roster not generated yet
+                        </h2>
+                        <p className="mt-1 text-sm text-slate-600">
+                            The monthly shift structure is ready. Generate
+                            assignments to fill the roster&apos;s Main and
+                            Optional positions.
                         </p>
-                    ) : (
-                        <ul className="mt-3 max-h-72 space-y-2 overflow-y-auto text-sm">
-                            {conflicts.map((item, index) => (
-                                <li key={`${item.target}-${index}`}>
-                                    <button
-                                        type="button"
-                                        onClick={() =>
-                                            document
-                                                .getElementById(item.target)
-                                                ?.scrollIntoView({
-                                                    behavior: 'smooth',
-                                                    block: 'center',
-                                                })
-                                        }
-                                        className="text-left underline underline-offset-2"
-                                    >
-                                        <strong>{item.severity}</strong> -{' '}
-                                        {item.message}
-                                    </button>
-                                </li>
-                            ))}
-                        </ul>
-                    )}
-                </section>
-            }
-
-            {has_generated &&
-                (summary.missing_main > 0 || summary.missing_optional > 0) && (
-                    <div
-                        role="alert"
-                        className="mb-6 rounded-lg border border-red-200 bg-red-50 p-4 text-sm font-semibold text-red-800"
-                    >
-                        Error: {summary.missing_main} Main and{' '}
-                        {summary.missing_optional} Optional required positions
-                        remain unfilled.
-                    </div>
+                        <p className="mt-1 text-sm text-slate-600">
+                            {summary.missing_main + summary.missing_optional}{' '}
+                            positions remaining.
+                        </p>
+                        {visibleConflicts.length > 0 && (
+                            <>
+                                <p className="mt-3 text-sm">
+                                    Errors: {errorCount} · Warnings:{' '}
+                                    {warningCount}
+                                </p>
+                                {validationItems}
+                            </>
+                        )}
+                    </>
+                ) : (
+                    <>
+                        <h2 className="font-semibold">Live validation</h2>
+                        <p className="mt-1 text-sm">
+                            Errors: {errorCount} · Warnings: {warningCount}
+                        </p>
+                        {visibleConflicts.length === 0 ? (
+                            <p className="mt-2 text-sm text-teal-800">
+                                No roster conflicts detected.
+                            </p>
+                        ) : (
+                            validationItems
+                        )}
+                    </>
                 )}
+            </section>
+
+            {has_generated && summary.missing_main > 0 && (
+                <div
+                    role="alert"
+                    className="mb-3 rounded-lg border border-red-200 bg-red-50 p-4 text-sm font-semibold text-red-800"
+                >
+                    Error: {summary.missing_main} Main required{' '}
+                    {summary.missing_main === 1 ? 'position' : 'positions'}{' '}
+                    remain unfilled. All Main positions must be filled before
+                    Finalization.
+                </div>
+            )}
+            {has_generated && summary.missing_optional > 0 && (
+                <div
+                    role="alert"
+                    className="mb-6 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm font-semibold text-amber-800"
+                >
+                    Warning: {summary.missing_optional} Optional{' '}
+                    {summary.missing_optional === 1 ? 'position' : 'positions'}{' '}
+                    {status === 'final'
+                        ? `${summary.missing_optional === 1 ? 'was' : 'were'} left unfilled when this roster was finalized.`
+                        : `${summary.missing_optional === 1 ? 'remains' : 'remain'} unfilled. You may still Finalize after reviewing the warnings.`}
+                </div>
+            )}
 
             <div className="grid gap-4 sm:grid-cols-3">
                 {summaryItems.map(([label, value]) => (
@@ -618,7 +669,7 @@ export default function Roster({
                                                 `${shift.end_date_label} `}
                                             {shift.end_time}
                                         </p>
-                                        {conflicts
+                                        {visibleConflicts
                                             .filter(
                                                 (item) =>
                                                     item.target ===
@@ -650,9 +701,13 @@ export default function Roster({
                                                                     }
                                                                     id={`slot-${shift.id}-${role}-${slot.slot_number}`}
                                                                     className={
-                                                                        slot.error
-                                                                            ? 'scroll-mt-6 rounded-lg border border-red-200 bg-red-50 p-2 font-semibold text-red-700'
-                                                                            : 'scroll-mt-6 rounded-lg border border-slate-100 p-2 text-slate-700'
+                                                                        preGenerationDraft ||
+                                                                        !slot.severity
+                                                                            ? 'scroll-mt-6 rounded-lg border border-slate-100 p-2 text-slate-700'
+                                                                            : slot.severity ===
+                                                                                'Error'
+                                                                              ? 'scroll-mt-6 rounded-lg border border-red-200 bg-red-50 p-2 font-semibold text-red-700'
+                                                                              : 'scroll-mt-6 rounded-lg border border-amber-200 bg-amber-50 p-2 font-semibold text-amber-800'
                                                                     }
                                                                 >
                                                                     <span className="font-medium capitalize">
@@ -665,10 +720,11 @@ export default function Roster({
                                                                     </span>
                                                                     {slot.doctor
                                                                         ? `${slot.doctor.short_code} - ${slot.doctor.name}`
-                                                                        : slot.error
-                                                                          ? 'Unfilled - Error'
+                                                                        : slot.severity &&
+                                                                            !preGenerationDraft
+                                                                          ? `Unfilled - ${slot.severity}`
                                                                           : 'Unfilled'}
-                                                                    {conflicts
+                                                                    {visibleConflicts
                                                                         .filter(
                                                                             (
                                                                                 item,
