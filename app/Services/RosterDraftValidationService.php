@@ -69,7 +69,12 @@ class RosterDraftValidationService
             foreach ($periods as $weekend => $shifts) {
                 if (count($shifts) > 1) {
                     $doctor = $this->context->doctors->get((int) $doctorId);
-                    $items[] = $this->item('Warning', 'multiple_weekend_main', "$doctor->name has multiple Main duties in the weekend of $weekend.", 'shift-'.$shifts[0]->id);
+                    $weekendStart = CarbonImmutable::parse($weekend);
+                    $weekendEnd = $weekendStart->addDay();
+                    $weekendRange = $weekendStart->format('M j')."\u{2013}".$weekendEnd->format(
+                        $weekendStart->month === $weekendEnd->month ? 'j' : 'M j',
+                    );
+                    $items[] = $this->item('Warning', 'multiple_weekend_main', "$doctor->name has multiple Main duties during the weekend of $weekendRange.", 'shift-'.$shifts[0]->id);
                 }
             }
         }

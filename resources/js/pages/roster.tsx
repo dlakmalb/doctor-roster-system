@@ -1,5 +1,4 @@
 import AppLayout from '@/components/app-layout';
-import { dashboard } from '@/routes';
 import { show as monthlySetup } from '@/routes/monthly-setup';
 import {
     assignmentOptions,
@@ -500,12 +499,6 @@ export default function Roster({
                             Actual Work Review
                         </Link>
                     )}
-                    <Link
-                        href={dashboard.url()}
-                        className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold hover:bg-slate-50"
-                    >
-                        Dashboard
-                    </Link>
                 </div>
             </div>
 

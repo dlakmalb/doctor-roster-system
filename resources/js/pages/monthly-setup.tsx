@@ -8,7 +8,8 @@ import {
     update as updateRequest,
 } from '@/actions/App/Http/Controllers/DoctorRequestController';
 import AppLayout from '@/components/app-layout';
-import { show as showRoster, store as storeRoster } from '@/routes/rosters';
+import { show as showRoster } from '@/routes/rosters';
+import { generateRoster as generateRosterFromSetup } from '@/routes/monthly-setup';
 import { Head, Link, router, useForm } from '@inertiajs/react';
 import type { FormEvent } from 'react';
 import { useMemo, useState } from 'react';
@@ -59,6 +60,7 @@ type Warning = {
 type PageProps = {
     month: Month;
     rosterStatus: 'not_started' | 'draft' | 'final';
+    rosterAction: 'generate' | 'view_draft' | 'view_final';
     doctors: Doctor[];
     shiftTypes: ShiftType[];
     requests: MonthlyRequest[];
@@ -264,27 +266,36 @@ export default function MonthlySetup(props: PageProps) {
                         </span>
                     </p>
                 </div>
-                {props.rosterStatus === 'not_started' ? (
+                {props.rosterAction === 'generate' ? (
                     <button
                         type="button"
                         disabled={rosterForm.processing}
                         onClick={() =>
-                            rosterForm.post(storeRoster.url(props.month))
+                            rosterForm.post(
+                                generateRosterFromSetup.url(props.month),
+                            )
                         }
                         className="inline-flex min-h-11 items-center justify-center rounded-lg bg-teal-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-teal-800 disabled:opacity-60"
                     >
                         {rosterForm.processing
-                            ? 'Creating...'
-                            : 'Create Draft Roster'}
+                            ? 'Generating…'
+                            : 'Generate Roster'}
                     </button>
-                ) : props.rosterStatus === 'draft' ? (
+                ) : props.rosterAction === 'view_draft' ? (
                     <Link
                         href={showRoster.url(props.month)}
                         className="inline-flex min-h-11 items-center justify-center rounded-lg bg-teal-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-teal-800"
                     >
                         View Draft Roster
                     </Link>
-                ) : null}
+                ) : (
+                    <Link
+                        href={showRoster.url(props.month)}
+                        className="inline-flex min-h-11 items-center justify-center rounded-lg bg-teal-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-teal-800"
+                    >
+                        View Final Roster
+                    </Link>
+                )}
             </div>
 
             {isFinal && (
@@ -298,12 +309,6 @@ export default function MonthlySetup(props: PageProps) {
                             changing requests or exclusions.
                         </p>
                     </div>
-                    <Link
-                        href={showRoster.url(props.month)}
-                        className="inline-flex min-h-11 shrink-0 items-center justify-center rounded-lg border border-amber-700 px-4 py-2.5 text-sm font-semibold text-amber-950 hover:bg-amber-100"
-                    >
-                        View Final Roster
-                    </Link>
                 </div>
             )}
 

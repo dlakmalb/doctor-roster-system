@@ -37,6 +37,26 @@ function lifecycleUrl(string $action): string
     return route("rosters.$action", ['year' => 2026, 'month' => 10]);
 }
 
+it('reports multiple Main duties with the dates of the weekend period', function () {
+    $admin = User::factory()->create();
+    $doctor = Doctor::create(['name' => 'Dr Ganga', 'short_code' => 'G', 'is_active' => true]);
+    $roster = Roster::create(['year' => 2026, 'month' => 11, 'status' => RosterStatus::Draft, 'created_by' => $admin->id]);
+    $nightType = ShiftType::create(['code' => 'weekday_night', 'name' => 'Weekday Night', 'start_time' => '20:00:00', 'end_time' => '08:00:00', 'duration_minutes' => 720, 'main_count' => 1, 'optional_count' => 0, 'is_overnight' => true, 'is_active' => true]);
+    $weekendType = ShiftType::create(['code' => 'weekend_day', 'name' => 'Weekend Day', 'start_time' => '08:00:00', 'end_time' => '16:00:00', 'duration_minutes' => 480, 'main_count' => 1, 'optional_count' => 0, 'is_overnight' => false, 'is_active' => true]);
+
+    foreach ([['2026-11-27', $nightType], ['2026-11-29', $weekendType]] as [$date, $shiftType]) {
+        $shift = RosterShift::create(['roster_id' => $roster->id, 'shift_date' => $date, 'shift_type_id' => $shiftType->id]);
+        RosterAssignment::create(['roster_shift_id' => $shift->id, 'doctor_id' => $doctor->id, 'role' => RosterAssignmentRole::Main, 'slot_number' => 1]);
+    }
+
+    $warning = collect(app(RosterDraftValidationService::class)->validate($roster))
+        ->firstWhere('code', 'multiple_weekend_main');
+
+    expect($warning)->not->toBeNull()
+        ->and($warning['severity'])->toBe('Warning')
+        ->and($warning['message'])->toBe("Dr Ganga has multiple Main duties during the weekend of Nov 28\u{2013}29.");
+});
+
 it('validates missing Main and Optional slots by role and clears each warning when filled', function () {
     [, $doctors, , $roster, $shift] = lifecycleFixture(false);
     $validation = app(RosterDraftValidationService::class);

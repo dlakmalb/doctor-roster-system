@@ -43,7 +43,7 @@ class RosterDocumentService
     {
         $type = $shift->shiftType;
 
-        return CarbonImmutable::parse($type->start_time)->format('g:i A').' – '.CarbonImmutable::parse($type->end_time)->format('g:i A')
+        return CarbonImmutable::parse($type->start_time)->format('g:i A').' - '.CarbonImmutable::parse($type->end_time)->format('g:i A')
             .($type->is_overnight ? ' (+1 day)' : '');
     }
 

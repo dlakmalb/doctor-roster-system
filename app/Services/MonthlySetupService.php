@@ -93,13 +93,21 @@ class MonthlySetupService
             ->sortBy(fn (array $request): string => ($request['request_date'] ?? $month->toDateString()).'-'.$request['doctor']['name'])
             ->values();
 
+        $roster = Roster::query()->where('year', $year)->where('month', $monthNumber)->first();
+
         return [
             'month' => [
                 'year' => $year,
                 'month' => $monthNumber,
                 'label' => $month->format('F Y'),
             ],
-            'rosterStatus' => Roster::where('year', $year)->where('month', $monthNumber)->value('status') ?? 'not_started',
+            'rosterStatus' => $roster?->status->value ?? 'not_started',
+            'rosterAction' => match (true) {
+                $roster === null => 'generate',
+                $roster->status->value === 'final' => 'view_final',
+                $roster->last_generated_at !== null => 'view_draft',
+                default => 'generate',
+            },
             'doctors' => $activeDoctors->map(fn (Doctor $doctor): array => [
                 'id' => $doctor->id,
                 'name' => $doctor->name,
