@@ -31,7 +31,9 @@ class RosterAssignmentOptionsController extends Controller
         $role = RosterAssignmentRole::from($input['role']);
         $shift = $context->shift($input['shift_id'], $role, $input['slot_number']);
         $current = $context->assignment($shift->id, $role, $input['slot_number']);
-        if ($current?->id !== $input['expected_assignment_id'] || $current?->doctor_id !== $input['expected_doctor_id']) {
+        $expectedAssignmentId = $input['expected_assignment_id'] === null ? null : (int) $input['expected_assignment_id'];
+        $expectedDoctorId = $input['expected_doctor_id'] === null ? null : (int) $input['expected_doctor_id'];
+        if ($current?->id !== $expectedAssignmentId || $current?->doctor_id !== $expectedDoctorId) {
             throw ValidationException::withMessages(['edit' => 'This roster slot changed since the page was loaded. Refresh and try again.']);
         }
         $state = $context->state();
@@ -40,10 +42,18 @@ class RosterAssignmentOptionsController extends Controller
         foreach ($context->doctors as $doctor) {
             $source = $shift->assignments->first(fn (RosterAssignment $assignment): bool => $assignment->doctor_id === $doctor->id && ($assignment->role !== $role || $assignment->slot_number !== $input['slot_number']));
             $testing = $state;
-            if ($source?->role !== null && $source->role !== $role) {
+            $sameShiftEmptyTarget = $current === null && $source !== null;
+            $isOptionalPromotion = $sameShiftEmptyTarget
+                && $role === RosterAssignmentRole::Main
+                && $source->role === RosterAssignmentRole::Optional;
+            if ($sameShiftEmptyTarget) {
+                unset($testing[$context->key($shift->id, $source->role, $source->slot_number)]);
+            } elseif ($source?->role !== null && $source->role !== $role) {
                 unset($testing[$context->key($shift->id, $source->role, $source->slot_number)]);
             }
-            $reasons = $source?->role === $role ? ['Already assigned to another '.$role->value.' slot on this shift.'] : $context->hardReasons($doctor->id, $shift, $testing);
+            $reasons = $sameShiftEmptyTarget && ! $isOptionalPromotion
+                ? ['Already assigned to this shift.', ...$context->hardReasons($doctor->id, $shift, $testing)]
+                : ($source?->role === $role ? ['Already assigned to another '.$role->value.' slot on this shift.'] : $context->hardReasons($doctor->id, $shift, $testing));
             $options[] = [
                 'id' => $doctor->id,
                 'name' => $doctor->name,

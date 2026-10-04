@@ -131,7 +131,7 @@ it('preserves genuine hard errors alongside pre-generation unfilled-slot errors'
                 && $items->contains(fn (array $item): bool => $item['code'] === 'unfilled_optional_slot')));
 });
 
-it('moves and swaps opposite roles without duplicate doctors, then undoes', function () {
+it('keeps same-shift auto-swap available when replacing an occupied slot, then undoes', function () {
     [$admin, , $shift, , $doctors] = editingFixture();
     $main = RosterAssignment::create(['roster_shift_id' => $shift->id, 'doctor_id' => $doctors[0]->id, 'role' => RosterAssignmentRole::Main, 'slot_number' => 1]);
     $optional = RosterAssignment::create(['roster_shift_id' => $shift->id, 'doctor_id' => $doctors[1]->id, 'role' => RosterAssignmentRole::Optional, 'slot_number' => 1]);
@@ -145,15 +145,97 @@ it('moves and swaps opposite roles without duplicate doctors, then undoes', func
         ->and($rows->pluck('doctor_id')->unique())->toHaveCount(2);
     $this->postJson(editingUrl('undo'))->assertOk();
     expect(RosterAssignment::query()->where('roster_shift_id', $shift->id)->where('role', 'main')->value('doctor_id'))->toBe($doctors[0]->id);
+});
 
-    $main = RosterAssignment::query()->where('roster_shift_id', $shift->id)->where('role', 'main')->firstOrFail();
-    RosterAssignment::query()->where('roster_shift_id', $shift->id)->where('role', 'optional')->delete();
+it('keeps a same-shift doctor eligible when the target slot is occupied', function () {
+    [$admin, , $shift, , $doctors] = editingFixture();
+    $main = RosterAssignment::create(['roster_shift_id' => $shift->id, 'doctor_id' => $doctors[0]->id, 'role' => RosterAssignmentRole::Main, 'slot_number' => 1]);
+    $optional = RosterAssignment::create(['roster_shift_id' => $shift->id, 'doctor_id' => $doctors[1]->id, 'role' => RosterAssignmentRole::Optional, 'slot_number' => 1]);
+
+    $this->actingAs($admin)->getJson(optionsUrl($shift, 'main', 1, $main))
+        ->assertOk()->assertJsonFragment(['id' => $doctors[1]->id, 'eligible' => true, 'source_assignment_id' => $optional->id]);
+});
+
+it('promotes an Optional assignment into an empty Main slot', function () {
+    [$admin, , $shift, , $doctors] = editingFixture();
+    $optional = RosterAssignment::create(['roster_shift_id' => $shift->id, 'doctor_id' => $doctors[0]->id, 'role' => RosterAssignmentRole::Optional, 'slot_number' => 1]);
+
+    $this->actingAs($admin)->getJson(optionsUrl($shift, 'main', 1))
+        ->assertOk()->assertJsonFragment(['id' => $doctors[0]->id, 'eligible' => true, 'source_assignment_id' => $optional->id]);
+
     $this->postJson(editingUrl('edit'), [
-        'operation' => 'replace', ...editPayload($shift, 'optional', 1), 'doctor_id' => $doctors[0]->id,
-        'expected_source_assignment_id' => $main->id, 'confirm_soft_override' => true,
-    ])->assertOk();
-    expect(RosterAssignment::query()->where('roster_shift_id', $shift->id)->where('role', 'main')->exists())->toBeFalse();
-    expect(RosterAssignment::query()->where('roster_shift_id', $shift->id)->where('role', 'optional')->value('doctor_id'))->toBe($doctors[0]->id);
+        'operation' => 'replace',
+        ...editPayload($shift, 'main', 1),
+        'doctor_id' => $doctors[0]->id,
+        'expected_source_assignment_id' => $optional->id,
+        'confirm_soft_override' => true,
+    ])->assertOk()->assertJsonPath('status', 'saved');
+
+    expect(RosterAssignment::query()->where('roster_shift_id', $shift->id)->where('role', RosterAssignmentRole::Main)->where('slot_number', 1)->value('doctor_id'))->toBe($doctors[0]->id)
+        ->and(RosterAssignment::query()->where('roster_shift_id', $shift->id)->where('role', RosterAssignmentRole::Optional)->exists())->toBeFalse();
+});
+
+it('marks same-shift doctors unavailable for an empty slot and rejects a crafted assignment', function () {
+    [$admin] = editingFixture();
+    $shift = RosterShift::query()->whereDate('shift_date', '2026-10-06')
+        ->whereHas('shiftType', fn ($query) => $query->where('code', 'weekday_evening'))->firstOrFail();
+    $sameDateShift = RosterShift::query()->whereDate('shift_date', '2026-10-06')
+        ->whereHas('shiftType', fn ($query) => $query->where('code', 'weekday_day'))->firstOrFail();
+    $doctors = Doctor::query()->orderBy('id')->take(5)->get();
+    foreach ($doctors->take(3) as $index => $doctor) {
+        RosterAssignment::create([
+            'roster_shift_id' => $shift->id,
+            'doctor_id' => $doctor->id,
+            'role' => RosterAssignmentRole::Main,
+            'slot_number' => $index + 1,
+        ]);
+    }
+    RosterAssignment::create([
+        'roster_shift_id' => $sameDateShift->id,
+        'doctor_id' => $doctors[3]->id,
+        'role' => RosterAssignmentRole::Main,
+        'slot_number' => 1,
+    ]);
+
+    $this->actingAs($admin)->getJson(optionsUrl($shift, 'optional', 1))
+        ->assertOk()
+        ->assertJsonFragment(['id' => $doctors[0]->id, 'eligible' => false, 'reasons' => ['Already assigned to this shift.']])
+        ->assertJsonFragment(['id' => $doctors[1]->id, 'eligible' => false, 'reasons' => ['Already assigned to this shift.']])
+        ->assertJsonFragment(['id' => $doctors[2]->id, 'eligible' => false, 'reasons' => ['Already assigned to this shift.']])
+        ->assertJsonFragment(['id' => $doctors[3]->id, 'eligible' => false, 'reasons' => ["{$doctors[3]->name} is already assigned to a shift starting on this date."]])
+        ->assertJsonFragment(['id' => $doctors[4]->id, 'eligible' => true, 'reasons' => []]);
+
+    $mainAssignment = RosterAssignment::query()->where('roster_shift_id', $shift->id)
+        ->where('role', RosterAssignmentRole::Main)->where('slot_number', 1)->firstOrFail();
+    $this->postJson(editingUrl('edit'), [
+        'operation' => 'replace',
+        ...editPayload($shift, 'optional', 1),
+        'doctor_id' => $doctors[0]->id,
+        'expected_source_assignment_id' => $mainAssignment->id,
+        'confirm_soft_override' => true,
+    ])->assertUnprocessable()->assertJsonPath('errors.edit.0', 'Already assigned to this shift.');
+
+    expect($mainAssignment->fresh()->doctor_id)->toBe($doctors[0]->id)
+        ->and(RosterAssignment::query()->where('roster_shift_id', $shift->id)->where('role', RosterAssignmentRole::Optional)->exists())->toBeFalse();
+});
+
+it('rejects a same-role move into another empty Main slot', function () {
+    [$admin, , $shift, , $doctors] = editingFixture();
+    $main = RosterAssignment::create(['roster_shift_id' => $shift->id, 'doctor_id' => $doctors[0]->id, 'role' => RosterAssignmentRole::Main, 'slot_number' => 1]);
+
+    $this->actingAs($admin)->getJson(optionsUrl($shift, 'main', 2))
+        ->assertOk()->assertJsonFragment(['id' => $doctors[0]->id, 'eligible' => false, 'reasons' => ['Already assigned to this shift.']]);
+
+    $this->postJson(editingUrl('edit'), [
+        'operation' => 'replace',
+        ...editPayload($shift, 'main', 2),
+        'doctor_id' => $doctors[0]->id,
+        'expected_source_assignment_id' => null,
+        'confirm_soft_override' => true,
+    ])->assertUnprocessable()->assertJsonPath('errors.edit.0', 'Already assigned to this shift.');
+
+    expect($main->fresh()->doctor_id)->toBe($doctors[0]->id)
+        ->and(RosterAssignment::query()->where('roster_shift_id', $shift->id)->where('role', RosterAssignmentRole::Main)->where('slot_number', 2)->exists())->toBeFalse();
 });
 
 it('swaps across shifts atomically and rejects stale expected state', function () {

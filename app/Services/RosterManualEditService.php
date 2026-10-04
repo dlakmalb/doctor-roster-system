@@ -46,6 +46,11 @@ class RosterManualEditService
                 }
                 $source = $this->findDoctorOnShift($first['shift']->id, $doctorId, $state);
                 if ($source !== null) {
+                    $isOptionalPromotion = $first['role'] === RosterAssignmentRole::Main
+                        && $source['role'] === RosterAssignmentRole::Optional;
+                    if (! isset($state[$firstKey]) && ! $isOptionalPromotion) {
+                        throw ValidationException::withMessages(['edit' => 'Already assigned to this shift.']);
+                    }
                     if ($source['role'] === $first['role']) {
                         throw ValidationException::withMessages(['edit' => 'This doctor is already assigned to another slot of the same role on this shift.']);
                     }
