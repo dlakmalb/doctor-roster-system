@@ -62,8 +62,8 @@ export default function InitialWorkloadSetup({ month, doctors }: Props) {
     }
 
     return (
-        <AppLayout title={`Initial Setup — ${month.label}`}>
-            <Head title={`Initial Setup — ${month.label}`} />
+        <AppLayout title={`Initial Setup - ${month.label}`}>
+            <Head title={`Initial Setup - ${month.label}`} />
             <p className="mb-6 max-w-3xl text-slate-600">
                 Enter the month of history before the first roster. Opening
                 balances start at zero. You can correct this same baseline
@@ -87,7 +87,7 @@ export default function InitialWorkloadSetup({ month, doctors }: Props) {
                                 className="rounded-2xl border border-slate-200 bg-white p-5"
                             >
                                 <h2 className="font-semibold">
-                                    {doctor.short_code} — {doctor.name}
+                                    {doctor.short_code} - {doctor.name}
                                 </h2>
                                 <div className="mt-4 grid gap-4 sm:grid-cols-2">
                                     <label className="grid gap-1 text-sm font-medium">

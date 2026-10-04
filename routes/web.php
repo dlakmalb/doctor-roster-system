@@ -17,6 +17,7 @@ use App\Http\Controllers\RosterManualEditController;
 use App\Http\Controllers\RosterPdfController;
 use App\Http\Controllers\RosterPrintController;
 use App\Http\Controllers\RosterReopenController;
+use App\Http\Middleware\EnsureMonthlySetupPlanningPeriod;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Support\Facades\Route;
 
@@ -36,7 +37,7 @@ Route::middleware('auth')->group(function (): void {
         ->where(['year' => '[1-9][0-9]{3}', 'month' => '(?:[1-9]|1[0-2])'])
         ->group(function (): void {
             Route::get('/', [RosterController::class, 'show'])->name('rosters.show');
-            Route::post('/', [RosterController::class, 'store'])->name('rosters.store');
+            Route::post('/', [RosterController::class, 'store'])->middleware(EnsureMonthlySetupPlanningPeriod::class)->name('rosters.store');
             Route::post('/generate', RosterAssignmentGenerationController::class)->name('rosters.generate');
             Route::post('/regenerate', RosterAssignmentRegenerationController::class)->name('rosters.regenerate');
             Route::post('/finalize', RosterFinalizationController::class)->name('rosters.finalize');
@@ -61,6 +62,7 @@ Route::middleware('auth')->group(function (): void {
 
     Route::prefix('/monthly-setup/{year}/{month}')
         ->where(['year' => '[1-9][0-9]{3}', 'month' => '(?:[1-9]|1[0-2])'])
+        ->middleware(EnsureMonthlySetupPlanningPeriod::class)
         ->group(function (): void {
             Route::get('/', MonthlySetupController::class)->name('monthly-setup.show');
             Route::post('/requests', [DoctorRequestController::class, 'store'])->name('doctor-requests.store');

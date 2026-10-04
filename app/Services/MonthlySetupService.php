@@ -48,14 +48,56 @@ class MonthlySetupService
             ->concat($this->lateWarnings($dayOffRequests, $month))
             ->concat($this->dayOffLimitWarnings($dayOffRequests))
             ->concat($this->staffingRiskWarnings($month, $activeDoctors, $exclusions, $shiftTypes));
+        $fourthAndLaterDatesByDoctor = $dayOffRequests
+            ->groupBy('doctor_id')
+            ->map(fn (Collection $requests): array => $requests
+                ->pluck('request_date')
+                ->map(fn (CarbonImmutable $date): string => $date->toDateString())
+                ->unique()
+                ->sort()
+                ->values()
+                ->slice(3)
+                ->all());
+        $unifiedRequests = $dayOffRequests
+            ->map(fn (DoctorRequest $request): array => [
+                ...$this->serializeRequest($request, $month),
+                'kind' => 'off_request',
+                'has_date_limit_warning' => in_array(
+                    $request->request_date->toDateString(),
+                    $fourthAndLaterDatesByDoctor->get($request->doctor_id, []),
+                    true,
+                ),
+            ])
+            ->concat($preferredWorkRequests->map(fn (DoctorRequest $request): array => [
+                ...$this->serializeRequest($request, $month),
+                'kind' => 'preferred_work',
+                'has_date_limit_warning' => false,
+            ]))
+            ->concat($exclusions->map(fn (DoctorMonthlyExclusion $exclusion): array => [
+                'id' => $exclusion->id,
+                'kind' => 'monthly_exclusion',
+                'request_date' => null,
+                'date_label' => $month->format('F Y'),
+                'doctor' => [
+                    'id' => $exclusion->doctor->id,
+                    'name' => $exclusion->doctor->name,
+                    'short_code' => $exclusion->doctor->short_code,
+                    'is_active' => $exclusion->doctor->is_active,
+                ],
+                'shift_type' => null,
+                'shift_label' => null,
+                'note' => $exclusion->note,
+                'is_late' => false,
+                'has_date_limit_warning' => false,
+            ]))
+            ->sortBy(fn (array $request): string => ($request['request_date'] ?? $month->toDateString()).'-'.$request['doctor']['name'])
+            ->values();
 
         return [
             'month' => [
                 'year' => $year,
                 'month' => $monthNumber,
                 'label' => $month->format('F Y'),
-                'previous' => ['year' => $month->subMonth()->year, 'month' => $month->subMonth()->month],
-                'next' => ['year' => $month->addMonth()->year, 'month' => $month->addMonth()->month],
             ],
             'rosterStatus' => Roster::where('year', $year)->where('month', $monthNumber)->value('status') ?? 'not_started',
             'doctors' => $activeDoctors->map(fn (Doctor $doctor): array => [
@@ -73,6 +115,7 @@ class MonthlySetupService
             ])->values(),
             'dayOffRequests' => $dayOffRequests->map(fn (DoctorRequest $request): array => $this->serializeRequest($request, $month))->values(),
             'preferredWorkRequests' => $preferredWorkRequests->map(fn (DoctorRequest $request): array => $this->serializeRequest($request, $month))->values(),
+            'requests' => $unifiedRequests,
             'exclusions' => $exclusions->map(fn (DoctorMonthlyExclusion $exclusion): array => [
                 'id' => $exclusion->id,
                 'doctor' => [
@@ -88,6 +131,8 @@ class MonthlySetupService
                 'day_off_requests' => $dayOffRequests->count(),
                 'preferred_work_requests' => $preferredWorkRequests->count(),
                 'excluded_doctors' => $exclusions->count(),
+                'total_requests' => $unifiedRequests->count(),
+                'warnings' => $warnings->count(),
             ],
             'warnings' => $warnings->values(),
         ];
@@ -106,7 +151,7 @@ class MonthlySetupService
             ->map(fn (DoctorRequest $request): array => [
                 'type' => 'late_request',
                 'message' => sprintf(
-                    '%s\'s %s Day-Off request was entered after the normal %s cutoff.',
+                    '%s\'s %s Off Request was entered after the normal %s cutoff.',
                     $request->doctor->name,
                     $request->request_date->format('M j'),
                     $cutoff->format('M j'),
@@ -130,7 +175,7 @@ class MonthlySetupService
                 return $dateCount > 3 && $firstRequest instanceof DoctorRequest
                     ? [
                         'type' => 'day_off_limit',
-                        'message' => sprintf('%s has requested %d Day-Off dates this month.', $firstRequest->doctor->name, $dateCount),
+                        'message' => sprintf('%s has requested %d Off Request dates this month.', $firstRequest->doctor->name, $dateCount),
                     ]
                     : null;
             })
@@ -226,11 +271,19 @@ class MonthlySetupService
             'period_label' => $request->shiftType === null
                 ? 'Full Day'
                 : sprintf(
-                    '%s — %s → %s',
+                    '%s - %s → %s',
                     $request->shiftType->name,
                     $interval['start']->format('M j g:i A'),
                     $interval['end']->format('M j g:i A'),
                 ),
+            'shift_label' => $request->shiftType === null
+                ? 'Full Day'
+                : match (true) {
+                    str_ends_with($request->shiftType->code, '_day') => 'Day',
+                    str_ends_with($request->shiftType->code, '_evening') => 'Evening',
+                    str_ends_with($request->shiftType->code, '_night') => 'Night',
+                    default => $request->shiftType->name,
+                },
             'note' => $request->note,
             'is_late' => $request->request_type === DoctorRequestType::DayOff
                 && $request->created_at !== null

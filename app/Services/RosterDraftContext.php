@@ -34,7 +34,7 @@ class RosterDraftContext
     /** @var Collection<int, int> */
     private Collection $excluded;
 
-    public function __construct(private DoctorAssignmentEligibilityService $eligibility, private RosterCandidateRanker $ranker) {}
+    public function __construct(private DoctorAssignmentEligibilityService $eligibility, private RosterCandidateRanker $ranker, private RosterPlanningHistoryService $planningHistory) {}
 
     public function load(Roster $roster): void
     {
@@ -48,8 +48,7 @@ class RosterDraftContext
         $this->preferred = DoctorRequest::query()->with(['doctor', 'shiftType'])
             ->where('request_type', DoctorRequestType::PreferredWork->value)
             ->whereBetween('request_date', [$first, $last])->get();
-        $previous = $first->subMonth();
-        $this->history = DoctorMonthlyWorkload::query()->where('year', $previous->year)->where('month', $previous->month)->get()->keyBy('doctor_id');
+        $this->history = $this->planningHistory->forMonth($roster->year, $roster->month, false);
         $this->ranker->initialize($this->shifts->values(), $this->preferred, $this->history, $first);
     }
 

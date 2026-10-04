@@ -57,7 +57,7 @@ class RosterDocumentService
         for ($number = 1; $number <= $required; $number++) {
             /** @var RosterAssignment|null $assignment */
             $assignment = $assignments->get($number);
-            $slots[] = $assignment === null ? 'UNFILLED' : $assignment->doctor->short_code.' — '.$assignment->doctor->name;
+            $slots[] = $assignment === null ? 'UNFILLED' : $assignment->doctor->short_code.' - '.$assignment->doctor->name;
         }
 
         return $slots;

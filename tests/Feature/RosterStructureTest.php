@@ -18,6 +18,8 @@ use Inertia\Testing\AssertableInertia as Assert;
 function prepareRosterStructureTest(): User
 {
     test()->seed([DoctorsSeeder::class, ShiftTypesSeeder::class]);
+    test()->travelTo(CarbonImmutable::parse('2026-09-01 09:00:00'));
+    seedInitialHistoryForGeneration();
 
     return User::factory()->create();
 }
@@ -53,7 +55,7 @@ it('creates one draft structure with audit fields and no assignments or workload
     ]);
     $this->assertDatabaseCount('roster_shifts', 84);
     $this->assertDatabaseCount('roster_assignments', 0);
-    $this->assertDatabaseCount('doctor_monthly_workloads', 0);
+    $this->assertDatabaseCount('doctor_monthly_workloads', Doctor::query()->count());
 });
 
 it('creates the expected weekday and weekend shifts for every start date', function () {
@@ -173,13 +175,15 @@ it('shows chronological shifts, required positions, and the overnight end date',
 });
 
 it('reports draft on the dashboard and monthly setup after creation', function () {
-    $this->travelTo(CarbonImmutable::parse('2026-10-03 09:00:00'));
     $user = prepareRosterStructureTest();
-    app(RosterStructureService::class)->create(2026, 10, $user);
+    $this->travelTo(CarbonImmutable::parse('2026-10-03 09:00:00'));
+    $october = app(RosterStructureService::class)->create(2026, 10, $user);
+    $october->update(['status' => RosterStatus::Final]);
+    app(RosterStructureService::class)->create(2026, 11, $user);
 
     $this->actingAs($user)->get(route('dashboard'))
-        ->assertInertia(fn (Assert $page) => $page->where('months.0.status', 'draft'));
-    $this->get(rosterRoute('monthly-setup.show'))
+        ->assertInertia(fn (Assert $page) => $page->where('primaryMonth.status', 'draft'));
+    $this->get(rosterRoute('monthly-setup.show', 2026, 11))
         ->assertInertia(fn (Assert $page) => $page->where('rosterStatus', 'draft'));
 });
 

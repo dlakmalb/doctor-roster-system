@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="utf-8">
-    <title>Doctor Duty Roster — {{ $month }}</title>
+    <title>Doctor Duty Roster - {{ $month }}</title>
     <style>
         @page { size: A4 landscape; margin: 14mm; }
         body { font-family: DejaVu Sans, sans-serif; color: #172033; font-size: 10px; margin: 0; }
@@ -33,7 +33,7 @@
     @endif
     <h1>Doctor Duty Roster <span class="status {{ $is_draft ? 'draft' : '' }}">{{ $is_draft ? 'DRAFT' : 'Final' }}</span></h1>
     <p class="subtitle">{{ $month }}</p>
-    <p class="legend"><strong>Main</strong> — scheduled primary duty &nbsp; | &nbsp; <strong>Optional</strong> — optional/backup duty</p>
+    <p class="legend"><strong>Main</strong> - scheduled primary duty &nbsp; | &nbsp; <strong>Optional</strong> - optional/backup duty</p>
     <div class="table-wrap">
         <table>
             <thead><tr><th class="date">Date</th><th class="shift">Shift / time</th><th class="duty">Main</th><th class="duty">Optional</th></tr></thead>

@@ -14,6 +14,8 @@ use Inertia\Testing\AssertableInertia as Assert;
 function prepareMonthlyWarningTest(): User
 {
     test()->seed([DoctorsSeeder::class, ShiftTypesSeeder::class]);
+    test()->travelTo(CarbonImmutable::parse('2026-09-01 09:00:00'));
+    seedInitialHistoryForGeneration();
 
     return User::factory()->create();
 }

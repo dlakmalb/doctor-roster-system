@@ -6,7 +6,6 @@ use App\Enums\DoctorRequestType;
 use App\Enums\RosterStatus;
 use App\Models\Doctor;
 use App\Models\DoctorMonthlyExclusion;
-use App\Models\DoctorMonthlyWorkload;
 use App\Models\DoctorRequest;
 use App\Models\Roster;
 use App\Models\RosterAssignment;
@@ -17,7 +16,7 @@ use Illuminate\Validation\ValidationException;
 
 class RosterAssignmentGenerator
 {
-    public function __construct(private RosterCandidateRanker $ranker, private RosterAssignmentRecoveryService $recovery) {}
+    public function __construct(private RosterCandidateRanker $ranker, private RosterAssignmentRecoveryService $recovery, private RosterPlanningHistoryService $history) {}
 
     public function generate(Roster $roster, User $admin): void
     {
@@ -48,10 +47,7 @@ class RosterAssignmentGenerator
                 ->where('request_type', DoctorRequestType::DayOff->value)
                 ->whereBetween('request_date', [$firstDate->subDay(), $lastDate->addDay()])
                 ->get()->toBase()->groupBy('doctor_id');
-            $previousMonth = $firstDate->subMonth();
-            $previousHistory = DoctorMonthlyWorkload::query()
-                ->where('year', $previousMonth->year)->where('month', $previousMonth->month)
-                ->get()->keyBy('doctor_id');
+            $previousHistory = $this->history->forMonth($roster->year, $roster->month);
             $preferredRequests = DoctorRequest::query()
                 ->where('request_type', DoctorRequestType::PreferredWork->value)
                 ->whereBetween('request_date', [$firstDate, $lastDate])->get();

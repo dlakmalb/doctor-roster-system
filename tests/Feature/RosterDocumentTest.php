@@ -52,7 +52,7 @@ it('renders the Final planned roster despite an actual-work replacement', functi
         ->assertOk()->assertSee('Final')->assertDontSee('DRAFT')
         ->assertSee('Doctor Planned')->assertDontSee('Doctor Replacement');
     $data = app(RosterDocumentService::class)->build($roster->fresh());
-    expect($data['rows'][0]['main'])->toBe(['P — Doctor Planned']);
+    expect($data['rows'][0]['main'])->toBe(['P - Doctor Planned']);
     $this->get(documentUrl('pdf'))->assertOk()->assertHeader('Content-Type', 'application/pdf');
     expect($assignment->fresh()->doctor_id)->toBe($planned->id);
 });
@@ -104,8 +104,8 @@ it('orders Main and Optional slots by slot number rather than insertion order', 
 
     $row = app(RosterDocumentService::class)->build($roster)['rows'][0];
 
-    expect($row['main'])->toBe(['P — Doctor Planned', 'R — Doctor Replacement']);
-    expect($row['optional'])->toBe(['O1 — Doctor Optional One', 'O2 — Doctor Optional Two']);
+    expect($row['main'])->toBe(['P - Doctor Planned', 'R - Doctor Replacement']);
+    expect($row['optional'])->toBe(['O1 - Doctor Optional One', 'O2 - Doctor Optional Two']);
 });
 
 it('renders a 31-day monthly document across PDF pages', function () {

@@ -105,7 +105,7 @@ function AssignmentCard({
                         {assignment.role} {assignment.slot_number}
                     </p>
                     <p className="font-semibold">
-                        {assignment.doctor.short_code} —{' '}
+                        {assignment.doctor.short_code} -{' '}
                         {assignment.doctor.name}
                     </p>
                     <p className="mt-1 text-sm text-slate-700">{status}</p>
@@ -148,7 +148,7 @@ function AssignmentCard({
                                             value={doctor.id}
                                             key={doctor.id}
                                         >
-                                            {doctor.short_code} — {doctor.name}
+                                            {doctor.short_code} - {doctor.name}
                                         </option>
                                     ))}
                             </select>
@@ -207,8 +207,8 @@ export default function ActualWorkReview({
 }: Props) {
     const { errors } = usePage<{ errors: Record<string, string> }>().props;
     return (
-        <AppLayout title={`Actual Work Review — ${month.label}`}>
-            <Head title={`Actual Work Review — ${month.label}`} />
+        <AppLayout title={`Actual Work Review - ${month.label}`}>
+            <Head title={`Actual Work Review - ${month.label}`} />
             <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
                 <Link
                     href={showRoster.url(month)}
@@ -218,7 +218,7 @@ export default function ActualWorkReview({
                 </Link>
                 <span className="rounded-full bg-slate-100 px-3 py-1 text-sm font-medium">
                     {confirmed_at
-                        ? `Confirmed — corrections update workload history (${confirmed_at})`
+                        ? `Confirmed - corrections update workload history (${confirmed_at})`
                         : 'Unconfirmed'}
                 </span>
             </div>
@@ -292,7 +292,7 @@ export default function ActualWorkReview({
                             className="rounded-xl border border-slate-200 p-4 text-sm"
                         >
                             <h3 className="font-semibold">
-                                {row.short_code} — {row.name}
+                                {row.short_code} - {row.name}
                             </h3>
                             <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1">
                                 <dt>Actual work</dt>

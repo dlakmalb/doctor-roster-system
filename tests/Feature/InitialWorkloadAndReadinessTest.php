@@ -57,21 +57,21 @@ it('saves and corrects only the initial baseline with zero opening balances', fu
         ->component('initial-workload-setup')->where('doctors.0.existing.actual_worked_minutes', 720));
 });
 
-it('requires baseline before first generation and confirmation before later generation', function () {
+it('requires baseline before first generation and a Final planned roster before later generation', function () {
     [$admin, $doctors] = historyFixture();
     $october = Roster::create(['year' => 2026, 'month' => 10, 'status' => RosterStatus::Draft, 'created_by' => $admin->id]);
     $generateOctober = route('rosters.generate', ['year' => 2026, 'month' => 10]);
     $this->actingAs($admin)->post($generateOctober)->assertSessionHasErrors('roster');
     $this->post(route('initial-workload.save', ['year' => 2026, 'month' => 9]), baselinePayload($doctors))->assertRedirect();
     $this->post($generateOctober)->assertRedirect();
-    $october->update(['status' => RosterStatus::Final]);
     $november = Roster::create(['year' => 2026, 'month' => 11, 'status' => RosterStatus::Draft, 'created_by' => $admin->id]);
     $generateNovember = route('rosters.generate', ['year' => 2026, 'month' => 11]);
-    $this->post($generateNovember)->assertSessionHasErrors('roster');
+    $this->post($generateNovember)->assertSessionHasErrors(['roster' => 'Finalize October 2026 before generating November 2026.']);
     $this->post(route('rosters.regenerate', ['year' => 2026, 'month' => 11]))->assertSessionHasErrors('roster');
-    $this->post(route('rosters.actual-work.confirm', ['year' => 2026, 'month' => 10]))->assertRedirect();
+    $october->update(['status' => RosterStatus::Final, 'finalized_at' => now()]);
     $this->post($generateNovember)->assertRedirect();
-    expect($november->fresh()->last_generated_at)->not->toBeNull();
+    expect($november->fresh()->last_generated_at)->not->toBeNull()
+        ->and($october->fresh()->actual_work_confirmed_at)->toBeNull();
 });
 
 it('recalculates later balances after a confirmed earlier correction without changing planned assignments', function () {

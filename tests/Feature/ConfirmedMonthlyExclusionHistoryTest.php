@@ -11,13 +11,16 @@ use App\Models\RosterShift;
 use App\Models\ShiftType;
 use App\Models\User;
 use App\Services\RosterDraftValidationService;
+use Carbon\CarbonImmutable;
 use Database\Seeders\ShiftTypesSeeder;
 
 function confirmedExclusionFixture(): array
 {
     test()->seed(ShiftTypesSeeder::class);
+    test()->travelTo(CarbonImmutable::parse('2026-09-01 09:00:00'));
     $admin = User::factory()->create();
     $doctors = collect(['A', 'B', 'C'])->map(fn (string $code): Doctor => Doctor::create(['name' => "Doctor $code", 'short_code' => $code, 'is_active' => true]));
+    seedInitialHistoryForGeneration();
     $roster = Roster::create(['year' => 2026, 'month' => 10, 'status' => RosterStatus::Final, 'created_by' => $admin->id]);
     $shift = RosterShift::create(['roster_id' => $roster->id, 'shift_date' => '2026-10-01', 'shift_type_id' => ShiftType::query()->where('code', 'weekday_day')->firstOrFail()->id]);
     RosterAssignment::create(['roster_shift_id' => $shift->id, 'doctor_id' => $doctors[0]->id, 'role' => RosterAssignmentRole::Main, 'slot_number' => 1]);
@@ -89,7 +92,47 @@ it('leaves workload history untouched when no confirmed Final roster exists', fu
     $this->actingAs($admin)->post(exclusionHistoryUrl('monthly-exclusions.store'), ['doctor_id' => $doctors[0]->id])->assertRedirect();
 
     expect($roster->fresh()->actual_work_confirmed_at)->toBeNull();
-    $this->assertDatabaseCount('doctor_monthly_workloads', 0);
+    $this->assertDatabaseCount('doctor_monthly_workloads', $doctors->count());
+});
+
+it('warns when an exclusion is added after generating from an unconfirmed Final plan', function () {
+    [$admin, $doctors, $october] = confirmedExclusionFixture();
+    $november = Roster::create(['year' => 2026, 'month' => 11, 'status' => RosterStatus::Draft, 'created_by' => $admin->id]);
+    RosterShift::create(['roster_id' => $november->id, 'shift_date' => '2026-11-02', 'shift_type_id' => ShiftType::query()->where('code', 'weekday_day')->firstOrFail()->id]);
+    $this->actingAs($admin)->post(route('rosters.generate', ['year' => 2026, 'month' => 11]))->assertRedirect();
+    $assignments = RosterAssignment::query()->whereHas('rosterShift', fn ($query) => $query->where('roster_id', $november->id))->orderBy('id')->get()->toArray();
+    $generatedAt = $november->fresh()->last_generated_at;
+    expect($assignments)->not->toBeEmpty();
+    $this->travel(2)->seconds();
+
+    $this->post(exclusionHistoryUrl('monthly-exclusions.store'), ['doctor_id' => $doctors[1]->id])->assertRedirect();
+
+    expect($october->fresh()->actual_work_confirmed_at)->toBeNull()
+        ->and($november->fresh()->last_generated_at?->equalTo($generatedAt))->toBeTrue()
+        ->and(RosterAssignment::query()->whereHas('rosterShift', fn ($query) => $query->where('roster_id', $november->id))->orderBy('id')->get()->toArray())->toBe($assignments)
+        ->and(collect(app(RosterDraftValidationService::class)->validate($november->fresh()))->contains(fn (array $warning): bool => $warning['severity'] === 'Warning' && str_contains($warning['message'], 'history changed')))->toBeTrue();
+    $this->assertDatabaseCount('doctor_monthly_workloads', $doctors->count());
+});
+
+it('warns when an exclusion is removed after generating from an unconfirmed Final plan', function () {
+    [$admin, $doctors, $october] = confirmedExclusionFixture();
+    $this->actingAs($admin)->post(exclusionHistoryUrl('monthly-exclusions.store'), ['doctor_id' => $doctors[1]->id])->assertRedirect();
+    $exclusion = DoctorMonthlyExclusion::query()->where('doctor_id', $doctors[1]->id)->firstOrFail();
+    $november = Roster::create(['year' => 2026, 'month' => 11, 'status' => RosterStatus::Draft, 'created_by' => $admin->id]);
+    RosterShift::create(['roster_id' => $november->id, 'shift_date' => '2026-11-02', 'shift_type_id' => ShiftType::query()->where('code', 'weekday_day')->firstOrFail()->id]);
+    $this->post(route('rosters.generate', ['year' => 2026, 'month' => 11]))->assertRedirect();
+    $assignments = RosterAssignment::query()->whereHas('rosterShift', fn ($query) => $query->where('roster_id', $november->id))->orderBy('id')->get()->toArray();
+    $generatedAt = $november->fresh()->last_generated_at;
+    expect($assignments)->not->toBeEmpty();
+    $this->travel(2)->seconds();
+
+    $this->delete(exclusionHistoryUrl('monthly-exclusions.destroy', ['doctorMonthlyExclusion' => $exclusion]))->assertRedirect();
+
+    expect($october->fresh()->actual_work_confirmed_at)->toBeNull()
+        ->and($november->fresh()->last_generated_at?->equalTo($generatedAt))->toBeTrue()
+        ->and(RosterAssignment::query()->whereHas('rosterShift', fn ($query) => $query->where('roster_id', $november->id))->orderBy('id')->get()->toArray())->toBe($assignments)
+        ->and(collect(app(RosterDraftValidationService::class)->validate($november->fresh()))->contains(fn (array $warning): bool => $warning['severity'] === 'Warning' && str_contains($warning['message'], 'history changed')))->toBeTrue();
+    $this->assertDatabaseCount('doctor_monthly_workloads', $doctors->count());
 });
 
 it('rolls back an exclusion and its confirmed history when workload persistence fails', function () {

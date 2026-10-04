@@ -59,10 +59,10 @@ class RosterAssignmentRecoveryService
         }
 
         $stages = [
-            $shifts->filter(fn (RosterShift $shift): bool => $this->ranker->weekendKey($shift) !== null),
-            $shifts->filter(fn (RosterShift $shift): bool => $shift->shiftType->code === 'weekday_night' && $this->ranker->weekendKey($shift) === null),
-            $shifts->filter(fn (RosterShift $shift): bool => $shift->shiftType->code === 'weekday_day'),
-            $shifts->filter(fn (RosterShift $shift): bool => $shift->shiftType->code === 'weekday_evening'),
+            $shifts->filter(fn (RosterShift $shift): bool => $this->ranker->mainStage($shift) === 0),
+            $shifts->filter(fn (RosterShift $shift): bool => $this->ranker->mainStage($shift) === 1),
+            $shifts->filter(fn (RosterShift $shift): bool => $this->ranker->mainStage($shift) === 2),
+            $shifts->filter(fn (RosterShift $shift): bool => $this->ranker->mainStage($shift) === 3),
         ];
 
         foreach ($stages as $stage) {

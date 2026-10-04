@@ -111,6 +111,20 @@ class RosterCandidateRanker
         return null;
     }
 
+    public function mainStage(RosterShift $shift): int
+    {
+        if ($this->weekendKey($shift) !== null) {
+            return 0;
+        }
+
+        return match ($shift->shiftType->code) {
+            'weekday_night' => 1,
+            'weekday_day' => 2,
+            'weekday_evening' => 3,
+            default => 4,
+        };
+    }
+
     /**
      * @param  Collection<int, RosterShift>  $assignedShifts
      * @return list<int>
@@ -125,7 +139,7 @@ class RosterCandidateRanker
             $dimensions[] = isset($this->preferences[$doctorId][$shift->id]) ? 0 : 1;
         }
 
-        $dimensions[] = count($this->blockedPreferredShifts($doctor, $shift, $role, $assignedShifts));
+        $dimensions[] = count($this->blockedPreferredShifts($doctor, $shift, $role, $assignedShifts, true));
 
         $weekend = $this->weekendKey($shift);
         if ($role === RosterAssignmentRole::Main && $weekend !== null) {
@@ -153,7 +167,7 @@ class RosterCandidateRanker
      * @param  Collection<int, RosterShift>  $assignedShifts
      * @return list<RosterShift>
      */
-    public function blockedPreferredShifts(Doctor $doctor, RosterShift $shift, RosterAssignmentRole $role, Collection $assignedShifts): array
+    public function blockedPreferredShifts(Doctor $doctor, RosterShift $shift, RosterAssignmentRole $role, Collection $assignedShifts, bool $usePlanningOrder = false): array
     {
         $blocked = [];
         $doctorId = $doctor->id;
@@ -161,9 +175,7 @@ class RosterCandidateRanker
             if (isset($this->fulfilled[$doctorId][$preferredShift->id])) {
                 continue;
             }
-            if ($preferredShift->shift_date->lessThan($shift->shift_date)
-                || ($preferredShift->shift_date->isSameDay($shift->shift_date)
-                    && $preferredShift->shiftType->start_time < $shift->shiftType->start_time)) {
+            if ($this->wasPlannedBefore($preferredShift, $shift, $role, $usePlanningOrder)) {
                 continue;
             }
             if ($preferredShift->id === $shift->id && $role === RosterAssignmentRole::Main) {
@@ -178,6 +190,20 @@ class RosterCandidateRanker
         }
 
         return $blocked;
+    }
+
+    private function wasPlannedBefore(RosterShift $preferredShift, RosterShift $candidateShift, RosterAssignmentRole $role, bool $usePlanningOrder): bool
+    {
+        if ($usePlanningOrder && $role === RosterAssignmentRole::Main) {
+            $stageComparison = $this->mainStage($preferredShift) <=> $this->mainStage($candidateShift);
+            if ($stageComparison !== 0) {
+                return $stageComparison < 0;
+            }
+        }
+
+        return $preferredShift->shift_date->lessThan($candidateShift->shift_date)
+            || ($preferredShift->shift_date->isSameDay($candidateShift->shift_date)
+                && $preferredShift->shiftType->start_time < $candidateShift->shiftType->start_time);
     }
 
     /**

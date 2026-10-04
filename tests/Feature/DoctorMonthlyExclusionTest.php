@@ -5,11 +5,14 @@ use App\Models\Doctor;
 use App\Models\DoctorMonthlyExclusion;
 use App\Models\DoctorRequest;
 use App\Models\User;
+use Carbon\CarbonImmutable;
 use Database\Seeders\DoctorsSeeder;
 
 function prepareMonthlyExclusionTest(): array
 {
     test()->seed(DoctorsSeeder::class);
+    test()->travelTo(CarbonImmutable::parse('2026-09-01 09:00:00'));
+    seedInitialHistoryForGeneration();
 
     return [User::factory()->create(), Doctor::query()->firstOrFail()];
 }

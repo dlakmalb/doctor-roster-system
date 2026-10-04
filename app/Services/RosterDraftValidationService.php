@@ -3,14 +3,13 @@
 namespace App\Services;
 
 use App\Enums\RosterAssignmentRole;
-use App\Models\DoctorMonthlyWorkload;
 use App\Models\Roster;
 use App\Models\RosterShift;
 use Carbon\CarbonImmutable;
 
 class RosterDraftValidationService
 {
-    public function __construct(private RosterDraftContext $context, private RosterCandidateRanker $ranker) {}
+    public function __construct(private RosterDraftContext $context, private RosterCandidateRanker $ranker, private RosterPlanningHistoryService $history) {}
 
     /** @return list<array{severity: string, message: string, target: string}> */
     public function validate(Roster $roster): array
@@ -70,11 +69,11 @@ class RosterDraftValidationService
             }
         }
 
-        if ($roster->status->value === 'draft' && $roster->last_generated_at !== null) {
+        if ($roster->last_generated_at !== null) {
             $previous = CarbonImmutable::create($roster->year, $roster->month, 1)->subMonth();
-            $historyUpdatedAt = DoctorMonthlyWorkload::query()->where('year', $previous->year)->where('month', $previous->month)->max('updated_at');
-            if ($historyUpdatedAt !== null && CarbonImmutable::parse($historyUpdatedAt)->greaterThan($roster->last_generated_at)) {
-                $items[] = $this->item('Warning', "{$previous->format('F Y')} history changed after this roster was generated. Regenerate or review the roster because fairness calculations may be stale.", 'conflicts');
+            $historyUpdatedAt = $this->history->freshness($roster->year, $roster->month);
+            if ($historyUpdatedAt !== null && $historyUpdatedAt->greaterThan($roster->last_generated_at)) {
+                $items[] = $this->item('Warning', "{$previous->format('F Y')} history changed after this roster was generated. Review or regenerate this roster because fairness calculations may be stale.", 'conflicts');
             }
         }
 

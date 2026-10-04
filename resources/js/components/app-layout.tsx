@@ -1,5 +1,4 @@
 import { dashboard, logout } from '@/routes';
-import { show as monthlySetup } from '@/routes/monthly-setup';
 import { Link, usePage } from '@inertiajs/react';
 import type { PropsWithChildren } from 'react';
 
@@ -8,12 +7,7 @@ type AppLayoutProps = PropsWithChildren<{
 }>;
 
 export default function AppLayout({ title, children }: AppLayoutProps) {
-    const { auth } = usePage().props;
-    const now = new Date();
-    const currentMonth = {
-        year: now.getFullYear(),
-        month: now.getMonth() + 1,
-    };
+    const { auth, flash } = usePage().props;
 
     return (
         <div className="min-h-screen bg-slate-50 text-slate-900">
@@ -35,12 +29,6 @@ export default function AppLayout({ title, children }: AppLayoutProps) {
                             Dashboard
                         </Link>
                         <Link
-                            href={monthlySetup.url(currentMonth)}
-                            className="rounded-lg px-3 py-2 text-slate-700 hover:bg-slate-100"
-                        >
-                            Monthly Setup
-                        </Link>
-                        <Link
                             href={logout.url()}
                             method="post"
                             as="button"
@@ -53,6 +41,14 @@ export default function AppLayout({ title, children }: AppLayoutProps) {
             </header>
 
             <main className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
+                {flash.status && (
+                    <div
+                        role="status"
+                        className="mb-6 rounded-lg border border-teal-200 bg-teal-50 px-4 py-3 text-sm font-medium text-teal-950"
+                    >
+                        {flash.status}
+                    </div>
+                )}
                 <div className="mb-8 flex flex-wrap items-end justify-between gap-3">
                     <div>
                         <p className="text-sm text-slate-500">

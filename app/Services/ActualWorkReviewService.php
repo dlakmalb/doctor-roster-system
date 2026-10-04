@@ -84,6 +84,8 @@ class ActualWorkReviewService
             $change();
             if ($roster !== null && $roster->status === RosterStatus::Final && $roster->actual_work_confirmed_at !== null) {
                 $this->refreshConfirmed($roster, $admin, $this->workloads->preview($roster));
+            } elseif ($roster !== null && $roster->status === RosterStatus::Final) {
+                $roster->touch();
             }
         });
     }

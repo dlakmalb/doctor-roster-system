@@ -9,6 +9,7 @@ import {
     print,
     regenerate,
     reopen,
+    show as showRoster,
 } from '@/routes/rosters';
 import { edit, undo } from '@/routes/rosters/assignments';
 import { show as showActualWork } from '@/routes/rosters/actual-work';
@@ -52,7 +53,8 @@ type RosterProps = {
         message: string | null;
         year: number;
         month: number;
-        action: 'review' | 'initial_setup';
+        action: 'review' | 'initial_setup' | 'finalize';
+        basis: 'confirmed_actual' | 'final_planned' | 'manual_initial' | null;
     };
     has_generated: boolean;
     has_assignments: boolean;
@@ -484,13 +486,17 @@ export default function Roster({
                         href={
                             history_readiness.action === 'review'
                                 ? showActualWork.url(history_readiness)
-                                : showInitialWorkload.url(history_readiness)
+                                : history_readiness.action === 'finalize'
+                                  ? showRoster.url(history_readiness)
+                                  : showInitialWorkload.url(history_readiness)
                         }
                         className="mt-2 inline-block font-semibold underline"
                     >
                         {history_readiness.action === 'review'
                             ? 'Review previous month'
-                            : 'Open Initial Setup'}
+                            : history_readiness.action === 'finalize'
+                              ? 'Finalize previous roster'
+                              : 'Open Initial Setup'}
                     </Link>
                 </div>
             )}
@@ -552,7 +558,7 @@ export default function Roster({
                                         }
                                         className="text-left underline underline-offset-2"
                                     >
-                                        <strong>{item.severity}</strong> —{' '}
+                                        <strong>{item.severity}</strong> -{' '}
                                         {item.message}
                                     </button>
                                 </li>
@@ -623,7 +629,7 @@ export default function Roster({
                                                     key={index}
                                                     className="mt-1 text-xs text-amber-800"
                                                 >
-                                                    {item.severity} —{' '}
+                                                    {item.severity} -{' '}
                                                     {item.message}
                                                 </p>
                                             ))}
@@ -658,9 +664,9 @@ export default function Roster({
                                                                         :{' '}
                                                                     </span>
                                                                     {slot.doctor
-                                                                        ? `${slot.doctor.short_code} — ${slot.doctor.name}`
+                                                                        ? `${slot.doctor.short_code} - ${slot.doctor.name}`
                                                                         : slot.error
-                                                                          ? 'Unfilled — Error'
+                                                                          ? 'Unfilled - Error'
                                                                           : 'Unfilled'}
                                                                     {conflicts
                                                                         .filter(
@@ -684,7 +690,7 @@ export default function Roster({
                                                                                     {
                                                                                         item.severity
                                                                                     }{' '}
-                                                                                    —{' '}
+                                                                                    -{' '}
                                                                                     {
                                                                                         item.message
                                                                                     }
@@ -842,7 +848,7 @@ export default function Roster({
                                     <div className="flex flex-wrap items-start justify-between gap-2">
                                         <div>
                                             <p className="font-semibold">
-                                                {doctor.short_code} —{' '}
+                                                {doctor.short_code} -{' '}
                                                 {doctor.name}
                                             </p>
                                             <p className="text-slate-600">
@@ -857,13 +863,13 @@ export default function Roster({
                                             {doctor.preferred_work && (
                                                 <p className="font-semibold text-teal-800">
                                                     {picker.role === 'optional'
-                                                        ? 'Preferred Work — Main request'
+                                                        ? 'Preferred Work - Main request'
                                                         : 'Preferred Work'}
                                                 </p>
                                             )}
                                             {!doctor.eligible && (
                                                 <p className="text-red-700">
-                                                    Unavailable —{' '}
+                                                    Unavailable -{' '}
                                                     {doctor.reasons.join(' ')}
                                                 </p>
                                             )}
@@ -957,7 +963,7 @@ export default function Roster({
                         <ul className="mt-3 list-disc space-y-2 pl-5 text-sm">
                             {finalizationWarnings.map((warning, index) => (
                                 <li key={`${warning.target}-${index}`}>
-                                    <strong>Warning</strong> — {warning.message}
+                                    <strong>Warning</strong> - {warning.message}
                                 </li>
                             ))}
                         </ul>
