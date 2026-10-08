@@ -130,6 +130,48 @@ it('derives preference fulfillment from Main only and protects same-shift Option
     expect($ranker->dimensions($preferred, $shift, RosterAssignmentRole::Optional, collect())[0])->toBe(0);
 });
 
+it('restores ranking dimensions after recorded assignments are removed or rolled back', function () {
+    [, , $doctor] = smartRoster();
+    $night = smartShift('2026-10-02', 'weekday_night');
+    $weekendDay = smartShift('2026-10-03', 'weekend_day');
+    $optionalShift = smartShift('2026-10-06', 'weekday_evening');
+    $preference = smartPreference($doctor, $night);
+    $history = smartHistory($doctor, [
+        'closing_balance_minutes' => -600,
+        'actual_night_duty_count' => 2,
+        'optional_assignment_count' => 1,
+        'worked_final_weekend' => true,
+    ]);
+    $ranker = smartRanker([$preference], [$history]);
+    $before = [
+        'night' => $ranker->dimensions($doctor, $night, RosterAssignmentRole::Main, collect()),
+        'weekend' => $ranker->dimensions($doctor, $weekendDay, RosterAssignmentRole::Main, collect()),
+        'optional' => $ranker->dimensions($doctor, $optionalShift, RosterAssignmentRole::Optional, collect()),
+    ];
+    $snapshot = $ranker->recordedAssignmentsSnapshot();
+
+    $ranker->record($doctor->id, $night, RosterAssignmentRole::Main);
+    $ranker->record($doctor->id, $optionalShift, RosterAssignmentRole::Optional);
+
+    expect($ranker->dimensions($doctor, $night, RosterAssignmentRole::Main, collect()))->not->toBe($before['night'])
+        ->and($ranker->dimensions($doctor, $weekendDay, RosterAssignmentRole::Main, collect()))->not->toBe($before['weekend'])
+        ->and($ranker->dimensions($doctor, $optionalShift, RosterAssignmentRole::Optional, collect()))->not->toBe($before['optional']);
+
+    $ranker->restoreRecordedAssignments($snapshot);
+    expect($ranker->dimensions($doctor, $night, RosterAssignmentRole::Main, collect()))->toBe($before['night'])
+        ->and($ranker->dimensions($doctor, $weekendDay, RosterAssignmentRole::Main, collect()))->toBe($before['weekend'])
+        ->and($ranker->dimensions($doctor, $optionalShift, RosterAssignmentRole::Optional, collect()))->toBe($before['optional']);
+
+    $ranker->record($doctor->id, $night, RosterAssignmentRole::Main);
+    $ranker->record($doctor->id, $optionalShift, RosterAssignmentRole::Optional);
+    $ranker->unrecord($doctor->id, $night, RosterAssignmentRole::Main);
+    $ranker->unrecord($doctor->id, $optionalShift, RosterAssignmentRole::Optional);
+
+    expect($ranker->dimensions($doctor, $night, RosterAssignmentRole::Main, collect()))->toBe($before['night'])
+        ->and($ranker->dimensions($doctor, $weekendDay, RosterAssignmentRole::Main, collect()))->toBe($before['weekend'])
+        ->and($ranker->dimensions($doctor, $optionalShift, RosterAssignmentRole::Optional, collect()))->toBe($before['optional']);
+});
+
 it('groups Friday Night with its Saturday and uses historical and current weekend rotation', function () {
     [, , $worked, $other] = smartRoster();
     $friday = smartShift('2026-10-02', 'weekday_night');

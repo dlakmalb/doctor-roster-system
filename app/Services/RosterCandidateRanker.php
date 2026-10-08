@@ -95,6 +95,83 @@ class RosterCandidateRanker
         }
     }
 
+    public function unrecord(int $doctorId, RosterShift $shift, RosterAssignmentRole $role): void
+    {
+        if ($role === RosterAssignmentRole::Optional) {
+            $this->decrement($this->optionalCounts, $doctorId, 1);
+
+            return;
+        }
+
+        $this->decrement($this->scheduledMinutes, $doctorId, $shift->shiftType->duration_minutes);
+        if ($shift->shiftType->is_overnight) {
+            $this->decrement($this->nightCounts, $doctorId, 1);
+        }
+        $weekend = $this->weekendKey($shift);
+        if ($weekend !== null) {
+            $weekendCounts = $this->weekendCounts[$doctorId] ?? [];
+            $this->decrement($weekendCounts, $weekend, 1);
+            if ($weekendCounts === []) {
+                unset($this->weekendCounts[$doctorId]);
+            } else {
+                $this->weekendCounts[$doctorId] = $weekendCounts;
+            }
+        }
+        if (isset($this->preferences[$doctorId][$shift->id])) {
+            unset($this->fulfilled[$doctorId][$shift->id]);
+            if (($this->fulfilled[$doctorId] ?? []) === []) {
+                unset($this->fulfilled[$doctorId]);
+            }
+        }
+    }
+
+    /**
+     * @return array{
+     *     fulfilled: array<int, array<int, true>>,
+     *     scheduledMinutes: array<int, int>,
+     *     nightCounts: array<int, int>,
+     *     optionalCounts: array<int, int>,
+     *     weekendCounts: array<int, array<string, int>>
+     * }
+     */
+    public function recordedAssignmentsSnapshot(): array
+    {
+        return [
+            'fulfilled' => $this->fulfilled,
+            'scheduledMinutes' => $this->scheduledMinutes,
+            'nightCounts' => $this->nightCounts,
+            'optionalCounts' => $this->optionalCounts,
+            'weekendCounts' => $this->weekendCounts,
+        ];
+    }
+
+    /**
+     * @param array{
+     *     fulfilled: array<int, array<int, true>>,
+     *     scheduledMinutes: array<int, int>,
+     *     nightCounts: array<int, int>,
+     *     optionalCounts: array<int, int>,
+     *     weekendCounts: array<int, array<string, int>>
+     * } $snapshot
+     */
+    public function restoreRecordedAssignments(array $snapshot): void
+    {
+        $this->fulfilled = $snapshot['fulfilled'];
+        $this->scheduledMinutes = $snapshot['scheduledMinutes'];
+        $this->nightCounts = $snapshot['nightCounts'];
+        $this->optionalCounts = $snapshot['optionalCounts'];
+        $this->weekendCounts = $snapshot['weekendCounts'];
+    }
+
+    /** @param array<int|string, int> $counts */
+    private function decrement(array &$counts, int|string $key, int $amount): void
+    {
+        $counts[$key] -= $amount;
+        if ($counts[$key] === 0) {
+            unset($counts[$key]);
+        }
+    }
+
     public function weekendKey(RosterShift $shift): ?string
     {
         $date = CarbonImmutable::instance($shift->shift_date);

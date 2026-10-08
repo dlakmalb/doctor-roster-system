@@ -318,7 +318,27 @@ it('restores a failed cross-role branch before trying another Optional candidate
     recoveryRequest($c, $night, DoctorRequestType::DayOff);
     DoctorMonthlyWorkload::query()->where('doctor_id', $b->id)->where('month', 9)->update(['optional_assignment_count' => 1]);
 
+    $ranker = app(RosterCandidateRanker::class);
+    app()->instance(RosterCandidateRanker::class, $ranker);
     runRecovery($admin);
+
+    $finalShifts = RosterShift::query()->with(['shiftType', 'assignments'])->whereIn('id', [$day->id, $evening->id, $night->id])->get();
+    $requests = DoctorRequest::query()->with('shiftType')->get();
+    $history = DoctorMonthlyWorkload::query()->where('year', 2026)->where('month', 9)->get()->keyBy('doctor_id');
+    $expectedRanker = new RosterCandidateRanker(app(DoctorAssignmentEligibilityService::class));
+    $expectedRanker->initialize($finalShifts, $requests->where('request_type', DoctorRequestType::PreferredWork), $history, CarbonImmutable::parse('2026-10-01'));
+    $assignmentsByDoctor = $finalShifts->flatMap->assignments->groupBy('doctor_id');
+    $shiftsById = $finalShifts->keyBy('id');
+    foreach ([$a, $b, $c] as $doctor) {
+        $assignedShifts = $assignmentsByDoctor->get($doctor->id, collect())
+            ->map(fn (RosterAssignment $assignment): RosterShift => $shiftsById->get($assignment->roster_shift_id));
+        foreach ($finalShifts as $shift) {
+            foreach ([RosterAssignmentRole::Main, RosterAssignmentRole::Optional] as $role) {
+                expect($ranker->dimensions($doctor, $shift, $role, $assignedShifts))
+                    ->toBe($expectedRanker->dimensions($doctor, $shift, $role, $assignedShifts));
+            }
+        }
+    }
 
     expect($day->assignments()->where('role', RosterAssignmentRole::Main)->firstOrFail()->doctor_id)->toBe($a->id)
         ->and($evening->assignments()->where('role', RosterAssignmentRole::Main)->firstOrFail()->doctor_id)->toBe($c->id)

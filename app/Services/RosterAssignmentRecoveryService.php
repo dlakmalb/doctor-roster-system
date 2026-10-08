@@ -177,6 +177,10 @@ class RosterAssignmentRecoveryService
             return true;
         }
 
+        if ($depth === 0) {
+            $this->rebuildRanking();
+        }
+
         $signatureEntries = $this->plan;
         ksort($signatureEntries);
         $signature = $targetKey.'|'.implode(',', array_map(
@@ -193,7 +197,6 @@ class RosterAssignmentRecoveryService
 
         $entriesByDoctor = [];
         $assignedByDoctor = $this->assignedByDoctor($entriesByDoctor);
-        $this->rebuildRanking();
         $eligibleCandidateFound = false;
         $eligibleDoctors = $this->doctors->filter(fn (Doctor $doctor): bool => isset($this->staticallyEligible[$shift->id][$doctor->id]));
         $candidates = [];
@@ -238,12 +241,16 @@ class RosterAssignmentRecoveryService
             $blockers = $candidate['blockers'];
 
             $before = $this->plan;
+            $rankingBefore = $this->ranker->recordedAssignmentsSnapshot();
             foreach (array_keys($blockers) as $key) {
+                $entry = $this->plan[$key];
+                $this->ranker->unrecord($entry['doctor_id'], $entry['shift'], $entry['role']);
                 unset($this->plan[$key]);
             }
 
             $eligibleCandidateFound = true;
             $this->plan[$targetKey] = ['shift' => $shift, 'role' => $role, 'slot' => $slot, 'doctor_id' => $doctor->id, 'fixed' => false];
+            $this->ranker->record($doctor->id, $shift, $role);
             $resolved = true;
             if (count($blockers) > 1) {
                 uasort($blockers, fn (array $left, array $right): int => count($this->staticallyEligible[$left['shift']->id] ?? []) <=> count($this->staticallyEligible[$right['shift']->id] ?? []) ?: strcmp($this->key($left['shift'], $left['role'], $left['slot']), $this->key($right['shift'], $right['role'], $right['slot'])));
@@ -258,17 +265,10 @@ class RosterAssignmentRecoveryService
                 }
             }
             if ($resolved) {
-                if ($depth === 0) {
-                    if ($blockers === []) {
-                        $this->ranker->record($doctor->id, $shift, $role);
-                    } else {
-                        $this->rebuildRanking();
-                    }
-                }
-
                 return true;
             }
             $this->plan = $before;
+            $this->ranker->restoreRecordedAssignments($rankingBefore);
         }
 
         if (! $eligibleCandidateFound) {
