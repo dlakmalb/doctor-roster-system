@@ -14,7 +14,7 @@ import { edit, undo } from '@/routes/rosters/assignments';
 import { show as showActualWork } from '@/routes/rosters/actual-work';
 import { show as showInitialWorkload } from '@/routes/initial-workload';
 import { Form, Head, Link, router, useForm } from '@inertiajs/react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 type Slot = {
     slot_number: number;
@@ -162,10 +162,16 @@ export default function Roster({
     const [warningSignature, setWarningSignature] = useState<string | null>(
         null,
     );
+    const isFinalizationWarningsOpen =
+        finalizationWarnings.length > 0 && warningSignature !== null;
+    const [showScrollToTop, setShowScrollToTop] = useState(false);
     const [pending, setPending] = useState<Record<
         string,
         string | number | boolean | null
     > | null>(null);
+    const isAnyRosterDialogOpen =
+        (status === 'draft' && (picker !== null || pending !== null)) ||
+        isFinalizationWarningsOpen;
     const preGenerationDraft = status === 'draft' && !has_generated;
     const visibleConflicts = preGenerationDraft
         ? conflicts.filter(
@@ -178,6 +184,34 @@ export default function Roster({
         (item) => item.severity === 'Error',
     ).length;
     const warningCount = visibleConflicts.length - errorCount;
+
+    useEffect(() => {
+        if (!isAnyRosterDialogOpen) {
+            return;
+        }
+
+        const previousOverflow = document.body.style.overflow;
+        document.body.style.overflow = 'hidden';
+
+        return () => {
+            document.body.style.overflow = previousOverflow;
+        };
+    }, [isAnyRosterDialogOpen]);
+
+    useEffect(() => {
+        function updateScrollToTopVisibility() {
+            setShowScrollToTop(window.scrollY > 400);
+        }
+
+        updateScrollToTopVisibility();
+        window.addEventListener('scroll', updateScrollToTopVisibility, {
+            passive: true,
+        });
+
+        return () => {
+            window.removeEventListener('scroll', updateScrollToTopVisibility);
+        };
+    }, []);
 
     function selected(
         shift: Shift,
@@ -258,6 +292,15 @@ export default function Roster({
         } finally {
             setBusy(false);
         }
+    }
+
+    function closeFinalizationWarnings() {
+        setFinalizationWarnings([]);
+        setWarningSignature(null);
+    }
+
+    function closePicker() {
+        setPicker(null);
     }
 
     async function finalizeRoster(signature: string | null = null) {
@@ -344,7 +387,7 @@ export default function Roster({
                                     block: 'center',
                                 })
                         }
-                        className="text-left underline underline-offset-2"
+                        className="cursor-pointer text-left underline underline-offset-2"
                     >
                         <strong>{item.severity}</strong> - {item.message}
                     </button>
@@ -376,7 +419,7 @@ export default function Roster({
                             type="button"
                             disabled={busy}
                             onClick={() => void undoLast()}
-                            className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold disabled:opacity-50"
+                            className="cursor-pointer rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold disabled:opacity-50"
                         >
                             Undo Last Change
                         </button>
@@ -385,7 +428,7 @@ export default function Roster({
                         <button
                             type="button"
                             onClick={() => setSwapSource(null)}
-                            className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold"
+                            className="cursor-pointer rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold"
                         >
                             Cancel Swap
                         </button>
@@ -397,7 +440,7 @@ export default function Roster({
                                     <button
                                         disabled={processing}
                                         type="submit"
-                                        className="rounded-lg bg-teal-700 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-800 disabled:opacity-50"
+                                        className="cursor-pointer rounded-lg bg-teal-700 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-800 disabled:opacity-50"
                                     >
                                         {processing
                                             ? 'Generating…'
@@ -430,7 +473,7 @@ export default function Roster({
                                         );
                                     }
                                 }}
-                                className="rounded-lg border border-red-600 bg-white px-4 py-2 text-sm font-semibold text-red-700 hover:bg-red-50 disabled:opacity-50"
+                                className="cursor-pointer rounded-lg border border-red-600 bg-white px-4 py-2 text-sm font-semibold text-red-700 hover:bg-red-50 disabled:opacity-50"
                             >
                                 {regeneration.processing
                                     ? 'Regenerating…'
@@ -448,7 +491,7 @@ export default function Roster({
                             type="button"
                             disabled={busy}
                             onClick={() => void finalizeRoster()}
-                            className="rounded-lg bg-slate-800 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+                            className="cursor-pointer rounded-lg bg-slate-800 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
                         >
                             Finalize Roster
                         </button>
@@ -466,7 +509,7 @@ export default function Roster({
                                     reopening.post(reopen.url(month));
                                 }
                             }}
-                            className="rounded-lg border border-slate-500 bg-white px-4 py-2 text-sm font-semibold disabled:opacity-50"
+                            className="cursor-pointer rounded-lg border border-slate-500 bg-white px-4 py-2 text-sm font-semibold disabled:opacity-50"
                         >
                             Reopen Roster
                         </button>
@@ -765,7 +808,7 @@ export default function Roster({
                                                                                                 ),
                                                                                             )
                                                                                         }
-                                                                                        className="rounded border border-sky-300 px-2 py-1 text-xs font-semibold text-sky-800 disabled:opacity-50"
+                                                                                        className="cursor-pointer rounded border border-sky-300 px-2 py-1 text-xs font-semibold text-sky-800 disabled:opacity-50"
                                                                                     >
                                                                                         Select
                                                                                         for
@@ -788,7 +831,7 @@ export default function Roster({
                                                                                                 ),
                                                                                             )
                                                                                         }
-                                                                                        className="rounded border border-teal-300 px-2 py-1 text-xs font-semibold text-teal-800 disabled:opacity-50"
+                                                                                        className="cursor-pointer rounded border border-teal-300 px-2 py-1 text-xs font-semibold text-teal-800 disabled:opacity-50"
                                                                                     >
                                                                                         {slot.doctor
                                                                                             ? 'Replace'
@@ -809,7 +852,7 @@ export default function Roster({
                                                                                                     ),
                                                                                                 )
                                                                                             }
-                                                                                            className="rounded border border-sky-300 px-2 py-1 text-xs font-semibold text-sky-800 disabled:opacity-50"
+                                                                                            className="cursor-pointer rounded border border-sky-300 px-2 py-1 text-xs font-semibold text-sky-800 disabled:opacity-50"
                                                                                         >
                                                                                             Swap
                                                                                         </button>
@@ -838,7 +881,7 @@ export default function Roster({
                                                                                                         },
                                                                                                     );
                                                                                             }}
-                                                                                            className="rounded border border-red-300 px-2 py-1 text-xs font-semibold text-red-700 disabled:opacity-50"
+                                                                                            className="cursor-pointer rounded border border-red-300 px-2 py-1 text-xs font-semibold text-red-700 disabled:opacity-50"
                                                                                         >
                                                                                             Clear
                                                                                         </button>
@@ -869,8 +912,8 @@ export default function Roster({
                     aria-label="Choose a doctor"
                     className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-3 sm:p-6"
                 >
-                    <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-xl bg-white p-4 shadow-xl sm:p-6">
-                        <div className="flex items-center justify-between gap-3">
+                    <div className="flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-xl bg-white shadow-xl">
+                        <header className="flex shrink-0 items-center justify-between gap-4 border-b border-slate-200 px-4 py-3 sm:px-5">
                             <h2 className="text-lg font-semibold">
                                 {picker.expected_assignment_id
                                     ? 'Replace doctor'
@@ -878,76 +921,92 @@ export default function Roster({
                             </h2>
                             <button
                                 type="button"
-                                onClick={() => setPicker(null)}
-                                className="rounded border border-slate-300 px-3 py-1.5 text-sm"
+                                aria-label="Close"
+                                onClick={closePicker}
+                                className="flex size-11 shrink-0 cursor-pointer items-center justify-center rounded-lg text-2xl leading-none text-slate-600 hover:bg-slate-100 hover:text-slate-900 focus-visible:ring-2 focus-visible:ring-teal-700 focus-visible:outline-none"
                             >
-                                Close
+                                ×
                             </button>
-                        </div>
-                        <p className="mt-1 text-sm text-slate-600">
-                            Eligible doctors are ordered by scheduling
-                            preference. Choose any eligible doctor.
-                        </p>
-                        <ul className="mt-4 space-y-2">
-                            {options.map((doctor) => (
-                                <li
-                                    key={doctor.id}
-                                    className="rounded-lg border border-slate-200 p-3 text-sm"
-                                >
-                                    <div className="flex flex-wrap items-start justify-between gap-2">
-                                        <div>
-                                            <p className="font-semibold">
-                                                {doctor.short_code} -{' '}
-                                                {doctor.name}
-                                            </p>
-                                            <p className="text-slate-600">
-                                                Workload:{' '}
-                                                {
-                                                    doctor.effective_workload_minutes
-                                                }{' '}
-                                                min · Night:{' '}
-                                                {doctor.night_count} · Optional:{' '}
-                                                {doctor.optional_count}
-                                            </p>
-                                            {doctor.preferred_work && (
-                                                <p className="font-semibold text-teal-800">
-                                                    {picker.role === 'optional'
-                                                        ? 'Preferred Work - Main request'
-                                                        : 'Preferred Work'}
+                        </header>
+                        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-4 sm:px-5">
+                            <p className="text-sm text-slate-600">
+                                Eligible doctors are ordered by scheduling
+                                preference. Choose any eligible doctor.
+                            </p>
+                            <ul className="mt-4 space-y-2">
+                                {options.map((doctor) => (
+                                    <li
+                                        key={doctor.id}
+                                        className="rounded-lg border border-slate-200 p-3 text-sm"
+                                    >
+                                        <div className="flex flex-wrap items-start justify-between gap-2">
+                                            <div>
+                                                <p className="font-semibold">
+                                                    {doctor.short_code} -{' '}
+                                                    {doctor.name}
                                                 </p>
-                                            )}
-                                            {!doctor.eligible && (
-                                                <p className="text-red-700">
-                                                    Unavailable -{' '}
-                                                    {doctor.reasons.join(' ')}
+                                                <p className="text-slate-600">
+                                                    Workload:{' '}
+                                                    {
+                                                        doctor.effective_workload_minutes
+                                                    }{' '}
+                                                    min · Night:{' '}
+                                                    {doctor.night_count} ·
+                                                    Optional:{' '}
+                                                    {doctor.optional_count}
                                                 </p>
-                                            )}
+                                                {doctor.preferred_work && (
+                                                    <p className="font-semibold text-teal-800">
+                                                        {picker.role ===
+                                                        'optional'
+                                                            ? 'Preferred Work - Main request'
+                                                            : 'Preferred Work'}
+                                                    </p>
+                                                )}
+                                                {!doctor.eligible && (
+                                                    <p className="text-red-700">
+                                                        Unavailable -{' '}
+                                                        {doctor.reasons.join(
+                                                            ' ',
+                                                        )}
+                                                    </p>
+                                                )}
+                                            </div>
+                                            <button
+                                                type="button"
+                                                disabled={
+                                                    busy ||
+                                                    !doctor.eligible ||
+                                                    doctor.id ===
+                                                        picker.expected_doctor_id
+                                                }
+                                                onClick={() =>
+                                                    void save({
+                                                        operation: 'replace',
+                                                        ...picker,
+                                                        doctor_id: doctor.id,
+                                                        expected_source_assignment_id:
+                                                            doctor.source_assignment_id,
+                                                    })
+                                                }
+                                                className="cursor-pointer rounded-lg bg-teal-700 px-3 py-2 font-semibold text-white disabled:opacity-50"
+                                            >
+                                                Select
+                                            </button>
                                         </div>
-                                        <button
-                                            type="button"
-                                            disabled={
-                                                busy ||
-                                                !doctor.eligible ||
-                                                doctor.id ===
-                                                    picker.expected_doctor_id
-                                            }
-                                            onClick={() =>
-                                                void save({
-                                                    operation: 'replace',
-                                                    ...picker,
-                                                    doctor_id: doctor.id,
-                                                    expected_source_assignment_id:
-                                                        doctor.source_assignment_id,
-                                                })
-                                            }
-                                            className="rounded-lg bg-teal-700 px-3 py-2 font-semibold text-white disabled:opacity-50"
-                                        >
-                                            Select
-                                        </button>
-                                    </div>
-                                </li>
-                            ))}
-                        </ul>
+                                    </li>
+                                ))}
+                            </ul>
+                        </div>
+                        <footer className="flex shrink-0 justify-end border-t border-slate-200 px-4 py-3 sm:px-5">
+                            <button
+                                type="button"
+                                onClick={closePicker}
+                                className="cursor-pointer rounded-lg border border-slate-300 px-4 py-2 text-sm hover:bg-slate-50 focus-visible:ring-2 focus-visible:ring-teal-700 focus-visible:outline-none"
+                            >
+                                Cancel
+                            </button>
+                        </footer>
                     </div>
                 </div>
             )}
@@ -972,7 +1031,7 @@ export default function Roster({
                                 type="button"
                                 disabled={busy}
                                 onClick={() => void save(pending, true)}
-                                className="rounded-lg bg-teal-700 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+                                className="cursor-pointer rounded-lg bg-teal-700 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
                             >
                                 Continue and save
                             </button>
@@ -982,7 +1041,7 @@ export default function Roster({
                                     setPending(null);
                                     setWarnings([]);
                                 }}
-                                className="rounded-lg border border-slate-300 px-4 py-2 text-sm"
+                                className="cursor-pointer rounded-lg border border-slate-300 px-4 py-2 text-sm"
                             >
                                 Cancel
                             </button>
@@ -990,56 +1049,78 @@ export default function Roster({
                     </div>
                 </div>
             )}
-            {finalizationWarnings.length > 0 && warningSignature && (
+            {isFinalizationWarningsOpen && (
                 <div
                     role="dialog"
                     aria-modal="true"
                     aria-label="Finalize with warnings"
                     className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-900/70 p-3"
                 >
-                    <div className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-xl bg-white p-5 shadow-xl">
-                        <h2 className="text-lg font-semibold">
-                            Finalize with warnings?
-                        </h2>
-                        {message && (
-                            <p
-                                role="alert"
-                                className="mt-2 text-sm text-red-700"
+                    <div className="flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-xl bg-white shadow-xl">
+                        <header className="flex shrink-0 items-center justify-between gap-4 border-b border-slate-200 px-4 py-3 sm:px-5">
+                            <h2 className="text-lg font-semibold">
+                                Finalize with warnings?
+                            </h2>
+                            <button
+                                type="button"
+                                aria-label="Close"
+                                onClick={closeFinalizationWarnings}
+                                className="flex size-11 shrink-0 cursor-pointer items-center justify-center rounded-lg text-2xl leading-none text-slate-600 hover:bg-slate-100 hover:text-slate-900 focus-visible:ring-2 focus-visible:ring-teal-700 focus-visible:outline-none"
                             >
-                                {message}
-                            </p>
-                        )}
-                        <ul className="mt-3 list-disc space-y-2 pl-5 text-sm">
-                            {finalizationWarnings.map((warning, index) => (
-                                <li key={`${warning.target}-${index}`}>
-                                    <strong>Warning</strong> - {warning.message}
-                                </li>
-                            ))}
-                        </ul>
-                        <div className="mt-5 flex flex-wrap gap-2">
+                                ×
+                            </button>
+                        </header>
+                        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-4 sm:px-5">
+                            {message && (
+                                <p
+                                    role="alert"
+                                    className="text-sm text-red-700"
+                                >
+                                    {message}
+                                </p>
+                            )}
+                            <ul className="mt-3 list-disc space-y-2 pl-5 text-sm">
+                                {finalizationWarnings.map((warning, index) => (
+                                    <li key={`${warning.target}-${index}`}>
+                                        <strong>Warning</strong> -{' '}
+                                        {warning.message}
+                                    </li>
+                                ))}
+                            </ul>
+                        </div>
+                        <footer className="flex shrink-0 flex-wrap gap-2 border-t border-slate-200 px-4 py-3 sm:px-5">
                             <button
                                 type="button"
                                 disabled={busy}
                                 onClick={() =>
                                     void finalizeRoster(warningSignature)
                                 }
-                                className="rounded-lg bg-teal-700 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+                                className="cursor-pointer rounded-lg bg-teal-700 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
                             >
                                 Finalize Anyway
                             </button>
                             <button
                                 type="button"
-                                onClick={() => {
-                                    setFinalizationWarnings([]);
-                                    setWarningSignature(null);
-                                }}
-                                className="rounded-lg border border-slate-300 px-4 py-2 text-sm"
+                                onClick={closeFinalizationWarnings}
+                                className="cursor-pointer rounded-lg border border-slate-300 px-4 py-2 text-sm hover:bg-slate-50 focus-visible:ring-2 focus-visible:ring-teal-700 focus-visible:outline-none"
                             >
                                 Cancel
                             </button>
-                        </div>
+                        </footer>
                     </div>
                 </div>
+            )}
+            {showScrollToTop && !isAnyRosterDialogOpen && (
+                <button
+                    type="button"
+                    aria-label="Scroll to top"
+                    onClick={() =>
+                        window.scrollTo({ top: 0, behavior: 'smooth' })
+                    }
+                    className="fixed right-5 bottom-5 z-[60] flex size-12 cursor-pointer items-center justify-center rounded-full bg-teal-700 text-2xl font-semibold text-white shadow-lg transition hover:bg-teal-800 focus-visible:ring-2 focus-visible:ring-teal-700 focus-visible:ring-offset-2 focus-visible:outline-none"
+                >
+                    ↑
+                </button>
             )}
         </AppLayout>
     );
