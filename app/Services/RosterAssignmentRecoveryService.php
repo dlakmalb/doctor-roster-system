@@ -33,6 +33,12 @@ class RosterAssignmentRecoveryService
     /** @var array<int, array<int, bool>> */
     private array $conflictingShifts = [];
 
+    /** @var array<int, list<int>> */
+    private array $conflictingShiftIds = [];
+
+    /** @var array<int, RosterShift> */
+    private array $shiftsById = [];
+
     /** @var array<string, array{shift: RosterShift, role: RosterAssignmentRole, slot: int, doctor_id: int, fixed: bool}> */
     private array $plan = [];
 
@@ -59,6 +65,8 @@ class RosterAssignmentRecoveryService
         $this->diagnostics = ['calls' => 0, 'states' => 0, 'max_depth' => 0, 'candidates' => 0, 'chains' => 0, 'ranking_seconds' => 0.0, 'elapsed_seconds' => 0.0, 'chain_depth_limit' => 0, 'explored_state_limit' => 0, 'fixed_blockers' => 0, 'no_eligible_candidate' => 0];
         $this->vacancyDiagnostics = [];
         $this->staticallyEligible = $this->conflictingShifts = [];
+        $this->conflictingShiftIds = [];
+        $this->shiftsById = $shifts->keyBy('id')->all();
         $this->doctors = $doctors;
         foreach ($shifts as $shift) {
             foreach ($doctors as $doctor) {
@@ -200,12 +208,23 @@ class RosterAssignmentRecoveryService
         $eligibleCandidateFound = false;
         $eligibleDoctors = $this->doctors->filter(fn (Doctor $doctor): bool => isset($this->staticallyEligible[$shift->id][$doctor->id]));
         $candidates = [];
-        foreach ($this->ranker->ordered($eligibleDoctors, $shift, $role, $assignedByDoctor) as $ranking => $doctor) {
+        $orderedDoctors = $this->ranker->ordered($eligibleDoctors, $shift, $role, $assignedByDoctor);
+        foreach ($orderedDoctors as $ranking => $doctor) {
             $this->diagnostics['candidates']++;
             $blockers = [];
-            foreach ($entriesByDoctor[$doctor->id] ?? [] as $key => $entry) {
-                if ($this->shiftsConflict($shift, $entry['shift'])) {
-                    $blockers[$key] = $entry;
+            foreach ($this->conflictingShiftIds($shift) as $conflictingShiftId) {
+                $entries = $entriesByDoctor[$doctor->id][$conflictingShiftId] ?? null;
+                if ($entries === null) {
+                    continue;
+                }
+                if (isset($entries['shift'])) {
+                    $blockerKey = $this->key($entries['shift'], $entries['role'], $entries['slot']);
+                    $blockers[$blockerKey] = $entries;
+
+                    continue;
+                }
+                foreach ($entries as $blockerKey => $entry) {
+                    $blockers[$blockerKey] = $entry;
                 }
             }
             if (! $allowReassignment && $blockers !== []) {
@@ -285,14 +304,23 @@ class RosterAssignmentRecoveryService
     }
 
     /**
-     * @param  array<int, array<string, array{shift: RosterShift, role: RosterAssignmentRole, slot: int, doctor_id: int, fixed: bool}>>  $entriesByDoctor
+     * @param  array<int, array<int, array{shift: RosterShift, role: RosterAssignmentRole, slot: int, doctor_id: int, fixed: bool}|array<string, array{shift: RosterShift, role: RosterAssignmentRole, slot: int, doctor_id: int, fixed: bool}>>>  $entriesByDoctor
      * @return Collection<int, Collection<int, RosterShift>>
      */
     private function assignedByDoctor(array &$entriesByDoctor): Collection
     {
         $assigned = collect();
         foreach ($this->plan as $key => $entry) {
-            $entriesByDoctor[$entry['doctor_id']][$key] = $entry;
+            $shiftId = $entry['shift']->id;
+            if (! isset($entriesByDoctor[$entry['doctor_id']][$shiftId])) {
+                $entriesByDoctor[$entry['doctor_id']][$shiftId] = $entry;
+            } elseif (isset($entriesByDoctor[$entry['doctor_id']][$shiftId]['shift'])) {
+                $existingEntry = $entriesByDoctor[$entry['doctor_id']][$shiftId];
+                $existingKey = $this->key($existingEntry['shift'], $existingEntry['role'], $existingEntry['slot']);
+                $entriesByDoctor[$entry['doctor_id']][$shiftId] = [$existingKey => $existingEntry, $key => $entry];
+            } else {
+                $entriesByDoctor[$entry['doctor_id']][$shiftId][$key] = $entry;
+            }
             if (! $assigned->has($entry['doctor_id'])) {
                 $assigned->put($entry['doctor_id'], collect());
             }
@@ -309,6 +337,22 @@ class RosterAssignmentRecoveryService
         }
 
         return $this->conflictingShifts[$shift->id][$otherShift->id];
+    }
+
+    /** @return list<int> */
+    private function conflictingShiftIds(RosterShift $shift): array
+    {
+        if (! isset($this->conflictingShiftIds[$shift->id])) {
+            $conflictingShiftIds = [];
+            foreach ($this->shiftsById as $otherShift) {
+                if ($this->shiftsConflict($shift, $otherShift)) {
+                    $conflictingShiftIds[] = $otherShift->id;
+                }
+            }
+            $this->conflictingShiftIds[$shift->id] = $conflictingShiftIds;
+        }
+
+        return $this->conflictingShiftIds[$shift->id];
     }
 
     private function rebuildRanking(): void

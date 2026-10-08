@@ -209,6 +209,44 @@ it('fills all Main positions and as many Optional positions as possible in a 14-
     expect(collect(app(RosterDraftValidationService::class)->validate($roster))->where('severity', 'Error')->count())->toBe(0);
 });
 
+it('keeps Main complete and Optional coverage high with a 13-doctor exclusion', function () {
+    [$admin, $roster] = assignmentRoster(function (): void {
+        $doctor = Doctor::query()->where('is_active', true)->orderBy('id')->firstOrFail();
+        DoctorMonthlyExclusion::create(['doctor_id' => $doctor->id, 'year' => 2026, 'month' => 10]);
+    });
+    $recovery = app(RosterAssignmentRecoveryService::class);
+    app()->instance(RosterAssignmentRecoveryService::class, $recovery);
+
+    $started = microtime(true);
+    $this->actingAs($admin)->post(generateUrl())->assertRedirect();
+    $elapsed = microtime(true) - $started;
+    $diagnostics = $recovery->diagnostics();
+    $shifts = $roster->shifts()->with('shiftType')->get();
+    $requiredMain = $shifts->sum(fn (RosterShift $shift): int => $shift->shiftType->main_count);
+    $requiredOptional = $shifts->sum(fn (RosterShift $shift): int => $shift->shiftType->optional_count);
+    $mainCount = RosterAssignment::query()->where('role', RosterAssignmentRole::Main)->count();
+    $optionalCount = RosterAssignment::query()->where('role', RosterAssignmentRole::Optional)->count();
+    $issues = collect(app(RosterDraftValidationService::class)->validate($roster));
+
+    if (getenv('ROSTER_BENCHMARK')) {
+        fwrite(STDERR, 'ROSTER_13_BENCHMARK '.json_encode([
+            'seconds' => $elapsed,
+            'totals' => $diagnostics['totals'],
+            'unfilled' => count($recovery->unfilledDiagnostics()),
+            'main_filled' => $mainCount,
+            'main_required' => $requiredMain,
+            'optional_filled' => $optionalCount,
+            'optional_warnings' => $issues->where('code', 'unfilled_optional_slot')->where('severity', 'Warning')->count(),
+            'validation_errors' => $issues->where('severity', 'Error')->count(),
+        ]).PHP_EOL);
+    }
+
+    expect($mainCount)->toBe($requiredMain)
+        ->and($optionalCount)->toBeGreaterThanOrEqual(99)
+        ->and($issues->where('code', 'unfilled_optional_slot')->where('severity', 'Warning')->count())->toBe($requiredOptional - $optionalCount)
+        ->and($issues->where('severity', 'Error'))->toBeEmpty();
+});
+
 it('keeps the feasible month complete across randomized regeneration', function () {
     [$admin, $roster] = assignmentRoster();
     $recovery = app(RosterAssignmentRecoveryService::class);

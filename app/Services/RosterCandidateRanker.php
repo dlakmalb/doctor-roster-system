@@ -34,6 +34,9 @@ class RosterCandidateRanker
     /** @var array<int, DoctorMonthlyWorkload> */
     private array $history = [];
 
+    /** @var array<int, array<int, bool>> */
+    private array $shiftConflicts = [];
+
     private CarbonImmutable $firstDate;
 
     public function __construct(private DoctorAssignmentEligibilityService $eligibility) {}
@@ -46,6 +49,7 @@ class RosterCandidateRanker
     public function initialize(Collection $shifts, Collection $preferredRequests, Collection $history, CarbonImmutable $firstDate): void
     {
         $this->preferences = [];
+        $this->shiftConflicts = [];
         $this->resetRecordedAssignments();
         $this->history = $history->all();
         $this->firstDate = $firstDate;
@@ -258,15 +262,24 @@ class RosterCandidateRanker
             if ($preferredShift->id === $shift->id && $role === RosterAssignmentRole::Main) {
                 continue;
             }
-            if ($assignedShifts->contains(fn (RosterShift $assigned): bool => $this->eligibility->shiftConflict($preferredShift, $assigned) !== null)) {
+            if ($assignedShifts->contains(fn (RosterShift $assigned): bool => $this->shiftsConflict($preferredShift, $assigned))) {
                 continue;
             }
-            if ($this->eligibility->shiftConflict($preferredShift, $shift) !== null) {
+            if ($this->shiftsConflict($preferredShift, $shift)) {
                 $blocked[] = $preferredShift;
             }
         }
 
         return $blocked;
+    }
+
+    private function shiftsConflict(RosterShift $shift, RosterShift $otherShift): bool
+    {
+        if (! isset($this->shiftConflicts[$shift->id][$otherShift->id])) {
+            $this->shiftConflicts[$shift->id][$otherShift->id] = $this->eligibility->shiftConflict($shift, $otherShift) !== null;
+        }
+
+        return $this->shiftConflicts[$shift->id][$otherShift->id];
     }
 
     private function wasPlannedBefore(RosterShift $preferredShift, RosterShift $candidateShift, RosterAssignmentRole $role, bool $usePlanningOrder): bool
