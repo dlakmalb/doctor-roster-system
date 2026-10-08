@@ -6,6 +6,7 @@ use App\Enums\RosterStatus;
 use App\Models\Doctor;
 use App\Models\DoctorMonthlyExclusion;
 use App\Models\DoctorMonthlyParticipation;
+use App\Models\DoctorMonthlyWeekdayPreference;
 use App\Models\DoctorMonthlyWorkload;
 use App\Models\DoctorRequest;
 use App\Models\RosterAssignment;
@@ -14,6 +15,7 @@ use App\Models\ShiftType;
 use App\Models\User;
 use App\Services\DoctorAssignmentEligibilityService;
 use App\Services\RequestIntervalService;
+use App\Services\RosterAssignmentGenerator;
 use App\Services\RosterAssignmentRecoveryService;
 use App\Services\RosterDraftValidationService;
 use App\Services\RosterStructureService;
@@ -280,6 +282,89 @@ it('keeps the feasible month complete across randomized regeneration', function 
     }
     if (getenv('ROSTER_BENCHMARK')) {
         fwrite(STDERR, 'ROSTER_20_RUN '.json_encode(['fastest' => min($timings), 'slowest' => max($timings), 'average' => array_sum($timings) / count($timings), 'max_vacancy_states' => $maximumStates, 'max_depth' => $maximumDepth, 'total_states' => $totalStates, 'limit_hits' => $limitHits, 'unresolved' => $unresolved]).PHP_EOL);
+    }
+});
+
+it('compares monthly weekday preferences across repeatable full roster generations', function () {
+    [$admin, $roster] = assignmentRoster();
+    $this->actingAs($admin);
+    $generator = app(RosterAssignmentGenerator::class);
+    $shiftTypes = ShiftType::query()->get()->keyBy('code');
+    $doctors = Doctor::query()->whereIn('short_code', ['T', 'G'])->get()->keyBy('short_code');
+    $scenarios = [];
+
+    foreach (['without_preferences', 'with_preferences'] as $scenario) {
+        if ($scenario === 'with_preferences') {
+            foreach ([
+                ['T', 'weekday_night', 4],
+                ['T', 'weekend_night', 7],
+                ['G', 'weekday_evening', 4],
+                ['G', 'weekday_night', 4],
+            ] as [$shortCode, $shiftCode, $weekday]) {
+                DoctorMonthlyWeekdayPreference::create([
+                    'doctor_id' => $doctors[$shortCode]->id,
+                    'year' => 2026,
+                    'month' => 10,
+                    'shift_type_id' => $shiftTypes[$shiftCode]->id,
+                    'weekday' => $weekday,
+                ]);
+            }
+        }
+
+        $runs = [];
+        for ($run = 0; $run < 3; $run++) {
+            $startedAt = microtime(true);
+            if ($run === 0 && $scenario === 'without_preferences') {
+                $generator->generate($roster, $admin);
+            } else {
+                $generator->regenerate($roster, $admin);
+            }
+            $elapsedSeconds = microtime(true) - $startedAt;
+            $assignments = RosterAssignment::query()
+                ->with(['doctor', 'rosterShift.shiftType'])
+                ->get();
+            $thisaraNights = $assignments->filter(fn (RosterAssignment $assignment): bool => $assignment->role === RosterAssignmentRole::Main
+                && $assignment->doctor->short_code === 'T'
+                && str_contains($assignment->rosterShift->shiftType->code, 'night'));
+            $gangaDuties = $assignments->filter(fn (RosterAssignment $assignment): bool => $assignment->role === RosterAssignmentRole::Main
+                && $assignment->doctor->short_code === 'G'
+                && in_array($assignment->rosterShift->shiftType->code, ['weekday_evening', 'weekday_night'], true));
+            $nightCounts = $assignments->filter(fn (RosterAssignment $assignment): bool => $assignment->role === RosterAssignmentRole::Main
+                && str_contains($assignment->rosterShift->shiftType->code, 'night'))
+                ->countBy(fn (RosterAssignment $assignment): int => $assignment->doctor_id);
+            $workloadMinutes = $assignments->where('role', RosterAssignmentRole::Main)
+                ->groupBy('doctor_id')
+                ->map(fn ($doctorAssignments): int => $doctorAssignments->sum(fn (RosterAssignment $assignment): int => $assignment->rosterShift->shiftType->duration_minutes));
+            $shiftRows = $roster->shifts()->with('shiftType')->get();
+            $requiredMain = $shiftRows->sum(fn (RosterShift $shift): int => $shift->shiftType->main_count);
+            $requiredOptional = $shiftRows->sum(fn (RosterShift $shift): int => $shift->shiftType->optional_count);
+            $validationErrors = collect(app(RosterDraftValidationService::class)->validate($roster))
+                ->where('severity', 'Error')->count();
+
+            $runs[] = [
+                'seconds' => round($elapsedSeconds, 3),
+                'thisara_nights' => $thisaraNights->count(),
+                'thisara_nights_on_thursday_or_sunday' => $thisaraNights->filter(fn (RosterAssignment $assignment): bool => in_array(CarbonImmutable::parse($assignment->rosterShift->shift_date)->dayOfWeekIso, [4, 7], true))->count(),
+                'ganga_evening_night_duties' => $gangaDuties->count(),
+                'ganga_duties_on_thursday' => $gangaDuties->filter(fn (RosterAssignment $assignment): bool => CarbonImmutable::parse($assignment->rosterShift->shift_date)->dayOfWeekIso === 4)->count(),
+                'night_count_spread' => $nightCounts->isEmpty() ? 0 : $nightCounts->max() - $nightCounts->min(),
+                'workload_minutes_spread' => $workloadMinutes->isEmpty() ? 0 : $workloadMinutes->max() - $workloadMinutes->min(),
+                'main_filled' => $assignments->where('role', RosterAssignmentRole::Main)->count(),
+                'main_required' => $requiredMain,
+                'optional_filled' => $assignments->where('role', RosterAssignmentRole::Optional)->count(),
+                'optional_capacity' => $requiredOptional,
+                'validation_errors' => $validationErrors,
+            ];
+
+            expect($runs[array_key_last($runs)]['main_filled'])->toBe($requiredMain)
+                ->and($runs[array_key_last($runs)]['optional_filled'])->toBeLessThanOrEqual($requiredOptional)
+                ->and($validationErrors)->toBe(0);
+        }
+        $scenarios[$scenario] = $runs;
+    }
+
+    if (getenv('PREFERENCE_BENCHMARK')) {
+        fwrite(STDERR, 'PREFERENCE_GENERATION_COMPARISON '.json_encode($scenarios).PHP_EOL);
     }
 });
 

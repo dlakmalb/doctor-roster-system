@@ -8,6 +8,11 @@ import {
     update as updateShiftRestrictions,
 } from '@/actions/App/Http/Controllers/DoctorMonthlyShiftRestrictionController';
 import {
+    destroy as destroyWeekdayPreference,
+    store as storeWeekdayPreference,
+    update as updateWeekdayPreference,
+} from '@/actions/App/Http/Controllers/DoctorMonthlyWeekdayPreferenceController';
+import {
     destroy as destroyRequest,
     store as storeRequest,
     update as updateRequest,
@@ -62,7 +67,8 @@ type Warning = {
         | 'late_request'
         | 'day_off_limit'
         | 'staffing_risk'
-        | 'restricted_preferred_work';
+        | 'restricted_preferred_work'
+        | 'restricted_weekday_preference';
     message: string;
 };
 
@@ -72,6 +78,15 @@ type ShiftRestriction = {
     shift_type: Pick<ShiftType, 'id' | 'code' | 'name'>;
 };
 
+type WeekdayPreference = {
+    id: number;
+    doctor: Doctor;
+    shift_type: Pick<ShiftType, 'id' | 'code' | 'name'>;
+    weekday: number;
+    weekday_name: string;
+    conflicts_with_restriction: boolean;
+};
+
 type PageProps = {
     month: Month;
     rosterStatus: 'not_started' | 'draft' | 'final';
@@ -79,6 +94,7 @@ type PageProps = {
     doctors: Doctor[];
     shiftTypes: ShiftType[];
     shiftRestrictions: ShiftRestriction[];
+    weekdayPreferences: WeekdayPreference[];
     requests: MonthlyRequest[];
     summary: {
         active_doctors: number;
@@ -139,6 +155,22 @@ export default function MonthlySetup(props: PageProps) {
     const [editingRestrictionId, setEditingRestrictionId] = useState<
         number | null
     >(null);
+    const weekdayPreferenceForm = useForm<{
+        doctor_id: number | '';
+        shift_type_id: number | '';
+        weekdays: number[];
+    }>({ doctor_id: '', shift_type_id: '', weekdays: [] });
+    const [editingWeekdayPreferenceId, setEditingWeekdayPreferenceId] =
+        useState<number | null>(null);
+    const selectedPreferenceShiftType = props.shiftTypes.find(
+        (shiftType) =>
+            shiftType.id === weekdayPreferenceForm.data.shift_type_id,
+    );
+    const compatibleWeekdays = selectedPreferenceShiftType?.code.startsWith(
+        'weekend_',
+    )
+        ? [6, 7]
+        : [1, 2, 3, 4, 5];
     const selectedRequest = props.requests.find(
         (request) =>
             request.id === editingId && request.kind !== 'monthly_exclusion',
@@ -302,6 +334,58 @@ export default function MonthlySetup(props: PageProps) {
         }
     }
 
+    function resetWeekdayPreferenceForm(): void {
+        setEditingWeekdayPreferenceId(null);
+        weekdayPreferenceForm.reset();
+        weekdayPreferenceForm.clearErrors();
+    }
+
+    function submitWeekdayPreference(event: FormEvent<HTMLFormElement>): void {
+        event.preventDefault();
+        if (editingWeekdayPreferenceId === null) {
+            weekdayPreferenceForm.post(
+                storeWeekdayPreference.url(props.month),
+                { preserveScroll: true, onSuccess: resetWeekdayPreferenceForm },
+            );
+            return;
+        }
+
+        const weekday = weekdayPreferenceForm.data.weekdays[0];
+        if (weekday === undefined) {
+            weekdayPreferenceForm.setError('weekdays', 'Select a weekday.');
+            return;
+        }
+        router.put(
+            updateWeekdayPreference.url({
+                ...props.month,
+                doctorMonthlyWeekdayPreference: editingWeekdayPreferenceId,
+            }),
+            {
+                doctor_id: weekdayPreferenceForm.data.doctor_id,
+                shift_type_id: weekdayPreferenceForm.data.shift_type_id,
+                weekdays: [weekday],
+            },
+            {
+                preserveScroll: true,
+                onSuccess: resetWeekdayPreferenceForm,
+                onError: (errors) => weekdayPreferenceForm.setError(errors),
+            },
+        );
+    }
+
+    function editWeekdayPreference(preference: WeekdayPreference): void {
+        if (preference.doctor.is_active === false) {
+            return;
+        }
+        setEditingWeekdayPreferenceId(preference.id);
+        weekdayPreferenceForm.setData({
+            doctor_id: preference.doctor.id,
+            shift_type_id: preference.shift_type.id,
+            weekdays: [preference.weekday],
+        });
+        weekdayPreferenceForm.clearErrors();
+    }
+
     const summaryItems = [
         ['Active Doctors', props.summary.active_doctors],
         ['Total Requests', props.summary.total_requests],
@@ -368,7 +452,8 @@ export default function MonthlySetup(props: PageProps) {
                         </h2>
                         <p className="mt-1 text-sm text-amber-900">
                             This roster is Final. Reopen it before changing
-                            requests, exclusions, or shift restrictions.
+                            requests, exclusions, shift restrictions, or weekday
+                            preferences.
                         </p>
                     </div>
                 </div>
@@ -587,6 +672,283 @@ export default function MonthlySetup(props: PageProps) {
                                 </article>
                             );
                         })}
+                    </div>
+                )}
+            </section>
+
+            <section className="mb-5 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
+                <div>
+                    <h2 className="text-xl font-semibold text-slate-950">
+                        Monthly Preferred Weekdays
+                    </h2>
+                    <p className="mt-1 text-sm text-slate-600">
+                        These preferences gently influence scheduling for{' '}
+                        {props.month.label}. They are not guaranteed assignments
+                        and do not create extra duties.
+                    </p>
+                </div>
+                {!isFinal && (
+                    <form
+                        onSubmit={submitWeekdayPreference}
+                        className="mt-4 grid gap-4 rounded-xl bg-slate-50 p-4 sm:grid-cols-2"
+                    >
+                        <label className="block">
+                            <span className="text-sm font-medium text-slate-800">
+                                Active doctor
+                            </span>
+                            <select
+                                className={fieldClassName}
+                                required
+                                value={weekdayPreferenceForm.data.doctor_id}
+                                onChange={(event) =>
+                                    weekdayPreferenceForm.setData({
+                                        ...weekdayPreferenceForm.data,
+                                        doctor_id: event.target.value
+                                            ? Number(event.target.value)
+                                            : '',
+                                        weekdays: [],
+                                    })
+                                }
+                            >
+                                <option value="">Select doctor</option>
+                                {props.doctors.map((doctor) => (
+                                    <option key={doctor.id} value={doctor.id}>
+                                        {doctor.short_code} - {doctor.name}
+                                    </option>
+                                ))}
+                            </select>
+                            {weekdayPreferenceForm.errors.doctor_id && (
+                                <p className="mt-1 text-xs text-red-600">
+                                    {weekdayPreferenceForm.errors.doctor_id}
+                                </p>
+                            )}
+                        </label>
+                        <label className="block">
+                            <span className="text-sm font-medium text-slate-800">
+                                Shift type
+                            </span>
+                            <select
+                                className={fieldClassName}
+                                required
+                                value={weekdayPreferenceForm.data.shift_type_id}
+                                onChange={(event) =>
+                                    weekdayPreferenceForm.setData({
+                                        ...weekdayPreferenceForm.data,
+                                        shift_type_id: event.target.value
+                                            ? Number(event.target.value)
+                                            : '',
+                                        weekdays: [],
+                                    })
+                                }
+                            >
+                                <option value="">Select shift type</option>
+                                {props.shiftTypes.map((shiftType) => (
+                                    <option
+                                        key={shiftType.id}
+                                        value={shiftType.id}
+                                    >
+                                        {shiftType.name}
+                                    </option>
+                                ))}
+                            </select>
+                            {weekdayPreferenceForm.errors.shift_type_id && (
+                                <p className="mt-1 text-xs text-red-600">
+                                    {weekdayPreferenceForm.errors.shift_type_id}
+                                </p>
+                            )}
+                        </label>
+                        <fieldset className="sm:col-span-2">
+                            <legend className="text-sm font-medium text-slate-800">
+                                Preferred weekdays
+                            </legend>
+                            <div className="mt-2 flex flex-wrap gap-2">
+                                {compatibleWeekdays.map((weekday) => {
+                                    const label = new Intl.DateTimeFormat(
+                                        'en',
+                                        {
+                                            weekday: 'long',
+                                            timeZone: 'UTC',
+                                        },
+                                    ).format(
+                                        new Date(Date.UTC(2024, 0, weekday)),
+                                    );
+                                    const alreadySaved =
+                                        weekdayPreferenceForm.data.doctor_id !==
+                                            '' &&
+                                        weekdayPreferenceForm.data
+                                            .shift_type_id !== '' &&
+                                        props.weekdayPreferences.some(
+                                            (preference) =>
+                                                preference.id !==
+                                                    editingWeekdayPreferenceId &&
+                                                preference.doctor.id ===
+                                                    weekdayPreferenceForm.data
+                                                        .doctor_id &&
+                                                preference.shift_type.id ===
+                                                    weekdayPreferenceForm.data
+                                                        .shift_type_id &&
+                                                preference.weekday === weekday,
+                                        );
+
+                                    return (
+                                        <label
+                                            key={weekday}
+                                            className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white p-3 text-sm"
+                                        >
+                                            <input
+                                                type={
+                                                    editingWeekdayPreferenceId ===
+                                                    null
+                                                        ? 'checkbox'
+                                                        : 'radio'
+                                                }
+                                                name="preferred-weekday"
+                                                disabled={
+                                                    !weekdayPreferenceForm.data
+                                                        .shift_type_id ||
+                                                    alreadySaved
+                                                }
+                                                checked={weekdayPreferenceForm.data.weekdays.includes(
+                                                    weekday,
+                                                )}
+                                                onChange={(event) =>
+                                                    weekdayPreferenceForm.setData(
+                                                        'weekdays',
+                                                        editingWeekdayPreferenceId !==
+                                                            null
+                                                            ? [weekday]
+                                                            : event.target
+                                                                    .checked
+                                                              ? [
+                                                                    ...weekdayPreferenceForm
+                                                                        .data
+                                                                        .weekdays,
+                                                                    weekday,
+                                                                ]
+                                                              : weekdayPreferenceForm.data.weekdays.filter(
+                                                                    (item) =>
+                                                                        item !==
+                                                                        weekday,
+                                                                ),
+                                                    )
+                                                }
+                                            />
+                                            {label}
+                                            {alreadySaved && (
+                                                <span className="text-xs text-slate-500">
+                                                    Already saved
+                                                </span>
+                                            )}
+                                        </label>
+                                    );
+                                })}
+                            </div>
+                            {weekdayPreferenceForm.errors.weekdays && (
+                                <p className="mt-1 text-xs text-red-600">
+                                    {weekdayPreferenceForm.errors.weekdays}
+                                </p>
+                            )}
+                        </fieldset>
+                        <div className="flex gap-2">
+                            <button
+                                type="submit"
+                                disabled={
+                                    !weekdayPreferenceForm.data.doctor_id ||
+                                    !weekdayPreferenceForm.data.shift_type_id ||
+                                    weekdayPreferenceForm.data.weekdays
+                                        .length === 0 ||
+                                    weekdayPreferenceForm.processing
+                                }
+                                className="min-h-11 rounded-lg bg-teal-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-teal-800 disabled:opacity-60"
+                            >
+                                {editingWeekdayPreferenceId === null
+                                    ? 'Save preferences'
+                                    : 'Update preference'}
+                            </button>
+                            {editingWeekdayPreferenceId !== null && (
+                                <button
+                                    type="button"
+                                    onClick={resetWeekdayPreferenceForm}
+                                    className="min-h-11 rounded-lg border border-slate-300 px-4 py-2.5 text-sm"
+                                >
+                                    Cancel
+                                </button>
+                            )}
+                        </div>
+                    </form>
+                )}
+                {props.weekdayPreferences.length === 0 ? (
+                    <p className="mt-4 text-sm text-slate-500">
+                        No monthly weekday preferences.
+                    </p>
+                ) : (
+                    <div className="mt-4 divide-y divide-slate-200">
+                        {props.weekdayPreferences.map((preference) => (
+                            <article
+                                key={preference.id}
+                                className="flex flex-col gap-3 py-3 sm:flex-row sm:items-center sm:justify-between"
+                            >
+                                <p className="font-semibold text-slate-900">
+                                    {preference.doctor.name} —{' '}
+                                    {preference.shift_type.name}:{' '}
+                                    {preference.weekday_name}
+                                    {preference.doctor.is_active === false && (
+                                        <span className="ml-2 text-xs font-normal text-slate-500">
+                                            Inactive
+                                        </span>
+                                    )}
+                                    {preference.conflicts_with_restriction && (
+                                        <span className="ml-2 text-xs font-semibold text-amber-800">
+                                            Conflicts with shift restriction
+                                        </span>
+                                    )}
+                                </p>
+                                {!isFinal && (
+                                    <div className="flex gap-2">
+                                        {preference.doctor.is_active !==
+                                            false && (
+                                            <button
+                                                type="button"
+                                                onClick={() =>
+                                                    editWeekdayPreference(
+                                                        preference,
+                                                    )
+                                                }
+                                                className="min-h-10 rounded-lg border border-slate-300 px-3 text-sm"
+                                            >
+                                                Edit
+                                            </button>
+                                        )}
+                                        <button
+                                            type="button"
+                                            onClick={() => {
+                                                if (
+                                                    window.confirm(
+                                                        'Remove this weekday preference?',
+                                                    )
+                                                ) {
+                                                    router.delete(
+                                                        destroyWeekdayPreference.url(
+                                                            {
+                                                                ...props.month,
+                                                                doctorMonthlyWeekdayPreference:
+                                                                    preference.id,
+                                                            },
+                                                        ),
+                                                        {
+                                                            preserveScroll: true,
+                                                        },
+                                                    );
+                                                }
+                                            }}
+                                            className="min-h-10 rounded-lg border border-red-200 px-3 text-sm text-red-700"
+                                        >
+                                            Remove
+                                        </button>
+                                    </div>
+                                )}
+                            </article>
+                        ))}
                     </div>
                 )}
             </section>

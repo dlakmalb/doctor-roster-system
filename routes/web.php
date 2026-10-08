@@ -6,6 +6,7 @@ use App\Http\Controllers\Auth\LogoutController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\DoctorMonthlyExclusionController;
 use App\Http\Controllers\DoctorMonthlyShiftRestrictionController;
+use App\Http\Controllers\DoctorMonthlyWeekdayPreferenceController;
 use App\Http\Controllers\DoctorRequestController;
 use App\Http\Controllers\InitialWorkloadSetupController;
 use App\Http\Controllers\MonthlySetupController;
@@ -77,5 +78,8 @@ Route::middleware('auth')->group(function (): void {
             Route::post('/shift-restrictions', [DoctorMonthlyShiftRestrictionController::class, 'store'])->middleware(EnsureMonthlySetupEditable::class)->name('monthly-shift-restrictions.store');
             Route::put('/shift-restrictions/{doctorMonthlyShiftRestriction}', [DoctorMonthlyShiftRestrictionController::class, 'update'])->middleware(EnsureMonthlySetupEditable::class)->name('monthly-shift-restrictions.update');
             Route::delete('/shift-restrictions/{doctorMonthlyShiftRestriction}', [DoctorMonthlyShiftRestrictionController::class, 'destroy'])->middleware(EnsureMonthlySetupEditable::class)->name('monthly-shift-restrictions.destroy');
+            Route::post('/weekday-preferences', [DoctorMonthlyWeekdayPreferenceController::class, 'store'])->middleware(EnsureMonthlySetupEditable::class)->name('monthly-weekday-preferences.store');
+            Route::put('/weekday-preferences/{doctorMonthlyWeekdayPreference}', [DoctorMonthlyWeekdayPreferenceController::class, 'update'])->middleware(EnsureMonthlySetupEditable::class)->name('monthly-weekday-preferences.update');
+            Route::delete('/weekday-preferences/{doctorMonthlyWeekdayPreference}', [DoctorMonthlyWeekdayPreferenceController::class, 'destroy'])->middleware(EnsureMonthlySetupEditable::class)->name('monthly-weekday-preferences.destroy');
         });
 });

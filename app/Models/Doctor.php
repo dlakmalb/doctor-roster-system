@@ -43,6 +43,12 @@ class Doctor extends Model
         return $this->hasMany(DoctorMonthlyShiftRestriction::class);
     }
 
+    /** @return HasMany<DoctorMonthlyWeekdayPreference, $this> */
+    public function monthlyWeekdayPreferences(): HasMany
+    {
+        return $this->hasMany(DoctorMonthlyWeekdayPreference::class);
+    }
+
     /** @return HasMany<RosterAssignment, $this> */
     public function rosterAssignments(): HasMany
     {

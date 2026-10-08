@@ -9,6 +9,7 @@ use App\Models\Doctor;
 use App\Models\DoctorMonthlyExclusion;
 use App\Models\DoctorMonthlyParticipation;
 use App\Models\DoctorMonthlyShiftRestriction;
+use App\Models\DoctorMonthlyWeekdayPreference;
 use App\Models\DoctorMonthlyWorkload;
 use App\Models\DoctorRequest;
 use App\Models\Roster;
@@ -86,7 +87,9 @@ class RosterDraftContext
             ->where('request_type', DoctorRequestType::PreferredWork->value)
             ->whereBetween('request_date', [$first, $last])->get();
         $this->history = $this->planningHistory->forMonth($roster->year, $roster->month, false);
-        $this->ranker->initialize($this->shifts->values(), $this->preferred, $this->history, $first, $this->restrictedShiftTypes);
+        $monthlyWeekdayPreferences = DoctorMonthlyWeekdayPreference::query()
+            ->where('year', $roster->year)->where('month', $roster->month)->get();
+        $this->ranker->initialize($this->shifts->values(), $this->preferred, $this->history, $first, $this->restrictedShiftTypes, $monthlyWeekdayPreferences);
     }
 
     public function assertParticipationPopulationMatches(): void

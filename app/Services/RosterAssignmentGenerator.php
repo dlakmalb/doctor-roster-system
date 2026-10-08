@@ -7,6 +7,7 @@ use App\Enums\RosterStatus;
 use App\Models\Doctor;
 use App\Models\DoctorMonthlyExclusion;
 use App\Models\DoctorMonthlyShiftRestriction;
+use App\Models\DoctorMonthlyWeekdayPreference;
 use App\Models\DoctorRequest;
 use App\Models\Roster;
 use App\Models\RosterAssignment;
@@ -64,6 +65,8 @@ class RosterAssignmentGenerator
             $preferredRequests = DoctorRequest::query()
                 ->where('request_type', DoctorRequestType::PreferredWork->value)
                 ->whereBetween('request_date', [$firstDate, $lastDate])->get();
+            $monthlyWeekdayPreferences = DoctorMonthlyWeekdayPreference::query()
+                ->where('year', $roster->year)->where('month', $roster->month)->get();
 
             if (! $replace) {
                 foreach ($shifts as $shift) {
@@ -81,7 +84,7 @@ class RosterAssignmentGenerator
                 }
             }
 
-            $this->ranker->initialize($shifts, $preferredRequests, $previousHistory, $firstDate, $restrictedShiftTypes);
+            $this->ranker->initialize($shifts, $preferredRequests, $previousHistory, $firstDate, $restrictedShiftTypes, $monthlyWeekdayPreferences);
             $assignments = $this->recovery->plan($shifts, $doctors, $excludedDoctorIds, $dayOffRequests, $previousHistory, $this->ranker, $restrictedShiftTypes);
 
             if ($replace) {

@@ -6,6 +6,7 @@ use App\Enums\DoctorRequestType;
 use App\Models\Doctor;
 use App\Models\DoctorMonthlyExclusion;
 use App\Models\DoctorMonthlyShiftRestriction;
+use App\Models\DoctorMonthlyWeekdayPreference;
 use App\Models\DoctorRequest;
 use App\Models\Roster;
 use App\Models\ShiftType;
@@ -41,6 +42,10 @@ class MonthlySetupService
             ->with(['doctor:id,name,short_code,is_active', 'shiftType:id,code,name'])
             ->where('year', $year)->where('month', $monthNumber)
             ->orderBy('doctor_id')->orderBy('shift_type_id')->get();
+        $weekdayPreferences = DoctorMonthlyWeekdayPreference::query()
+            ->with(['doctor:id,name,short_code,is_active', 'shiftType:id,code,name,is_active'])
+            ->where('year', $year)->where('month', $monthNumber)
+            ->orderBy('doctor_id')->orderBy('shift_type_id')->orderBy('weekday')->get();
         $shiftTypes = ShiftType::query()
             ->where('is_active', true)
             ->whereIn('code', ['weekday_day', 'weekday_evening', 'weekday_night', 'weekend_day', 'weekend_night'])
@@ -56,6 +61,11 @@ class MonthlySetupService
         foreach ($requests->where('request_type', DoctorRequestType::PreferredWork) as $preferredRequest) {
             if ($shiftRestrictions->contains(fn (DoctorMonthlyShiftRestriction $restriction): bool => $restriction->doctor_id === $preferredRequest->doctor_id && $restriction->shift_type_id === $preferredRequest->shift_type_id)) {
                 $warnings->push(['type' => 'restricted_preferred_work', 'message' => "{$preferredRequest->doctor->name}'s Preferred Work request conflicts with a Monthly Shift Restriction."]);
+            }
+        }
+        foreach ($weekdayPreferences as $preference) {
+            if ($shiftRestrictions->contains(fn (DoctorMonthlyShiftRestriction $restriction): bool => $restriction->doctor_id === $preference->doctor_id && $restriction->shift_type_id === $preference->shift_type_id)) {
+                $warnings->push(['type' => 'restricted_weekday_preference', 'message' => "{$preference->doctor->name}'s {$preference->shiftType->name} weekday preference conflicts with a Monthly Shift Restriction and will not affect ranking."]);
             }
         }
         $fourthAndLaterDatesByDoctor = $dayOffRequests
@@ -135,6 +145,14 @@ class MonthlySetupService
                 'id' => $restriction->id,
                 'doctor' => ['id' => $restriction->doctor->id, 'name' => $restriction->doctor->name, 'short_code' => $restriction->doctor->short_code, 'is_active' => $restriction->doctor->is_active],
                 'shift_type' => ['id' => $restriction->shiftType->id, 'code' => $restriction->shiftType->code, 'name' => $restriction->shiftType->name],
+            ])->values(),
+            'weekdayPreferences' => $weekdayPreferences->map(fn (DoctorMonthlyWeekdayPreference $preference): array => [
+                'id' => $preference->id,
+                'doctor' => ['id' => $preference->doctor->id, 'name' => $preference->doctor->name, 'short_code' => $preference->doctor->short_code, 'is_active' => $preference->doctor->is_active],
+                'shift_type' => ['id' => $preference->shiftType->id, 'code' => $preference->shiftType->code, 'name' => $preference->shiftType->name],
+                'weekday' => $preference->weekday,
+                'weekday_name' => CarbonImmutable::create(2024, 1, $preference->weekday)->format('l'),
+                'conflicts_with_restriction' => $shiftRestrictions->contains(fn (DoctorMonthlyShiftRestriction $restriction): bool => $restriction->doctor_id === $preference->doctor_id && $restriction->shift_type_id === $preference->shift_type_id),
             ])->values(),
             'dayOffRequests' => $dayOffRequests->map(fn (DoctorRequest $request): array => $this->serializeRequest($request, $month))->values(),
             'preferredWorkRequests' => $preferredWorkRequests->map(fn (DoctorRequest $request): array => $this->serializeRequest($request, $month))->values(),

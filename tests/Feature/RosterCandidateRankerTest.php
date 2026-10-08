@@ -3,6 +3,7 @@
 use App\Enums\DoctorRequestType;
 use App\Enums\RosterAssignmentRole;
 use App\Models\Doctor;
+use App\Models\DoctorMonthlyWeekdayPreference;
 use App\Models\DoctorMonthlyWorkload;
 use App\Models\DoctorRequest;
 use App\Models\RosterAssignment;
@@ -83,6 +84,130 @@ it('orders deterministic dimensions and retains every exact tie without doctor I
     expect($ordered->pluck('id')->sort()->values()->all())->toBe([$first->id, $second->id])
         ->and($tiedRanker->dimensions($first, $shift, RosterAssignmentRole::Main, collect()))
         ->toBe($tiedRanker->dimensions($second, $shift, RosterAssignmentRole::Main, collect()));
+});
+
+it('uses compatible monthly weekdays only after all existing fairness dimensions', function () {
+    [, , $preferred, $other] = smartRoster();
+    $thursdayNight = smartShift('2026-10-01', 'weekday_night');
+    $fridayNight = smartShift('2026-10-02', 'weekday_night');
+    $monthlyPreference = DoctorMonthlyWeekdayPreference::create([
+        'doctor_id' => $preferred->id,
+        'year' => 2026,
+        'month' => 10,
+        'shift_type_id' => $thursdayNight->shift_type_id,
+        'weekday' => 4,
+    ]);
+    $ranker = app(RosterCandidateRanker::class);
+    $ranker->initialize(
+        RosterShift::query()->with(['shiftType', 'assignments'])->get(),
+        collect(),
+        collect(),
+        CarbonImmutable::parse('2026-10-01'),
+        [],
+        collect([$monthlyPreference]),
+    );
+
+    expect($ranker->dimensions($preferred, $thursdayNight, RosterAssignmentRole::Main, collect()) < $ranker->dimensions($other, $thursdayNight, RosterAssignmentRole::Main, collect()))
+        ->toBeTrue()
+        ->and($ranker->dimensions($preferred, $fridayNight, RosterAssignmentRole::Main, collect()))
+        ->toBe($ranker->dimensions($other, $fridayNight, RosterAssignmentRole::Main, collect()));
+
+    smartHistory($preferred, ['closing_balance_minutes' => 600]);
+    $ranker->initialize(
+        RosterShift::query()->with(['shiftType', 'assignments'])->get(),
+        collect(),
+        DoctorMonthlyWorkload::query()->get()->keyBy('doctor_id'),
+        CarbonImmutable::parse('2026-10-01'),
+        [],
+        collect([$monthlyPreference]),
+    );
+    expect($ranker->dimensions($other, $thursdayNight, RosterAssignmentRole::Main, collect()) < $ranker->dimensions($preferred, $thursdayNight, RosterAssignmentRole::Main, collect()))
+        ->toBeTrue();
+
+    $ranker->initialize(
+        RosterShift::query()->with(['shiftType', 'assignments'])->get(),
+        collect(),
+        collect(),
+        CarbonImmutable::parse('2026-11-01'),
+    );
+    expect($ranker->dimensions($preferred, $thursdayNight, RosterAssignmentRole::Main, collect()))
+        ->toBe($ranker->dimensions($other, $thursdayNight, RosterAssignmentRole::Main, collect()));
+});
+
+it('applies Sunday Night and Thursday Evening preferences only to their saved shift types', function () {
+    [, , $doctor, $other] = smartRoster();
+    $sundayNight = smartShift('2026-10-04', 'weekend_night');
+    $thursdayEvening = smartShift('2026-10-01', 'weekday_evening');
+    $preferences = collect([
+        DoctorMonthlyWeekdayPreference::create([
+            'doctor_id' => $doctor->id,
+            'year' => 2026,
+            'month' => 10,
+            'shift_type_id' => $sundayNight->shift_type_id,
+            'weekday' => 7,
+        ]),
+        DoctorMonthlyWeekdayPreference::create([
+            'doctor_id' => $doctor->id,
+            'year' => 2026,
+            'month' => 10,
+            'shift_type_id' => $thursdayEvening->shift_type_id,
+            'weekday' => 4,
+        ]),
+    ]);
+    $ranker = app(RosterCandidateRanker::class);
+    $ranker->initialize(
+        RosterShift::query()->with(['shiftType', 'assignments'])->get(),
+        collect(),
+        collect(),
+        CarbonImmutable::parse('2026-10-01'),
+        [],
+        $preferences,
+    );
+
+    expect($ranker->dimensions($doctor, $sundayNight, RosterAssignmentRole::Main, collect()) < $ranker->dimensions($other, $sundayNight, RosterAssignmentRole::Main, collect()))
+        ->toBeTrue()
+        ->and($ranker->dimensions($doctor, $thursdayEvening, RosterAssignmentRole::Main, collect()) < $ranker->dimensions($other, $thursdayEvening, RosterAssignmentRole::Main, collect()))
+        ->toBeTrue()
+        ->and($ranker->ordered(collect([$doctor]), smartShift('2026-10-05', 'weekday_evening'), RosterAssignmentRole::Main, collect()))
+        ->toContain($doctor);
+});
+
+it('keeps date-specific Preferred Work above monthly weekday preferences and ignores restricted monthly preferences', function () {
+    [, , $monthlyDoctor, $dateSpecificDoctor] = smartRoster();
+    $neutralDoctor = Doctor::query()->where('id', '!=', $monthlyDoctor->id)
+        ->where('id', '!=', $dateSpecificDoctor->id)->where('is_active', true)->firstOrFail();
+    $thursdayNight = smartShift('2026-10-01', 'weekday_night');
+    $monthlyPreference = DoctorMonthlyWeekdayPreference::create([
+        'doctor_id' => $monthlyDoctor->id,
+        'year' => 2026,
+        'month' => 10,
+        'shift_type_id' => $thursdayNight->shift_type_id,
+        'weekday' => 4,
+    ]);
+    $dateRequest = smartPreference($dateSpecificDoctor, $thursdayNight);
+    $ranker = app(RosterCandidateRanker::class);
+    $ranker->initialize(
+        RosterShift::query()->with(['shiftType', 'assignments'])->get(),
+        collect([$dateRequest]),
+        collect(),
+        CarbonImmutable::parse('2026-10-01'),
+        [],
+        collect([$monthlyPreference]),
+    );
+
+    expect($ranker->dimensions($dateSpecificDoctor, $thursdayNight, RosterAssignmentRole::Main, collect()) < $ranker->dimensions($monthlyDoctor, $thursdayNight, RosterAssignmentRole::Main, collect()))
+        ->toBeTrue();
+
+    $ranker->initialize(
+        RosterShift::query()->with(['shiftType', 'assignments'])->get(),
+        collect([$dateRequest]),
+        collect(),
+        CarbonImmutable::parse('2026-10-01'),
+        [$monthlyDoctor->id => [$thursdayNight->shift_type_id => true]],
+        collect([$monthlyPreference]),
+    );
+    expect($ranker->dimensions($monthlyDoctor, $thursdayNight, RosterAssignmentRole::Main, collect()))
+        ->toBe($ranker->dimensions($neutralDoctor, $thursdayNight, RosterAssignmentRole::Main, collect()));
 });
 
 it('puts exact Main preference before workload and Night fairness but gives Optional no direct boost', function () {

@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Enums\RosterAssignmentRole;
 use App\Models\Doctor;
+use App\Models\DoctorMonthlyWeekdayPreference;
 use App\Models\DoctorMonthlyWorkload;
 use App\Models\DoctorRequest;
 use App\Models\RosterShift;
@@ -15,6 +16,14 @@ class RosterCandidateRanker
 {
     /** @var array<int, array<int, RosterShift>> */
     private array $preferences = [];
+
+    /** @var array<int, array<int, array<int, true>>> */
+    private array $monthlyWeekdayPreferences = [];
+
+    private bool $hasMonthlyWeekdayPreferences = false;
+
+    /** @var array<int, int> */
+    private array $shiftWeekdays = [];
 
     /** @var array<int, array<int, true>> */
     private array $fulfilled = [];
@@ -46,10 +55,14 @@ class RosterCandidateRanker
      * @param  Collection<int, DoctorRequest>  $preferredRequests
      * @param  Collection<int, DoctorMonthlyWorkload>  $history
      * @param  array<int, array<int, true>>  $restrictedShiftTypes
+     * @param  Collection<int, DoctorMonthlyWeekdayPreference>  $monthlyWeekdayPreferences
      */
-    public function initialize(Collection $shifts, Collection $preferredRequests, Collection $history, CarbonImmutable $firstDate, array $restrictedShiftTypes = []): void
+    public function initialize(Collection $shifts, Collection $preferredRequests, Collection $history, CarbonImmutable $firstDate, array $restrictedShiftTypes = [], ?Collection $monthlyWeekdayPreferences = null): void
     {
         $this->preferences = [];
+        $this->monthlyWeekdayPreferences = [];
+        $this->hasMonthlyWeekdayPreferences = false;
+        $this->shiftWeekdays = [];
         $this->shiftConflicts = [];
         $this->resetRecordedAssignments();
         $this->history = $history->all();
@@ -67,6 +80,21 @@ class RosterCandidateRanker
             $shift = $shiftByDateAndType[$request->request_date->toDateString()][$request->shift_type_id] ?? null;
             if ($shift !== null) {
                 $this->preferences[$request->doctor_id][$shift->id] = $shift;
+            }
+        }
+
+        foreach ($monthlyWeekdayPreferences ?? collect() as $preference) {
+            if (isset($restrictedShiftTypes[$preference->doctor_id][$preference->shift_type_id])) {
+                continue;
+            }
+
+            $this->monthlyWeekdayPreferences[$preference->doctor_id][$preference->shift_type_id][$preference->weekday] = true;
+            $this->hasMonthlyWeekdayPreferences = true;
+        }
+
+        if ($this->hasMonthlyWeekdayPreferences) {
+            foreach ($shifts as $shift) {
+                $this->shiftWeekdays[$shift->id] = $shift->shift_date->dayOfWeekIso;
             }
         }
 
@@ -244,6 +272,10 @@ class RosterCandidateRanker
             $dimensions[] = ($history->optional_assignment_count ?? 0) + ($this->optionalCounts[$doctorId] ?? 0);
         }
         $dimensions[] = ($history->closing_balance_minutes ?? 0) + ($this->scheduledMinutes[$doctorId] ?? 0);
+        if ($this->hasMonthlyWeekdayPreferences) {
+            $weekday = $this->shiftWeekdays[$shift->id] ?? $shift->shift_date->dayOfWeekIso;
+            $dimensions[] = isset($this->monthlyWeekdayPreferences[$doctorId][$shift->shift_type_id][$weekday]) ? 0 : 1;
+        }
 
         return $dimensions;
     }

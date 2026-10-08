@@ -5,6 +5,7 @@ namespace App\Http\Middleware;
 use App\Enums\RosterStatus;
 use App\Models\DoctorMonthlyExclusion;
 use App\Models\DoctorMonthlyShiftRestriction;
+use App\Models\DoctorMonthlyWeekdayPreference;
 use App\Models\DoctorRequest;
 use App\Models\Roster;
 use Carbon\CarbonImmutable;
@@ -53,6 +54,11 @@ class EnsureMonthlySetupEditable
         $restriction = $request->route('doctorMonthlyShiftRestriction');
         if ($restriction instanceof DoctorMonthlyShiftRestriction) {
             abort_unless($restriction->year === $year && $restriction->month === $month, 404);
+        }
+
+        $weekdayPreference = $request->route('doctorMonthlyWeekdayPreference');
+        if ($weekdayPreference instanceof DoctorMonthlyWeekdayPreference) {
+            abort_unless($weekdayPreference->year === $year && $weekdayPreference->month === $month, 404);
         }
     }
 }

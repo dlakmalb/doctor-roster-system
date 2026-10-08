@@ -46,4 +46,10 @@ class ShiftType extends Model
     {
         return $this->hasMany(DoctorRequest::class);
     }
+
+    /** @return HasMany<DoctorMonthlyWeekdayPreference, $this> */
+    public function monthlyWeekdayPreferences(): HasMany
+    {
+        return $this->hasMany(DoctorMonthlyWeekdayPreference::class);
+    }
 }
