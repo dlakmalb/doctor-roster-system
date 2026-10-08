@@ -6,6 +6,7 @@ use App\Enums\DoctorRequestType;
 use App\Enums\RosterStatus;
 use App\Models\Doctor;
 use App\Models\DoctorMonthlyExclusion;
+use App\Models\DoctorMonthlyShiftRestriction;
 use App\Models\DoctorRequest;
 use App\Models\Roster;
 use App\Models\RosterAssignment;
@@ -47,6 +48,12 @@ class RosterAssignmentGenerator
             $excludedDoctorIds = DoctorMonthlyExclusion::query()
                 ->where('year', $roster->year)->where('month', $roster->month)
                 ->pluck('doctor_id')->flip();
+            $restrictedShiftTypes = [];
+            foreach (DoctorMonthlyShiftRestriction::query()
+                ->where('year', $roster->year)->where('month', $roster->month)
+                ->get(['doctor_id', 'shift_type_id']) as $restriction) {
+                $restrictedShiftTypes[$restriction->doctor_id][$restriction->shift_type_id] = true;
+            }
             $firstDate = CarbonImmutable::create($roster->year, $roster->month, 1)->startOfDay();
             $lastDate = $firstDate->endOfMonth();
             $dayOffRequests = DoctorRequest::query()->with('shiftType')
@@ -58,14 +65,24 @@ class RosterAssignmentGenerator
                 ->where('request_type', DoctorRequestType::PreferredWork->value)
                 ->whereBetween('request_date', [$firstDate, $lastDate])->get();
 
+            if (! $replace) {
+                foreach ($shifts as $shift) {
+                    foreach ($shift->assignments as $assignment) {
+                        if (isset($restrictedShiftTypes[$assignment->doctor_id][$shift->shift_type_id])) {
+                            throw ValidationException::withMessages(['roster' => 'An existing assignment violates a Monthly Shift Restriction. Correct it or regenerate the roster before generating.']);
+                        }
+                    }
+                }
+            }
+
             if ($replace) {
                 foreach ($shifts as $shift) {
                     $shift->setRelation('assignments', collect());
                 }
             }
 
-            $this->ranker->initialize($shifts, $preferredRequests, $previousHistory, $firstDate);
-            $assignments = $this->recovery->plan($shifts, $doctors, $excludedDoctorIds, $dayOffRequests, $previousHistory, $this->ranker);
+            $this->ranker->initialize($shifts, $preferredRequests, $previousHistory, $firstDate, $restrictedShiftTypes);
+            $assignments = $this->recovery->plan($shifts, $doctors, $excludedDoctorIds, $dayOffRequests, $previousHistory, $this->ranker, $restrictedShiftTypes);
 
             if ($replace) {
                 RosterAssignment::query()->whereIn('roster_shift_id', $shifts->modelKeys())->delete();

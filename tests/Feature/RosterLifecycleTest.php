@@ -8,6 +8,7 @@ use App\Enums\RosterStatus;
 use App\Models\ActualWorkException;
 use App\Models\Doctor;
 use App\Models\DoctorMonthlyParticipation;
+use App\Models\DoctorMonthlyShiftRestriction;
 use App\Models\DoctorMonthlyWorkload;
 use App\Models\DoctorRequest;
 use App\Models\Roster;
@@ -241,6 +242,25 @@ it('blocks missing Main slots and hard invalid assignments while reporting Optio
     expect($roster->fresh()->status)->toBe(RosterStatus::Draft)
         ->and($roster->fresh()->finalized_at)->toBeNull()
         ->and($roster->fresh()->finalized_by)->toBeNull();
+});
+
+it('rejects finalization when an assigned doctor has a monthly shift restriction', function () {
+    [$admin, $doctors, $type, $roster, $shift] = lifecycleFixture();
+    DoctorMonthlyShiftRestriction::create([
+        'doctor_id' => $doctors[0]->id,
+        'year' => 2026,
+        'month' => 10,
+        'shift_type_id' => $type->id,
+    ]);
+
+    $this->actingAs($admin)->postJson(lifecycleUrl('finalize'))
+        ->assertOk()
+        ->assertJsonPath('status', 'errors')
+        ->assertJsonFragment(['code' => 'hard_conflict'])
+        ->assertJsonFragment(['target' => "slot-{$shift->id}-main-1"]);
+
+    expect($roster->fresh()->status)->toBe(RosterStatus::Draft)
+        ->and($roster->fresh()->finalized_at)->toBeNull();
 });
 
 it('rejects finalization before generation and keeps the roster in Draft', function () {

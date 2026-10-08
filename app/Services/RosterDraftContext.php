@@ -8,6 +8,7 @@ use App\Enums\RosterStatus;
 use App\Models\Doctor;
 use App\Models\DoctorMonthlyExclusion;
 use App\Models\DoctorMonthlyParticipation;
+use App\Models\DoctorMonthlyShiftRestriction;
 use App\Models\DoctorMonthlyWorkload;
 use App\Models\DoctorRequest;
 use App\Models\Roster;
@@ -36,6 +37,9 @@ class RosterDraftContext
 
     /** @var Collection<int, int> */
     private Collection $excluded;
+
+    /** @var array<int, array<int, true>> */
+    private array $restrictedShiftTypes = [];
 
     /** @var Collection<int, bool> */
     private Collection $participation;
@@ -72,13 +76,17 @@ class RosterDraftContext
         $first = CarbonImmutable::create($roster->year, $roster->month, 1)->startOfDay();
         $last = $first->endOfMonth();
         $this->excluded = DoctorMonthlyExclusion::query()->where('year', $roster->year)->where('month', $roster->month)->pluck('doctor_id')->flip();
+        $this->restrictedShiftTypes = [];
+        foreach (DoctorMonthlyShiftRestriction::query()->where('year', $roster->year)->where('month', $roster->month)->get(['doctor_id', 'shift_type_id']) as $restriction) {
+            $this->restrictedShiftTypes[$restriction->doctor_id][$restriction->shift_type_id] = true;
+        }
         $this->dayOff = DoctorRequest::query()->with('shiftType')->where('request_type', DoctorRequestType::DayOff->value)
             ->whereBetween('request_date', [$first->subDay(), $last->addDay()])->get()->toBase()->groupBy('doctor_id');
         $this->preferred = DoctorRequest::query()->with(['doctor', 'shiftType'])
             ->where('request_type', DoctorRequestType::PreferredWork->value)
             ->whereBetween('request_date', [$first, $last])->get();
         $this->history = $this->planningHistory->forMonth($roster->year, $roster->month, false);
-        $this->ranker->initialize($this->shifts->values(), $this->preferred, $this->history, $first);
+        $this->ranker->initialize($this->shifts->values(), $this->preferred, $this->history, $first, $this->restrictedShiftTypes);
     }
 
     public function assertParticipationPopulationMatches(): void
@@ -149,11 +157,12 @@ class RosterDraftContext
             }
         }
         $historyNight = $this->history->get($doctorId)?->most_recent_night_shift_at;
-        $codes = $this->eligibility->conflicts($doctor, $shift, $this->excluded->has($doctorId), $this->dayOff->get($doctorId, collect()), $assigned, $historyNight, $this->checkActiveStatus);
+        $codes = $this->eligibility->conflicts($doctor, $shift, $this->excluded->has($doctorId), $this->dayOff->get($doctorId, collect()), $assigned, $historyNight, $this->checkActiveStatus, isset($this->restrictedShiftTypes[$doctorId][$shift->shift_type_id]));
 
         return array_map(fn (string $code): string => match ($code) {
             'inactive_doctor' => "$doctor->name is inactive.",
             'monthly_exclusion' => "$doctor->name is excluded for this month.",
+            'monthly_shift_restriction' => "$doctor->name is restricted from this shift type this month.",
             'day_off_overlap' => "$doctor->name has a Day-Off request overlapping this shift.",
             'same_start_date' => "$doctor->name is already assigned to a shift starting on this date.",
             'next_day_night_recovery' => "$doctor->name is unavailable due to next-day Night recovery.",
@@ -238,6 +247,10 @@ class RosterDraftContext
 
     public function prefers(int $doctorId, RosterShift $shift): bool
     {
+        if (isset($this->restrictedShiftTypes[$doctorId][$shift->shift_type_id])) {
+            return false;
+        }
+
         return $this->preferred->contains(fn (DoctorRequest $request): bool => $request->doctor_id === $doctorId
             && $request->request_date->isSameDay($shift->shift_date) && $request->shift_type_id === $shift->shift_type_id);
     }

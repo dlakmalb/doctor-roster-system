@@ -55,9 +55,10 @@ class RosterAssignmentRecoveryService
      * @param  Collection<int, int>  $excludedDoctorIds
      * @param  Collection<int|string, Collection<int, DoctorRequest>>  $dayOffRequests
      * @param  Collection<int, DoctorMonthlyWorkload>  $previousHistory
+     * @param  array<int, array<int, true>>  $restrictedShiftTypes
      * @return list<array{roster_shift_id: int, doctor_id: int, role: RosterAssignmentRole, slot_number: int}>
      */
-    public function plan(Collection $shifts, Collection $doctors, Collection $excludedDoctorIds, Collection $dayOffRequests, Collection $previousHistory, RosterCandidateRanker $ranker): array
+    public function plan(Collection $shifts, Collection $doctors, Collection $excludedDoctorIds, Collection $dayOffRequests, Collection $previousHistory, RosterCandidateRanker $ranker, array $restrictedShiftTypes = []): array
     {
         $this->ranker = $ranker;
         $this->plan = [];
@@ -71,7 +72,7 @@ class RosterAssignmentRecoveryService
         foreach ($shifts as $shift) {
             foreach ($doctors as $doctor) {
                 $history = $previousHistory->get($doctor->id);
-                if ($this->eligibility->conflicts($doctor, $shift, $excludedDoctorIds->has($doctor->id), $dayOffRequests->get($doctor->id, collect()), collect(), $history?->most_recent_night_shift_at) === []) {
+                if ($this->eligibility->conflicts($doctor, $shift, $excludedDoctorIds->has($doctor->id), $dayOffRequests->get($doctor->id, collect()), collect(), $history?->most_recent_night_shift_at, true, isset($restrictedShiftTypes[$doctor->id][$shift->shift_type_id])) === []) {
                     $this->staticallyEligible[$shift->id][$doctor->id] = true;
                 }
             }

@@ -18,7 +18,7 @@ class DoctorAssignmentEligibilityService
      * @param  Collection<int, RosterShift>  $assignedShifts
      * @return list<string>
      */
-    public function conflicts(Doctor $doctor, RosterShift $candidate, bool $isExcluded, Collection $dayOffRequests, Collection $assignedShifts, ?CarbonInterface $previousNightStart = null, bool $checkActiveStatus = true): array
+    public function conflicts(Doctor $doctor, RosterShift $candidate, bool $isExcluded, Collection $dayOffRequests, Collection $assignedShifts, ?CarbonInterface $previousNightStart = null, bool $checkActiveStatus = true, bool $isShiftRestricted = false): array
     {
         $conflicts = [];
 
@@ -28,6 +28,10 @@ class DoctorAssignmentEligibilityService
 
         if ($isExcluded) {
             $conflicts[] = 'monthly_exclusion';
+        }
+
+        if ($isShiftRestricted) {
+            $conflicts[] = 'monthly_shift_restriction';
         }
 
         $candidateInterval = $this->intervals->forDate($candidate->shift_date, $candidate->shiftType);

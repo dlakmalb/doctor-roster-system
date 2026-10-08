@@ -3,6 +3,11 @@ import {
     store as storeExclusion,
 } from '@/actions/App/Http/Controllers/DoctorMonthlyExclusionController';
 import {
+    destroy as destroyShiftRestriction,
+    store as storeShiftRestrictions,
+    update as updateShiftRestrictions,
+} from '@/actions/App/Http/Controllers/DoctorMonthlyShiftRestrictionController';
+import {
     destroy as destroyRequest,
     store as storeRequest,
     update as updateRequest,
@@ -53,8 +58,18 @@ type Month = {
 };
 
 type Warning = {
-    type: 'late_request' | 'day_off_limit' | 'staffing_risk';
+    type:
+        | 'late_request'
+        | 'day_off_limit'
+        | 'staffing_risk'
+        | 'restricted_preferred_work';
     message: string;
+};
+
+type ShiftRestriction = {
+    id: number;
+    doctor: Doctor;
+    shift_type: Pick<ShiftType, 'id' | 'code' | 'name'>;
 };
 
 type PageProps = {
@@ -63,6 +78,7 @@ type PageProps = {
     rosterAction: 'generate' | 'view_draft' | 'view_final';
     doctors: Doctor[];
     shiftTypes: ShiftType[];
+    shiftRestrictions: ShiftRestriction[];
     requests: MonthlyRequest[];
     summary: {
         active_doctors: number;
@@ -116,6 +132,13 @@ export default function MonthlySetup(props: PageProps) {
         note: '',
     });
     const rosterForm = useForm<{ roster?: string }>({});
+    const restrictionForm = useForm<{
+        doctor_id: number | '';
+        shift_type_ids: number[];
+    }>({ doctor_id: '', shift_type_ids: [] });
+    const [editingRestrictionId, setEditingRestrictionId] = useState<
+        number | null
+    >(null);
     const selectedRequest = props.requests.find(
         (request) =>
             request.id === editingId && request.kind !== 'monthly_exclusion',
@@ -240,6 +263,45 @@ export default function MonthlySetup(props: PageProps) {
         );
     }
 
+    function editRestrictions(doctorId: number): void {
+        const restrictions = props.shiftRestrictions.filter(
+            (restriction) => restriction.doctor.id === doctorId,
+        );
+        setEditingRestrictionId(restrictions[0]?.id ?? null);
+        restrictionForm.setData({
+            doctor_id: doctorId,
+            shift_type_ids: restrictions.map(
+                (restriction) => restriction.shift_type.id,
+            ),
+        });
+        restrictionForm.clearErrors();
+    }
+
+    function saveRestrictions(event: FormEvent<HTMLFormElement>): void {
+        event.preventDefault();
+        const options = {
+            preserveScroll: true,
+            onSuccess: () => {
+                setEditingRestrictionId(null);
+                restrictionForm.reset();
+            },
+        };
+        if (editingRestrictionId === null) {
+            restrictionForm.post(
+                storeShiftRestrictions.url(props.month),
+                options,
+            );
+        } else {
+            restrictionForm.put(
+                updateShiftRestrictions.url({
+                    ...props.month,
+                    doctorMonthlyShiftRestriction: editingRestrictionId,
+                }),
+                options,
+            );
+        }
+    }
+
     const summaryItems = [
         ['Active Doctors', props.summary.active_doctors],
         ['Total Requests', props.summary.total_requests],
@@ -305,8 +367,8 @@ export default function MonthlySetup(props: PageProps) {
                             Monthly Setup is locked
                         </h2>
                         <p className="mt-1 text-sm text-amber-900">
-                            This roster is Final. Reopen the roster before
-                            changing requests or exclusions.
+                            This roster is Final. Reopen it before changing
+                            requests, exclusions, or shift restrictions.
                         </p>
                     </div>
                 </div>
@@ -317,6 +379,217 @@ export default function MonthlySetup(props: PageProps) {
                     {rosterForm.errors.roster}
                 </p>
             )}
+
+            <section className="mb-5 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
+                <div>
+                    <h2 className="text-xl font-semibold text-slate-950">
+                        Monthly Shift Restrictions
+                    </h2>
+                    <p className="mt-1 text-sm text-slate-600">
+                        Restrict a doctor from selected shift types for{' '}
+                        {props.month.label}. No restriction means all shift
+                        types are allowed.
+                    </p>
+                </div>
+                {!isFinal && (
+                    <form
+                        onSubmit={saveRestrictions}
+                        className="mt-4 grid gap-4 rounded-xl bg-slate-50 p-4 sm:grid-cols-2"
+                    >
+                        <label className="block">
+                            <span className="text-sm font-medium text-slate-800">
+                                Active doctor
+                            </span>
+                            <select
+                                className={fieldClassName}
+                                required
+                                value={restrictionForm.data.doctor_id}
+                                onChange={(event) => {
+                                    const doctorId = event.target.value
+                                        ? Number(event.target.value)
+                                        : '';
+                                    const restrictions =
+                                        typeof doctorId === 'number'
+                                            ? props.shiftRestrictions.filter(
+                                                  (item) =>
+                                                      item.doctor.id ===
+                                                      doctorId,
+                                              )
+                                            : [];
+                                    restrictionForm.setData({
+                                        doctor_id: doctorId,
+                                        shift_type_ids: restrictions.map(
+                                            (item) => item.shift_type.id,
+                                        ),
+                                    });
+                                    setEditingRestrictionId(
+                                        restrictions[0]?.id ?? null,
+                                    );
+                                }}
+                            >
+                                <option value="">Select doctor</option>
+                                {props.doctors.map((doctor) => (
+                                    <option key={doctor.id} value={doctor.id}>
+                                        {doctor.short_code} - {doctor.name}
+                                    </option>
+                                ))}
+                            </select>
+                            {restrictionForm.errors.doctor_id && (
+                                <p className="mt-1 text-xs text-red-600">
+                                    {restrictionForm.errors.doctor_id}
+                                </p>
+                            )}
+                        </label>
+                        <fieldset className="sm:col-span-2">
+                            <legend className="text-sm font-medium text-slate-800">
+                                Prohibited shift types
+                            </legend>
+                            <div className="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                                {props.shiftTypes.map((shiftType) => (
+                                    <label
+                                        key={shiftType.id}
+                                        className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white p-3 text-sm"
+                                    >
+                                        <input
+                                            type="checkbox"
+                                            disabled={
+                                                !restrictionForm.data.doctor_id
+                                            }
+                                            checked={restrictionForm.data.shift_type_ids.includes(
+                                                shiftType.id,
+                                            )}
+                                            onChange={(event) =>
+                                                restrictionForm.setData(
+                                                    'shift_type_ids',
+                                                    event.target.checked
+                                                        ? [
+                                                              ...restrictionForm
+                                                                  .data
+                                                                  .shift_type_ids,
+                                                              shiftType.id,
+                                                          ]
+                                                        : restrictionForm.data.shift_type_ids.filter(
+                                                              (id) =>
+                                                                  id !==
+                                                                  shiftType.id,
+                                                          ),
+                                                )
+                                            }
+                                        />
+                                        {shiftType.name}
+                                    </label>
+                                ))}
+                            </div>
+                            {restrictionForm.errors.shift_type_ids && (
+                                <p className="mt-1 text-xs text-red-600">
+                                    {restrictionForm.errors.shift_type_ids}
+                                </p>
+                            )}
+                        </fieldset>
+                        <button
+                            type="submit"
+                            disabled={
+                                !restrictionForm.data.doctor_id ||
+                                restrictionForm.processing
+                            }
+                            className="min-h-11 w-fit rounded-lg bg-teal-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-teal-800 disabled:opacity-60"
+                        >
+                            Save restrictions
+                        </button>
+                    </form>
+                )}
+                {props.shiftRestrictions.length === 0 ? (
+                    <p className="mt-4 text-sm text-slate-500">
+                        No monthly shift restrictions.
+                    </p>
+                ) : (
+                    <div className="mt-4 divide-y divide-slate-200">
+                        {Array.from(
+                            new Map(
+                                props.shiftRestrictions.map((item) => [
+                                    item.doctor.id,
+                                    item.doctor,
+                                ]),
+                            ).values(),
+                        ).map((doctor) => {
+                            const restrictions = props.shiftRestrictions.filter(
+                                (item) => item.doctor.id === doctor.id,
+                            );
+
+                            return (
+                                <article
+                                    key={doctor.id}
+                                    className="flex flex-col gap-3 py-3 sm:flex-row sm:items-center sm:justify-between"
+                                >
+                                    <div>
+                                        <p className="font-semibold text-slate-900">
+                                            {doctor.name}{' '}
+                                            <span className="font-normal text-slate-500">
+                                                ({doctor.short_code})
+                                            </span>
+                                            {!doctor.is_active && (
+                                                <span className="ml-2 text-xs">
+                                                    Inactive
+                                                </span>
+                                            )}
+                                        </p>
+                                        <p className="text-sm text-slate-600">
+                                            Restricted:{' '}
+                                            {restrictions
+                                                .map(
+                                                    (item) =>
+                                                        item.shift_type.name,
+                                                )
+                                                .join(', ')}
+                                        </p>
+                                    </div>
+                                    {!isFinal && (
+                                        <div className="flex flex-wrap gap-2">
+                                            {doctor.is_active !== false && (
+                                                <button
+                                                    type="button"
+                                                    onClick={() =>
+                                                        editRestrictions(
+                                                            doctor.id,
+                                                        )
+                                                    }
+                                                    className="min-h-10 rounded-lg border border-slate-300 px-3 text-sm"
+                                                >
+                                                    Edit
+                                                </button>
+                                            )}
+                                            {restrictions.map((item) => (
+                                                <button
+                                                    key={item.id}
+                                                    type="button"
+                                                    onClick={() =>
+                                                        router.delete(
+                                                            destroyShiftRestriction.url(
+                                                                {
+                                                                    ...props.month,
+                                                                    doctorMonthlyShiftRestriction:
+                                                                        item.id,
+                                                                },
+                                                            ),
+                                                            {
+                                                                preserveScroll: true,
+                                                            },
+                                                        )
+                                                    }
+                                                    className="min-h-10 rounded-lg border border-red-200 px-3 text-sm text-red-700"
+                                                >
+                                                    Remove{' '}
+                                                    {item.shift_type.name}
+                                                </button>
+                                            ))}
+                                        </div>
+                                    )}
+                                </article>
+                            );
+                        })}
+                    </div>
+                )}
+            </section>
 
             <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
                 <div className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">

@@ -45,8 +45,9 @@ class RosterCandidateRanker
      * @param  Collection<int, RosterShift>  $shifts
      * @param  Collection<int, DoctorRequest>  $preferredRequests
      * @param  Collection<int, DoctorMonthlyWorkload>  $history
+     * @param  array<int, array<int, true>>  $restrictedShiftTypes
      */
-    public function initialize(Collection $shifts, Collection $preferredRequests, Collection $history, CarbonImmutable $firstDate): void
+    public function initialize(Collection $shifts, Collection $preferredRequests, Collection $history, CarbonImmutable $firstDate, array $restrictedShiftTypes = []): void
     {
         $this->preferences = [];
         $this->shiftConflicts = [];
@@ -60,6 +61,9 @@ class RosterCandidateRanker
         }
 
         foreach ($preferredRequests as $request) {
+            if (isset($restrictedShiftTypes[$request->doctor_id][$request->shift_type_id])) {
+                continue;
+            }
             $shift = $shiftByDateAndType[$request->request_date->toDateString()][$request->shift_type_id] ?? null;
             if ($shift !== null) {
                 $this->preferences[$request->doctor_id][$shift->id] = $shift;

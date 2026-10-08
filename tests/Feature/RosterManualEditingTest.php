@@ -6,6 +6,7 @@ use App\Enums\RosterStatus;
 use App\Models\Doctor;
 use App\Models\DoctorMonthlyExclusion;
 use App\Models\DoctorMonthlyParticipation;
+use App\Models\DoctorMonthlyShiftRestriction;
 use App\Models\DoctorMonthlyWorkload;
 use App\Models\DoctorRequest;
 use App\Models\Roster;
@@ -397,6 +398,28 @@ it('rejects a hard-invalid cross-shift swap without changing either assignment',
         ->and($second->fresh()->doctor_id)->toBe($doctors[1]->id);
 });
 
+it('does not allow a direct cross-shift swap to bypass a monthly restriction', function () {
+    [$admin, , $day, $later, $doctors] = editingFixture();
+    $first = RosterAssignment::create(['roster_shift_id' => $day->id, 'doctor_id' => $doctors[0]->id, 'role' => RosterAssignmentRole::Main, 'slot_number' => 1]);
+    $second = RosterAssignment::create(['roster_shift_id' => $later->id, 'doctor_id' => $doctors[1]->id, 'role' => RosterAssignmentRole::Main, 'slot_number' => 1]);
+    DoctorMonthlyShiftRestriction::create([
+        'doctor_id' => $doctors[1]->id,
+        'year' => 2026,
+        'month' => 10,
+        'shift_type_id' => $day->shift_type_id,
+    ]);
+
+    $this->actingAs($admin)->postJson(editingUrl('edit'), [
+        'operation' => 'swap', ...editPayload($day, 'main', 1, $first),
+        'target_shift_id' => $later->id, 'target_role' => 'main', 'target_slot_number' => 1,
+        'target_expected_assignment_id' => $second->id, 'target_expected_doctor_id' => $second->doctor_id,
+        'confirm_soft_override' => true,
+    ])->assertUnprocessable()->assertSee('restricted from this shift type');
+
+    expect($first->fresh()->doctor_id)->toBe($doctors[0]->id)
+        ->and($second->fresh()->doctor_id)->toBe($doctors[1]->id);
+});
+
 it('shows missing slots and an unfulfilled Preferred Work warning with jump targets', function () {
     [$admin, $roster, $day, , $doctors] = editingFixture();
     DoctorRequest::create(['doctor_id' => $doctors[0]->id, 'request_type' => DoctorRequestType::PreferredWork, 'request_date' => $day->shift_date, 'shift_type_id' => $day->shift_type_id]);
@@ -416,6 +439,24 @@ it('will not undo into a new hard conflict introduced by Monthly Setup', functio
         'doctor_id' => $doctors[1]->id, 'confirm_soft_override' => true,
     ])->assertOk();
     DoctorRequest::create(['doctor_id' => $doctors[0]->id, 'request_type' => DoctorRequestType::DayOff, 'request_date' => $shift->shift_date, 'shift_type_id' => $shift->shift_type_id]);
+    $this->postJson(editingUrl('undo'))->assertUnprocessable()->assertSee('Undo would restore an invalid assignment');
+    expect(RosterAssignment::query()->where('roster_shift_id', $shift->id)->value('doctor_id'))->toBe($doctors[1]->id);
+});
+
+it('will not undo into a monthly restricted assignment', function () {
+    [$admin, , $shift, , $doctors] = editingFixture();
+    $assignment = RosterAssignment::create(['roster_shift_id' => $shift->id, 'doctor_id' => $doctors[0]->id, 'role' => RosterAssignmentRole::Main, 'slot_number' => 1]);
+    $this->actingAs($admin)->postJson(editingUrl('edit'), [
+        'operation' => 'replace', ...editPayload($shift, 'main', 1, $assignment),
+        'doctor_id' => $doctors[1]->id, 'confirm_soft_override' => true,
+    ])->assertOk();
+    DoctorMonthlyShiftRestriction::create([
+        'doctor_id' => $doctors[0]->id,
+        'year' => 2026,
+        'month' => 10,
+        'shift_type_id' => $shift->shift_type_id,
+    ]);
+
     $this->postJson(editingUrl('undo'))->assertUnprocessable()->assertSee('Undo would restore an invalid assignment');
     expect(RosterAssignment::query()->where('roster_shift_id', $shift->id)->value('doctor_id'))->toBe($doctors[1]->id);
 });

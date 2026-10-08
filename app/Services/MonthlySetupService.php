@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Enums\DoctorRequestType;
 use App\Models\Doctor;
 use App\Models\DoctorMonthlyExclusion;
+use App\Models\DoctorMonthlyShiftRestriction;
 use App\Models\DoctorRequest;
 use App\Models\Roster;
 use App\Models\ShiftType;
@@ -36,6 +37,10 @@ class MonthlySetupService
             ->where('month', $monthNumber)
             ->orderBy('doctor_id')
             ->get();
+        $shiftRestrictions = DoctorMonthlyShiftRestriction::query()
+            ->with(['doctor:id,name,short_code,is_active', 'shiftType:id,code,name'])
+            ->where('year', $year)->where('month', $monthNumber)
+            ->orderBy('doctor_id')->orderBy('shift_type_id')->get();
         $shiftTypes = ShiftType::query()
             ->where('is_active', true)
             ->whereIn('code', ['weekday_day', 'weekday_evening', 'weekday_night', 'weekend_day', 'weekend_night'])
@@ -47,7 +52,12 @@ class MonthlySetupService
         $warnings = collect()
             ->concat($this->lateWarnings($dayOffRequests, $month))
             ->concat($this->dayOffLimitWarnings($dayOffRequests))
-            ->concat($this->staffingRiskWarnings($month, $activeDoctors, $exclusions, $shiftTypes));
+            ->concat($this->staffingRiskWarnings($month, $activeDoctors, $exclusions, $shiftTypes, $shiftRestrictions));
+        foreach ($requests->where('request_type', DoctorRequestType::PreferredWork) as $preferredRequest) {
+            if ($shiftRestrictions->contains(fn (DoctorMonthlyShiftRestriction $restriction): bool => $restriction->doctor_id === $preferredRequest->doctor_id && $restriction->shift_type_id === $preferredRequest->shift_type_id)) {
+                $warnings->push(['type' => 'restricted_preferred_work', 'message' => "{$preferredRequest->doctor->name}'s Preferred Work request conflicts with a Monthly Shift Restriction."]);
+            }
+        }
         $fourthAndLaterDatesByDoctor = $dayOffRequests
             ->groupBy('doctor_id')
             ->map(fn (Collection $requests): array => $requests
@@ -120,6 +130,11 @@ class MonthlySetupService
                 'start_time' => $shiftType->start_time,
                 'end_time' => $shiftType->end_time,
                 'is_overnight' => $shiftType->is_overnight,
+            ])->values(),
+            'shiftRestrictions' => $shiftRestrictions->map(fn (DoctorMonthlyShiftRestriction $restriction): array => [
+                'id' => $restriction->id,
+                'doctor' => ['id' => $restriction->doctor->id, 'name' => $restriction->doctor->name, 'short_code' => $restriction->doctor->short_code, 'is_active' => $restriction->doctor->is_active],
+                'shift_type' => ['id' => $restriction->shiftType->id, 'code' => $restriction->shiftType->code, 'name' => $restriction->shiftType->name],
             ])->values(),
             'dayOffRequests' => $dayOffRequests->map(fn (DoctorRequest $request): array => $this->serializeRequest($request, $month))->values(),
             'preferredWorkRequests' => $preferredWorkRequests->map(fn (DoctorRequest $request): array => $this->serializeRequest($request, $month))->values(),
@@ -195,6 +210,7 @@ class MonthlySetupService
      * @param  Collection<int, Doctor>  $activeDoctors
      * @param  Collection<int, DoctorMonthlyExclusion>  $exclusions
      * @param  Collection<int, ShiftType>  $shiftTypes
+     * @param  Collection<int, DoctorMonthlyShiftRestriction>  $shiftRestrictions
      * @return Collection<int, array{type: string, message: string}>
      */
     private function staffingRiskWarnings(
@@ -202,10 +218,12 @@ class MonthlySetupService
         Collection $activeDoctors,
         Collection $exclusions,
         Collection $shiftTypes,
+        Collection $shiftRestrictions,
     ): Collection {
         $eligibleDoctorIds = $activeDoctors->pluck('id')->all();
         $excludedDoctorIds = $exclusions->pluck('doctor_id')->all();
         $eligibleDoctorIds = array_values(array_diff($eligibleDoctorIds, $excludedDoctorIds));
+        $restrictedByDoctor = $shiftRestrictions->groupBy('shift_type_id')->map(fn (Collection $rows): array => $rows->pluck('doctor_id')->all());
         $dayOffRequests = DoctorRequest::query()
             ->with('shiftType')
             ->where('request_type', DoctorRequestType::DayOff->value)
@@ -228,12 +246,13 @@ class MonthlySetupService
                 }
 
                 $shiftInterval = $this->intervals->forDate($date, $shiftType);
-                $unavailableCount = $dayOffRequests
+                $unavailableDoctorIds = $dayOffRequests
                     ->filter(fn (DoctorRequest $request): bool => $this->intervals->overlaps($shiftInterval, $this->intervals->forRequest($request)))
                     ->pluck('doctor_id')
                     ->unique()
-                    ->count();
-                $availableCount = count($eligibleDoctorIds) - $unavailableCount;
+                    ->all();
+                $unavailableDoctorIds = array_unique([...$unavailableDoctorIds, ...array_intersect($eligibleDoctorIds, $restrictedByDoctor->get($shiftType->id, []))]);
+                $availableCount = count($eligibleDoctorIds) - count($unavailableDoctorIds);
                 $requiredCount = $shiftType->main_count + $shiftType->optional_count;
 
                 if ($availableCount < $requiredCount) {

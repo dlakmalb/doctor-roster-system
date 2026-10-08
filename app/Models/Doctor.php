@@ -37,6 +37,12 @@ class Doctor extends Model
         return $this->hasMany(DoctorMonthlyExclusion::class);
     }
 
+    /** @return HasMany<DoctorMonthlyShiftRestriction, $this> */
+    public function monthlyShiftRestrictions(): HasMany
+    {
+        return $this->hasMany(DoctorMonthlyShiftRestriction::class);
+    }
+
     /** @return HasMany<RosterAssignment, $this> */
     public function rosterAssignments(): HasMany
     {

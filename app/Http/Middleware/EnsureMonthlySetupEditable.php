@@ -4,6 +4,7 @@ namespace App\Http\Middleware;
 
 use App\Enums\RosterStatus;
 use App\Models\DoctorMonthlyExclusion;
+use App\Models\DoctorMonthlyShiftRestriction;
 use App\Models\DoctorRequest;
 use App\Models\Roster;
 use Carbon\CarbonImmutable;
@@ -47,6 +48,11 @@ class EnsureMonthlySetupEditable
         $exclusion = $request->route('doctorMonthlyExclusion');
         if ($exclusion instanceof DoctorMonthlyExclusion) {
             abort_unless($exclusion->year === $year && $exclusion->month === $month, 404);
+        }
+
+        $restriction = $request->route('doctorMonthlyShiftRestriction');
+        if ($restriction instanceof DoctorMonthlyShiftRestriction) {
+            abort_unless($restriction->year === $year && $restriction->month === $month, 404);
         }
     }
 }

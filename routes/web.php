@@ -5,6 +5,7 @@ use App\Http\Controllers\Auth\LoginController;
 use App\Http\Controllers\Auth\LogoutController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\DoctorMonthlyExclusionController;
+use App\Http\Controllers\DoctorMonthlyShiftRestrictionController;
 use App\Http\Controllers\DoctorRequestController;
 use App\Http\Controllers\InitialWorkloadSetupController;
 use App\Http\Controllers\MonthlySetupController;
@@ -73,5 +74,8 @@ Route::middleware('auth')->group(function (): void {
             Route::delete('/requests/{doctorRequest}', [DoctorRequestController::class, 'destroy'])->middleware(EnsureMonthlySetupEditable::class)->name('doctor-requests.destroy');
             Route::post('/exclusions', [DoctorMonthlyExclusionController::class, 'store'])->middleware(EnsureMonthlySetupEditable::class)->name('monthly-exclusions.store');
             Route::delete('/exclusions/{doctorMonthlyExclusion}', [DoctorMonthlyExclusionController::class, 'destroy'])->middleware(EnsureMonthlySetupEditable::class)->name('monthly-exclusions.destroy');
+            Route::post('/shift-restrictions', [DoctorMonthlyShiftRestrictionController::class, 'store'])->middleware(EnsureMonthlySetupEditable::class)->name('monthly-shift-restrictions.store');
+            Route::put('/shift-restrictions/{doctorMonthlyShiftRestriction}', [DoctorMonthlyShiftRestrictionController::class, 'update'])->middleware(EnsureMonthlySetupEditable::class)->name('monthly-shift-restrictions.update');
+            Route::delete('/shift-restrictions/{doctorMonthlyShiftRestriction}', [DoctorMonthlyShiftRestrictionController::class, 'destroy'])->middleware(EnsureMonthlySetupEditable::class)->name('monthly-shift-restrictions.destroy');
         });
 });
