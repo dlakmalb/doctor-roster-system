@@ -63,7 +63,7 @@ function seedInitialHistoryForGeneration(): void
             ['doctor_id' => $doctor->id, 'year' => 2026, 'month' => 9],
             ['source' => DoctorMonthlyWorkloadSource::ManualInitial, 'actual_worked_minutes' => 0],
         );
-        $participation->saveBaseline($doctor->id, 2026, 9, true);
+        $participation->saveBaseline($doctor->id, 2026, 9, $doctor->is_active);
     }
 }
 

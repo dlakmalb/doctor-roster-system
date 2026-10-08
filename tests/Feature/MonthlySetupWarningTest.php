@@ -27,7 +27,7 @@ function monthlyWarningUrl(): string
 
 it('derives the late warning from the request creation time', function () {
     $user = prepareMonthlyWarningTest();
-    $doctor = Doctor::query()->firstOrFail();
+    $doctor = Doctor::query()->where('is_active', true)->orderBy('short_code')->firstOrFail();
     $request = DoctorRequest::create([
         'doctor_id' => $doctor->id,
         'request_type' => DoctorRequestType::DayOff,
@@ -47,7 +47,7 @@ it('derives the late warning from the request creation time', function () {
 
 it('derives the Day-Off date-limit warning from current request data', function () {
     $user = prepareMonthlyWarningTest();
-    $doctor = Doctor::query()->firstOrFail();
+    $doctor = Doctor::query()->where('is_active', true)->orderBy('short_code')->firstOrFail();
     $requests = collect(['2026-10-05', '2026-10-06', '2026-10-07', '2026-10-08'])
         ->map(fn (string $date): DoctorRequest => DoctorRequest::create([
             'doctor_id' => $doctor->id,
@@ -67,7 +67,7 @@ it('derives the Day-Off date-limit warning from current request data', function 
 
 it('shows staffing-risk warnings when exclusions leave too few doctors', function () {
     $user = prepareMonthlyWarningTest();
-    Doctor::query()->orderBy('id')->limit(9)->get()->each(function (Doctor $doctor): void {
+    Doctor::query()->where('is_active', true)->orderBy('short_code')->limit(9)->get()->each(function (Doctor $doctor): void {
         DoctorMonthlyExclusion::create([
             'doctor_id' => $doctor->id,
             'year' => 2026,
@@ -83,7 +83,7 @@ it('shows staffing-risk warnings when exclusions leave too few doctors', functio
 it('shows a staffing-risk warning when overlapping Day-Off requests leave too few doctors', function () {
     $user = prepareMonthlyWarningTest();
     $this->travelTo(CarbonImmutable::parse('2026-09-01 09:00:00'));
-    Doctor::query()->orderBy('id')->limit(9)->get()->each(function (Doctor $doctor): void {
+    Doctor::query()->where('is_active', true)->orderBy('short_code')->limit(9)->get()->each(function (Doctor $doctor): void {
         DoctorRequest::create([
             'doctor_id' => $doctor->id,
             'request_type' => DoctorRequestType::DayOff,

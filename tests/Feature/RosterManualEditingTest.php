@@ -29,7 +29,7 @@ function editingFixture(): array
         ->whereHas('shiftType', fn ($query) => $query->where('code', 'weekday_day'))->firstOrFail();
     $later = RosterShift::query()->whereDate('shift_date', '2026-10-08')
         ->whereHas('shiftType', fn ($query) => $query->where('code', 'weekday_day'))->firstOrFail();
-    $doctors = Doctor::query()->orderBy('id')->take(4)->get();
+    $doctors = Doctor::query()->where('is_active', true)->orderBy('short_code')->take(4)->get();
 
     return [$admin, $roster, $day, $later, $doctors];
 }
@@ -202,7 +202,7 @@ it('marks same-shift doctors unavailable for an empty slot and rejects a crafted
         ->whereHas('shiftType', fn ($query) => $query->where('code', 'weekday_evening'))->firstOrFail();
     $sameDateShift = RosterShift::query()->whereDate('shift_date', '2026-10-06')
         ->whereHas('shiftType', fn ($query) => $query->where('code', 'weekday_day'))->firstOrFail();
-    $doctors = Doctor::query()->orderBy('id')->take(5)->get();
+    $doctors = Doctor::query()->where('is_active', true)->orderBy('short_code')->take(5)->get();
     foreach ($doctors->take(3) as $index => $doctor) {
         RosterAssignment::create([
             'roster_shift_id' => $shift->id,
@@ -349,7 +349,7 @@ it('rejects inactive, excluded, Day-Off, same-date, and Night recovery replaceme
     $tuesdayEvening = RosterShift::query()->whereDate('shift_date', '2026-10-06')->whereHas('shiftType', fn ($query) => $query->where('code', 'weekday_evening'))->firstOrFail();
     $mondayNight = RosterShift::query()->whereDate('shift_date', '2026-10-05')->whereHas('shiftType', fn ($query) => $query->where('code', 'weekday_night'))->firstOrFail();
     $wednesdayNight = RosterShift::query()->whereDate('shift_date', '2026-10-07')->whereHas('shiftType', fn ($query) => $query->where('code', 'weekday_night'))->firstOrFail();
-    $candidateDoctors = Doctor::query()->orderBy('id')->take(8)->get();
+    $candidateDoctors = Doctor::query()->where('is_active', true)->orderBy('short_code')->take(8)->get();
     $occupant = RosterAssignment::create(['roster_shift_id' => $day->id, 'doctor_id' => $candidateDoctors[0]->id, 'role' => RosterAssignmentRole::Main, 'slot_number' => 1]);
     $candidateDoctors[1]->update(['is_active' => false]);
     DoctorMonthlyParticipation::query()->where('doctor_id', $candidateDoctors[1]->id)->where('year', 2026)->where('month', 10)->update(['is_participating' => false]);

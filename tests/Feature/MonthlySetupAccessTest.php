@@ -19,7 +19,9 @@ function setupAccessFixture(string $now): array
     test()->travelTo(CarbonImmutable::parse($now));
     test()->seed([DoctorsSeeder::class, ShiftTypesSeeder::class]);
 
-    return [User::factory()->create(), Doctor::query()->orderBy('id')->get(), ShiftType::query()->get()->keyBy('code')];
+    $doctors = Doctor::query()->orderByDesc('is_active')->orderBy('short_code')->get();
+
+    return [User::factory()->create(), $doctors, ShiftType::query()->get()->keyBy('code')];
 }
 
 function setupAccessUrl(string $name, int $year, int $month, array $extra = []): string
@@ -31,7 +33,7 @@ function setupAccessBaselinePayload($doctors): array
 {
     return ['doctors' => $doctors->map(fn (Doctor $doctor): array => [
         'doctor_id' => $doctor->id,
-        'participation_status' => 'participating',
+        'participation_status' => $doctor->is_active ? 'participating' : 'not_part_of_team',
         'actual_hours' => '0',
         'actual_night_duty_count' => 0,
         'optional_assignment_count' => 0,

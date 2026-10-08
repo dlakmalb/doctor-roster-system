@@ -30,7 +30,7 @@ function workflowBaseline($doctors): array
 {
     return ['doctors' => $doctors->map(fn (Doctor $doctor): array => [
         'doctor_id' => $doctor->id,
-        'participation_status' => 'participating',
+        'participation_status' => $doctor->is_active ? 'participating' : 'not_part_of_team',
         'actual_hours' => '0',
         'actual_night_duty_count' => 0,
         'optional_assignment_count' => 0,
@@ -45,7 +45,8 @@ it('connects setup, generation, editing, finalization, actual work, documents, a
         Doctor::create(['name' => "Doctor $number", 'short_code' => "D$number", 'is_active' => true]);
     }
     $admin = User::factory()->create();
-    $doctors = Doctor::query()->orderBy('id')->get();
+    $doctors = Doctor::query()->orderByDesc('is_active')->orderBy('short_code')->get();
+    $activeDoctors = $doctors->where('is_active', true)->values();
     $this->travelTo(CarbonImmutable::parse('2026-09-01 09:00:00'));
     $this->actingAs($admin);
 
@@ -69,12 +70,12 @@ it('connects setup, generation, editing, finalization, actual work, documents, a
         'doctor_id' => $doctors[1]->id, 'request_type' => 'preferred_work',
         'request_date' => '2026-10-01', 'shift_type_id' => $dayType->id,
     ])->assertRedirect();
-    $this->post(workflowUrl('monthly-exclusions.store', 2026, 10), ['doctor_id' => $doctors[2]->id])->assertRedirect();
+    $this->post(workflowUrl('monthly-exclusions.store', 2026, 10), ['doctor_id' => $activeDoctors[2]->id])->assertRedirect();
 
     $this->post(workflowUrl('rosters.generate', 2026, 10))->assertRedirect();
     $assignments = RosterAssignment::query()->whereHas('rosterShift', fn ($query) => $query->where('roster_id', $october->id))->get();
     expect($assignments->count())->toBeGreaterThan(0)
-        ->and($assignments->contains('doctor_id', $doctors[2]->id))->toBeFalse();
+        ->and($assignments->contains('doctor_id', $activeDoctors[2]->id))->toBeFalse();
     $dayOffShiftIds = $october->shifts()->whereDate('shift_date', '2026-10-06')->pluck('id');
     expect($assignments->where('doctor_id', $doctors[0]->id)->whereIn('roster_shift_id', $dayOffShiftIds)->isEmpty())->toBeTrue();
     $preferredShift = $october->shifts()->whereDate('shift_date', '2026-10-01')->where('shift_type_id', $dayType->id)->firstOrFail();
@@ -159,8 +160,10 @@ it('fully staffs and finalizes a normal month with exactly the fourteen seeded d
     $this->travelTo(CarbonImmutable::parse('2026-09-01 09:00:00'));
     $this->seed([DoctorsSeeder::class, ShiftTypesSeeder::class]);
     $admin = User::factory()->create();
-    $doctors = Doctor::query()->orderBy('id')->get();
-    expect($doctors)->toHaveCount(14);
+    $doctors = Doctor::query()->orderByDesc('is_active')->orderBy('short_code')->get();
+    expect($doctors)->toHaveCount(15)
+        ->and($doctors->where('is_active', true))->toHaveCount(14)
+        ->and($doctors->where('is_active', false)->pluck('short_code')->all())->toBe(['H']);
     $this->actingAs($admin)->post(workflowUrl('initial-workload.save', 2026, 9), workflowBaseline($doctors))->assertRedirect();
 
     $this->post(workflowUrl('rosters.store', 2026, 10))->assertRedirect();
@@ -171,8 +174,10 @@ it('fully staffs and finalizes a normal month with exactly the fourteen seeded d
     $requiredMain = $shifts->sum(fn (RosterShift $shift): int => $shift->shiftType->main_count);
     $requiredOptional = $shifts->sum(fn (RosterShift $shift): int => $shift->shiftType->optional_count);
     $assignments = $shifts->flatMap->assignments;
+    $inactiveDoctor = $doctors->firstWhere('is_active', false);
     expect($assignments->where('role', RosterAssignmentRole::Main))->toHaveCount($requiredMain)
-        ->and($assignments->where('role', RosterAssignmentRole::Optional))->toHaveCount($requiredOptional);
+        ->and($assignments->where('role', RosterAssignmentRole::Optional))->toHaveCount($requiredOptional)
+        ->and($assignments->contains('doctor_id', $inactiveDoctor->id))->toBeFalse();
     foreach ($shifts as $shift) {
         foreach ([RosterAssignmentRole::Main, RosterAssignmentRole::Optional] as $role) {
             $capacity = $role === RosterAssignmentRole::Main ? $shift->shiftType->main_count : $shift->shiftType->optional_count;
@@ -231,7 +236,7 @@ it('creates the right shift structure in common, leap, thirty-day, and thirty-on
 it('uses December baseline history to generate January across the year boundary', function () {
     $this->travelTo(CarbonImmutable::parse('2026-12-15 09:00:00'));
     $this->seed([DoctorsSeeder::class, ShiftTypesSeeder::class]);
-    $doctors = Doctor::query()->orderBy('id')->get();
+    $doctors = Doctor::query()->orderByDesc('is_active')->orderBy('short_code')->get();
     $this->actingAs(User::factory()->create())
         ->post(workflowUrl('initial-workload.save', 2026, 12), workflowBaseline($doctors))->assertRedirect();
     $readiness = app(RosterHistoryReadinessService::class)->forMonth(2027, 1);

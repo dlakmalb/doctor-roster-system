@@ -25,11 +25,12 @@ function monthlySetupFinalFixture(bool $final = true, bool $actualWorkStarted = 
     test()->seed([DoctorsSeeder::class, ShiftTypesSeeder::class]);
 
     $admin = User::factory()->create();
-    $doctors = Doctor::query()->orderBy('id')->get();
+    $doctors = Doctor::query()->orderByDesc('is_active')->orderBy('short_code')->get();
+    $activeDoctors = $doctors->where('is_active', true)->values();
     test()->actingAs($admin)->post(route('initial-workload.save', ['year' => 2026, 'month' => 10]), [
         'doctors' => $doctors->map(fn (Doctor $doctor): array => [
             'doctor_id' => $doctor->id,
-            'participation_status' => 'participating',
+            'participation_status' => $doctor->is_active ? 'participating' : 'not_part_of_team',
             'actual_hours' => '0',
             'actual_night_duty_count' => 0,
             'optional_assignment_count' => 0,
@@ -76,13 +77,13 @@ function monthlySetupFinalFixture(bool $final = true, bool $actualWorkStarted = 
     ]);
     RosterAssignment::create([
         'roster_shift_id' => $shift->id,
-        'doctor_id' => $doctors[0]->id,
+        'doctor_id' => $activeDoctors[0]->id,
         'role' => RosterAssignmentRole::Main,
         'slot_number' => 1,
     ]);
     RosterAssignment::create([
         'roster_shift_id' => $shift->id,
-        'doctor_id' => $doctors[2]->id,
+        'doctor_id' => $activeDoctors[2]->id,
         'role' => RosterAssignmentRole::Main,
         'slot_number' => 2,
     ]);

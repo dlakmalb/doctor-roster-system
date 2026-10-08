@@ -84,6 +84,8 @@ it('requires authentication and an existing Draft roster', function () {
 it('generates valid Main and Optional assignments and preserves them on repeat', function () {
     [$admin, $roster] = assignmentRoster();
     $this->actingAs($admin)->post(generateUrl())->assertRedirect();
+    $inactiveDoctor = Doctor::query()->where('is_active', false)->firstOrFail();
+    expect(RosterAssignment::query()->where('doctor_id', $inactiveDoctor->id)->exists())->toBeFalse();
     $assignments = RosterAssignment::query()->with('rosterShift.shiftType')->get();
     expect($assignments->where('role', RosterAssignmentRole::Main)->count())->toBeGreaterThan(0)
         ->and($assignments->where('role', RosterAssignmentRole::Optional)->count())->toBeGreaterThan(0)
@@ -123,7 +125,8 @@ it('preserves the creation-time participation snapshot during generation and reg
         ->get(['doctor_id', 'is_participating'])
         ->toArray();
     expect($snapshot)->toHaveCount(Doctor::query()->count())
-        ->and(collect($snapshot)->every(fn (array $row): bool => $row['is_participating']))->toBeTrue();
+        ->and(collect($snapshot)->where('is_participating', true))->toHaveCount(14)
+        ->and(collect($snapshot)->where('is_participating', false))->toHaveCount(1);
 
     $this->actingAs($admin)->post(generateUrl())->assertRedirect();
     expect(DoctorMonthlyParticipation::query()->where('year', 2026)->where('month', 10)
@@ -139,7 +142,7 @@ it('blocks regeneration when global active status no longer matches the Draft pa
     $this->actingAs($admin)->post(generateUrl())->assertRedirect();
     $assignments = RosterAssignment::query()->orderBy('id')->get()->toArray();
     $generatedAt = $roster->fresh()->last_generated_at;
-    $doctor = Doctor::query()->where('is_active', true)->orderBy('id')->firstOrFail();
+    $doctor = Doctor::query()->where('is_active', true)->orderBy('short_code')->firstOrFail();
     $doctor->update(['is_active' => false]);
 
     $this->from(route('rosters.show', ['year' => 2026, 'month' => 10]))
@@ -215,20 +218,20 @@ it('keeps the feasible month complete across randomized regeneration', function 
 });
 
 it('excludes inactive and monthly excluded doctors while retaining other month eligibility', function () {
-    [$admin] = assignmentRoster(function (): void {
-        Doctor::query()->orderBy('id')->firstOrFail()->update(['is_active' => false]);
-    });
-    $doctors = Doctor::query()->orderBy('id')->take(3)->get();
-    DoctorMonthlyExclusion::create(['doctor_id' => $doctors[1]->id, 'year' => 2026, 'month' => 10]);
-    DoctorMonthlyExclusion::create(['doctor_id' => $doctors[2]->id, 'year' => 2026, 'month' => 11]);
+    [$admin] = assignmentRoster();
+    $inactiveDoctor = Doctor::query()->where('is_active', false)->firstOrFail();
+    $activeDoctors = Doctor::query()->where('is_active', true)->orderBy('short_code')->take(2)->get();
+    DoctorMonthlyExclusion::create(['doctor_id' => $activeDoctors[0]->id, 'year' => 2026, 'month' => 10]);
+    DoctorMonthlyExclusion::create(['doctor_id' => $activeDoctors[1]->id, 'year' => 2026, 'month' => 11]);
     $this->actingAs($admin)->post(generateUrl())->assertRedirect();
-    expect(RosterAssignment::query()->whereIn('doctor_id', [$doctors[0]->id, $doctors[1]->id])->exists())->toBeFalse()
-        ->and(RosterAssignment::query()->where('doctor_id', $doctors[2]->id)->exists())->toBeTrue();
+    expect(RosterAssignment::query()->where('doctor_id', $inactiveDoctor->id)->exists())->toBeFalse()
+        ->and(RosterAssignment::query()->where('doctor_id', $activeDoctors[0]->id)->exists())->toBeFalse()
+        ->and(RosterAssignment::query()->where('doctor_id', $activeDoctors[1]->id)->exists())->toBeTrue();
 });
 
 it('uses real Day-Off intervals and symmetric same-date and night recovery rules', function () {
     assignmentRoster();
-    $doctor = Doctor::query()->firstOrFail();
+    $doctor = Doctor::query()->where('is_active', true)->orderBy('short_code')->firstOrFail();
     $rules = app(DoctorAssignmentEligibilityService::class);
     $dayOff = DoctorRequest::create(['doctor_id' => $doctor->id, 'request_type' => DoctorRequestType::DayOff, 'request_date' => '2026-10-06']);
     foreach ([['2026-10-05', 'weekday_night'], ['2026-10-06', 'weekday_day'], ['2026-10-06', 'weekday_evening'], ['2026-10-06', 'weekday_night']] as [$date, $code]) {
@@ -282,11 +285,11 @@ it('applies Night recovery after the earlier shift regardless of argument order'
 
 it('loads the next date Day-Off when evaluating a month-end overnight shift', function (bool $fullDayOff, int $expectedAssignments) {
     [$admin, $roster] = assignmentRoster(function (): void {
-        Doctor::query()->where('id', '!=', Doctor::query()->min('id'))->update(['is_active' => false]);
+        Doctor::query()->where('short_code', '!=', 'N')->update(['is_active' => false]);
     });
     $night = shiftOn('2026-10-31', 'weekend_night');
     $roster->shifts()->where('id', '!=', $night->id)->delete();
-    $doctor = Doctor::query()->orderBy('id')->firstOrFail();
+    $doctor = Doctor::query()->where('is_active', true)->orderBy('short_code')->firstOrFail();
     $dayOff = DoctorRequest::create([
         'doctor_id' => $doctor->id,
         'request_type' => DoctorRequestType::DayOff,
@@ -310,7 +313,7 @@ it('loads the next date Day-Off when evaluating a month-end overnight shift', fu
 
 it('applies only relevant previous-month night history', function () {
     assignmentRoster();
-    $doctor = Doctor::query()->firstOrFail();
+    $doctor = Doctor::query()->where('is_active', true)->orderBy('short_code')->firstOrFail();
     $rules = app(DoctorAssignmentEligibilityService::class);
     $firstDay = shiftOn('2026-10-01', 'weekday_day');
     expect($rules->conflicts($doctor, $firstDay, false, collect(), collect(), CarbonImmutable::parse('2026-09-30 20:00:00')))->toContain('next_day_night_recovery')
@@ -320,7 +323,7 @@ it('applies only relevant previous-month night history', function () {
 
 it('honors stored previous-month night history during generation', function () {
     [$admin] = assignmentRoster();
-    $doctor = Doctor::query()->orderBy('id')->firstOrFail();
+    $doctor = Doctor::query()->where('is_active', true)->orderBy('short_code')->firstOrFail();
     DoctorMonthlyWorkload::query()->updateOrCreate(['doctor_id' => $doctor->id, 'year' => 2026, 'month' => 9], [
         'doctor_id' => $doctor->id,
         'year' => 2026,
@@ -337,7 +340,7 @@ it('honors stored previous-month night history during generation', function () {
 
 it('persists partial assignments and distinguishes missing Main and Optional slots', function () {
     [$admin] = assignmentRoster(function (): void {
-        Doctor::query()->where('id', '!=', Doctor::query()->min('id'))->update(['is_active' => false]);
+        Doctor::query()->where('short_code', '!=', 'N')->update(['is_active' => false]);
     });
     $this->actingAs($admin)->post(generateUrl())->assertRedirect();
     expect(RosterAssignment::query()->count())->toBeGreaterThan(0);

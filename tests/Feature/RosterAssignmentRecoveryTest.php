@@ -26,7 +26,7 @@ function recoveryScenario(array $shifts, int $doctorCount = 2): array
     test()->seed([DoctorsSeeder::class, ShiftTypesSeeder::class]);
     seedInitialHistoryForGeneration();
     $admin = User::factory()->create();
-    $doctors = Doctor::query()->orderBy('id')->take($doctorCount)->get()->all();
+    $doctors = Doctor::query()->where('is_active', true)->orderBy('short_code')->take($doctorCount)->get()->all();
     Doctor::query()->whereNotIn('id', array_map(fn (Doctor $doctor): int => $doctor->id, $doctors))->update(['is_active' => false]);
     $roster = app(RosterStructureService::class)->create(2026, 10, $admin);
 

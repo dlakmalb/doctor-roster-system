@@ -20,27 +20,28 @@ use Database\Seeders\DoctorsSeeder;
 use Database\Seeders\ShiftTypesSeeder;
 use Illuminate\Database\QueryException;
 
-test('it seeds the fourteen expected doctors with unique short codes', function () {
+test('it seeds the fifteen expected doctors with unique short codes and UAT active status', function () {
     $this->seed(DoctorsSeeder::class);
 
-    $this->assertDatabaseCount('doctors', 14);
-    expect(Doctor::query()->distinct()->count('short_code'))->toBe(14)
-        ->and(Doctor::query()->where('is_active', false)->count())->toBe(0)
-        ->and(Doctor::query()->orderBy('short_code')->get(['short_code', 'name'])->map(fn (Doctor $doctor) => [$doctor->short_code, $doctor->name])->all())->toBe([
-            ['A', 'Dr Amarasinghe'],
-            ['B', 'Dr Buddhima'],
-            ['D', 'Dr Dulan'],
-            ['E', 'Dr Enasha'],
-            ['G', 'Dr Ganga'],
-            ['H', 'Dr Hirushini'],
-            ['I', 'Dr Amila'],
-            ['K', 'Dr Kasun'],
-            ['L', 'Dr Lasantha'],
-            ['N', 'Dr Nuwan (MOIC)'],
-            ['R', 'Dr Rajinda'],
-            ['S', 'Dr Sanath'],
-            ['T', 'Dr Thisara'],
-            ['U', 'Dr Nadun'],
+    $this->assertDatabaseCount('doctors', 15);
+    expect(Doctor::query()->distinct()->count('short_code'))->toBe(15)
+        ->and(Doctor::query()->where('is_active', false)->count())->toBe(1)
+        ->and(Doctor::query()->orderBy('short_code')->get(['short_code', 'name', 'is_active'])->map(fn (Doctor $doctor) => [$doctor->short_code, $doctor->name, $doctor->is_active])->all())->toBe([
+            ['A', 'Dr Amarasinghe', true],
+            ['B', 'Dr Buddhima', true],
+            ['C', 'Dr Umanga', true],
+            ['E', 'Dr Enasha', true],
+            ['G', 'Dr Ganga', true],
+            ['H', 'Dr Hirushini', false],
+            ['I', 'Dr Amila', true],
+            ['K', 'Dr Kasun', true],
+            ['L', 'Dr Lasantha', true],
+            ['M', 'Dr Mareena', true],
+            ['N', 'Dr Nuwan (MOIC)', true],
+            ['R', 'Dr Rajinda', true],
+            ['S', 'Dr Sanath', true],
+            ['T', 'Dr Thisara', true],
+            ['U', 'Dr Nadun', true],
         ]);
 });
 
@@ -48,8 +49,8 @@ test('it does not duplicate doctors when the doctor seeder runs twice', function
     $this->seed(DoctorsSeeder::class);
     $this->seed(DoctorsSeeder::class);
 
-    $this->assertDatabaseCount('doctors', 14);
-    expect(Doctor::query()->distinct()->count('short_code'))->toBe(14);
+    $this->assertDatabaseCount('doctors', 15);
+    expect(Doctor::query()->distinct()->count('short_code'))->toBe(15);
 });
 
 test('it preserves an inactive doctor when the doctor seeder runs again', function () {
@@ -128,7 +129,7 @@ test('it seeds domain records without creating a starter admin user', function (
     $this->seed(DatabaseSeeder::class);
 
     $this->assertDatabaseCount('users', 0);
-    $this->assertDatabaseCount('doctors', 14);
+    $this->assertDatabaseCount('doctors', 15);
     $this->assertDatabaseCount('shift_types', 5);
 });
 
