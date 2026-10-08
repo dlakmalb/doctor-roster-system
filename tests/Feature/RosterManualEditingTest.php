@@ -102,6 +102,20 @@ it('assigns and replaces both roles, autosaves metadata, and undoes the most rec
     $this->postJson(editingUrl('undo'))->assertUnprocessable();
 });
 
+it('allows a manual assignment in Weekend Day Optional slot seven and rejects slot eight', function () {
+    [$admin, , , , $doctors] = editingFixture();
+    $shift = RosterShift::query()->whereDate('shift_date', '2026-10-03')
+        ->whereHas('shiftType', fn ($query) => $query->where('code', 'weekend_day'))->firstOrFail();
+    $this->actingAs($admin)->postJson(editingUrl('edit'), [
+        'operation' => 'replace', ...editPayload($shift, 'optional', 7),
+        'doctor_id' => $doctors[0]->id, 'confirm_soft_override' => true,
+    ])->assertOk();
+
+    expect(RosterAssignment::query()->where('roster_shift_id', $shift->id)
+        ->where('role', RosterAssignmentRole::Optional)->where('slot_number', 7)->value('doctor_id'))->toBe($doctors[0]->id);
+    $this->getJson(optionsUrl($shift, 'optional', 8))->assertUnprocessable();
+});
+
 it('does not manually assign a doctor outside the saved monthly participation population', function () {
     [$admin, $roster, $shift, , $doctors] = editingFixture();
     DoctorMonthlyParticipation::query()->where('roster_id', $roster->id)->where('doctor_id', $doctors[2]->id)->update(['is_participating' => false]);

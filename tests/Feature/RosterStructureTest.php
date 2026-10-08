@@ -84,6 +84,23 @@ it('creates the expected weekday and weekend shifts for every start date', funct
     expect($byDate['2026-10-31'])->toContain('weekend_night');
 });
 
+it('seeds the confirmed capacities and preserves every shift duration', function () {
+    prepareRosterStructureTest();
+
+    $capacities = ShiftType::query()->orderBy('code')->get()->keyBy('code');
+    expect($capacities->map(fn (ShiftType $type): array => [
+        $type->main_count,
+        $type->optional_count,
+        $type->duration_minutes,
+    ])->all())->toBe([
+        'weekday_day' => [4, 2, 360],
+        'weekday_evening' => [3, 1, 360],
+        'weekday_night' => [2, 0, 720],
+        'weekend_day' => [3, 7, 480],
+        'weekend_night' => [2, 0, 960],
+    ]);
+});
+
 it('includes leap day and a month-end weekday night without adding next-month starts', function () {
     $user = prepareRosterStructureTest();
 
@@ -160,7 +177,7 @@ it('shows chronological shifts, required positions, and the overnight end date',
             ->where('status', 'draft')
             ->where('summary.shifts', 84)
             ->where('summary.main_positions', 243)
-            ->where('summary.optional_positions', 93)
+            ->where('summary.optional_positions', 129)
             ->has('days', 31)
             ->where('days.0.date', '2026-10-01')
             ->where('days.0.shifts.0.code', 'weekday_day')
@@ -170,6 +187,8 @@ it('shows chronological shifts, required positions, and the overnight end date',
             ->where('days.0.shifts.0.optional_count', 2)
             ->where('days.0.shifts.2.end_date_label', 'Oct 2')
             ->where('days.30.shifts.0.code', 'weekend_day')
+            ->where('days.30.shifts.0.main_count', 3)
+            ->where('days.30.shifts.0.optional_count', 7)
             ->where('days.30.shifts.1.code', 'weekend_night')
             ->where('days.30.shifts.1.end_date_label', 'Nov 1'));
 });

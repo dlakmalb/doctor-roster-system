@@ -84,7 +84,7 @@ test('it seeds the five expected shift definitions', function () {
         ['weekday_day', 'Weekday Day', '08:00:00', '14:00:00', 360, 4, 2, false, true],
         ['weekday_evening', 'Weekday Evening', '14:00:00', '20:00:00', 360, 3, 1, false, true],
         ['weekday_night', 'Weekday Night', '20:00:00', '08:00:00', 720, 2, 0, true, true],
-        ['weekend_day', 'Weekend Day', '08:00:00', '16:00:00', 480, 3, 3, false, true],
+        ['weekend_day', 'Weekend Day', '08:00:00', '16:00:00', 480, 3, 7, false, true],
         ['weekend_night', 'Weekend Night', '16:00:00', '08:00:00', 960, 2, 0, true, true],
     ]);
 });

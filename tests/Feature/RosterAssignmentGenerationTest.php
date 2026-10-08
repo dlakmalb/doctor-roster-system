@@ -116,6 +116,30 @@ it('generates valid Main and Optional assignments and preserves them on repeat',
     expect(RosterAssignment::query()->orderBy('id')->pluck('id')->all())->toBe($ids);
 });
 
+it('keeps every Main position and fills only the eligible Optional positions up to capacity', function () {
+    [$admin, $roster] = assignmentRoster(function (): void {
+        foreach (Doctor::query()->where('is_active', true)->orderBy('short_code')->get()->slice(8) as $doctor) {
+            DoctorRequest::create([
+                'doctor_id' => $doctor->id,
+                'request_type' => DoctorRequestType::DayOff,
+                'request_date' => '2026-10-03',
+            ]);
+        }
+    });
+    $shift = shiftOn('2026-10-03', 'weekend_day');
+    $roster->shifts()->where('id', '!=', $shift->id)->delete();
+
+    $this->actingAs($admin)->post(generateUrl())->assertRedirect();
+
+    $assignments = $shift->assignments()->get();
+    $issues = collect(app(RosterDraftValidationService::class)->validate($roster));
+    expect($assignments->where('role', RosterAssignmentRole::Main))->toHaveCount(3)
+        ->and($assignments->where('role', RosterAssignmentRole::Optional))->toHaveCount(5)
+        ->and($issues->where('code', 'unfilled_main_slot'))->toBeEmpty()
+        ->and($issues->where('code', 'unfilled_optional_slot')->where('severity', 'Warning'))->toHaveCount(2)
+        ->and($issues->where('severity', 'Error'))->toBeEmpty();
+});
+
 it('preserves the creation-time participation snapshot during generation and regeneration', function () {
     [$admin, $roster] = assignmentRoster();
     $snapshot = DoctorMonthlyParticipation::query()
@@ -156,7 +180,7 @@ it('blocks regeneration when global active status no longer matches the Draft pa
         ->and($roster->fresh()->last_generated_at->equalTo($generatedAt))->toBeTrue();
 });
 
-it('fills every required position in a feasible 14-doctor month', function () {
+it('fills all Main positions and as many Optional positions as possible in a 14-doctor month', function () {
     [$admin, $roster] = assignmentRoster();
     $recovery = app(RosterAssignmentRecoveryService::class);
     app()->instance(RosterAssignmentRecoveryService::class, $recovery);
@@ -176,8 +200,12 @@ it('fills every required position in a feasible 14-doctor month', function () {
     $shifts = $roster->shifts()->with('shiftType')->get();
     $requiredMain = $shifts->sum(fn (RosterShift $shift): int => $shift->shiftType->main_count);
     $requiredOptional = $shifts->sum(fn (RosterShift $shift): int => $shift->shiftType->optional_count);
-    expect(RosterAssignment::query()->where('role', RosterAssignmentRole::Main)->count())->toBe($requiredMain);
-    expect(RosterAssignment::query()->where('role', RosterAssignmentRole::Optional)->count())->toBe($requiredOptional);
+    $optionalAssignmentCount = RosterAssignment::query()->where('role', RosterAssignmentRole::Optional)->count();
+    $optionalVacancyWarnings = collect(app(RosterDraftValidationService::class)->validate($roster))
+        ->where('code', 'unfilled_optional_slot')->where('severity', 'Warning');
+    expect(RosterAssignment::query()->where('role', RosterAssignmentRole::Main)->count())->toBe($requiredMain)
+        ->and($optionalAssignmentCount)->toBeLessThanOrEqual($requiredOptional)
+        ->and($optionalVacancyWarnings)->toHaveCount($requiredOptional - $optionalAssignmentCount);
     expect(collect(app(RosterDraftValidationService::class)->validate($roster))->where('severity', 'Error')->count())->toBe(0);
 });
 
@@ -209,7 +237,7 @@ it('keeps the feasible month complete across randomized regeneration', function 
         $unresolved += count($recovery->unfilledDiagnostics());
 
         expect(RosterAssignment::query()->where('role', RosterAssignmentRole::Main)->count())->toBe($requiredMain, "Run $run has missing Main positions.");
-        expect(RosterAssignment::query()->where('role', RosterAssignmentRole::Optional)->count())->toBe($requiredOptional, "Run $run has missing Optional positions.");
+        expect(RosterAssignment::query()->where('role', RosterAssignmentRole::Optional)->count())->toBeLessThanOrEqual($requiredOptional, "Run $run exceeds Optional capacity.");
         expect(collect(app(RosterDraftValidationService::class)->validate($roster))->where('severity', 'Error')->count())->toBe(0, "Run $run has hard validation Errors.");
     }
     if (getenv('ROSTER_BENCHMARK')) {
