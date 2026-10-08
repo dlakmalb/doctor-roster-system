@@ -7,6 +7,7 @@ use App\Enums\RosterStatus;
 use App\Models\ActualWorkException;
 use App\Models\Doctor;
 use App\Models\DoctorMonthlyExclusion;
+use App\Models\DoctorMonthlyParticipation;
 use App\Models\DoctorMonthlyWorkload;
 use App\Models\DoctorRequest;
 use App\Models\Roster;
@@ -14,6 +15,7 @@ use App\Models\RosterAssignment;
 use App\Models\RosterShift;
 use App\Models\ShiftType;
 use App\Models\User;
+use App\Services\DoctorMonthlyParticipationService;
 use App\Services\DoctorMonthlyWorkloadService;
 use Database\Seeders\ShiftTypesSeeder;
 use Inertia\Testing\AssertableInertia as Assert;
@@ -24,9 +26,48 @@ function actualFixture(): array
     $admin = User::factory()->create();
     $doctors = collect(['A', 'B', 'C'])->map(fn (string $code): Doctor => Doctor::create(['name' => "Doctor $code", 'short_code' => $code, 'is_active' => true]));
     $roster = Roster::create(['year' => 2026, 'month' => 10, 'status' => RosterStatus::Final, 'created_by' => $admin->id]);
+    snapshotRosterParticipation($roster, $doctors);
 
     return [$admin, $doctors, $roster];
 }
+
+it('uses the roster participation snapshot after a doctor status changes', function () {
+    [$admin, $doctors, $roster] = actualFixture();
+    $hirushini = $doctors[0];
+    DoctorMonthlyParticipation::query()->where('doctor_id', $hirushini->id)->where('year', 2026)->where('month', 10)
+        ->update(['is_participating' => false]);
+    $hirushini->update(['is_active' => false]);
+
+    foreach ($doctors as $doctor) {
+        $isHirushini = $doctor->is($hirushini);
+        DoctorMonthlyWorkload::create([
+            'doctor_id' => $doctor->id,
+            'year' => 2026,
+            'month' => 9,
+            'source' => DoctorMonthlyWorkloadSource::ManualInitial,
+            'actual_worked_minutes' => 0,
+            'closing_balance_minutes' => $isHirushini ? 120 : 0,
+        ]);
+        app(DoctorMonthlyParticipationService::class)->saveBaseline($doctor->id, 2026, 9, true);
+    }
+
+    $hirushini->update(['is_active' => true]);
+    actualShift($roster, '2026-10-01', 'weekday_day', $doctors[1]);
+    $preview = app(DoctorMonthlyWorkloadService::class)->preview($roster);
+    $hirushiniPreview = collect($preview['rows'])->firstWhere('doctor_id', $hirushini->id);
+
+    $this->actingAs($admin)->post(actualUrl('confirm', $roster))->assertRedirect();
+
+    $hirushiniHistory = DoctorMonthlyWorkload::query()->where('doctor_id', $hirushini->id)->where('month', 10)->firstOrFail();
+    expect($preview['average'])->toBe(180)
+        ->and(DoctorMonthlyParticipation::query()->where('doctor_id', $hirushini->id)->where('year', 2026)->where('month', 10)->firstOrFail()->is_participating)->toBeFalse()
+        ->and($hirushiniPreview['is_participating'])->toBeFalse()
+        ->and($hirushiniPreview['opening_balance_minutes'])->toBe(120)
+        ->and($hirushiniPreview['closing_balance_minutes'])->toBe(120)
+        ->and($hirushiniHistory->actual_worked_minutes)->toBe(0)
+        ->and($hirushiniHistory->closing_balance_minutes)->toBe(120)
+        ->and(RosterAssignment::query()->where('roster_shift_id', $roster->shifts()->first()->id)->where('doctor_id', $hirushini->id)->exists())->toBeFalse();
+});
 
 function actualShift(Roster $roster, string $date, string $code, Doctor $main, ?Doctor $optional = null): array
 {
@@ -127,6 +168,7 @@ it('applies and removes Main absence, replacement, and Optional work as factual 
 it('uses Friday, Saturday, and Sunday duties in the final weekend period across month boundaries', function () {
     [$admin, $doctors, $roster] = actualFixture();
     $roster->update(['month' => 11]);
+    snapshotRosterParticipation($roster, $doctors);
     actualShift($roster, '2026-11-27', 'weekday_night', $doctors[0]);
     actualShift($roster, '2026-11-28', 'weekend_day', $doctors[1]);
     actualShift($roster, '2026-11-29', 'weekend_night', $doctors[2]);
@@ -134,6 +176,7 @@ it('uses Friday, Saturday, and Sunday duties in the final weekend period across 
     expect(DoctorMonthlyWorkload::query()->where('year', 2026)->where('month', 11)->where('worked_final_weekend', true)->count())->toBe(3);
 
     $july = Roster::create(['year' => 2026, 'month' => 7, 'status' => RosterStatus::Final, 'created_by' => $admin->id]);
+    snapshotRosterParticipation($july, $doctors);
     actualShift($july, '2026-07-31', 'weekday_night', $doctors[0]);
     $preview = app(DoctorMonthlyWorkloadService::class)->preview($july)['rows'];
     expect(collect($preview)->firstWhere('doctor_id', $doctors[0]->id)['worked_final_weekend'])->toBeTrue();
@@ -221,18 +264,25 @@ it('excludes monthly exclusions from the average and freezes their balance', fun
 it('rounds the included group average to the nearest minute and handles all excluded doctors', function () {
     $service = app(DoctorMonthlyWorkloadService::class);
     $result = $service->balances([
-        ['doctor_id' => 1, 'actual_worked_minutes' => 1, 'opening_balance_minutes' => 2, 'is_month_excluded' => false],
-        ['doctor_id' => 2, 'actual_worked_minutes' => 0, 'opening_balance_minutes' => -2, 'is_month_excluded' => false],
+        ['doctor_id' => 1, 'is_participating' => true, 'actual_worked_minutes' => 1, 'opening_balance_minutes' => 2, 'is_month_excluded' => false],
+        ['doctor_id' => 2, 'is_participating' => true, 'actual_worked_minutes' => 0, 'opening_balance_minutes' => -2, 'is_month_excluded' => false],
     ]);
     expect($result['average'])->toBe(1)
         ->and($result['rows'][0]['closing_balance_minutes'])->toBe(2)
         ->and($result['rows'][1]['closing_balance_minutes'])->toBe(-3);
     $excluded = $service->balances([
-        ['doctor_id' => 1, 'actual_worked_minutes' => 600, 'opening_balance_minutes' => 90, 'is_month_excluded' => true],
+        ['doctor_id' => 1, 'is_participating' => true, 'actual_worked_minutes' => 600, 'opening_balance_minutes' => 90, 'is_month_excluded' => true],
     ]);
     expect($excluded['average'])->toBe(0)
         ->and($excluded['rows'][0]['monthly_adjustment_minutes'])->toBe(0)
         ->and($excluded['rows'][0]['closing_balance_minutes'])->toBe(90);
+    $notPart = $service->balances([
+        ['doctor_id' => 1, 'is_participating' => true, 'actual_worked_minutes' => 360, 'opening_balance_minutes' => 0, 'is_month_excluded' => false],
+        ['doctor_id' => 2, 'is_participating' => false, 'actual_worked_minutes' => 0, 'opening_balance_minutes' => 90, 'is_month_excluded' => false],
+    ]);
+    expect($notPart['average'])->toBe(360)
+        ->and($notPart['rows'][1]['monthly_adjustment_minutes'])->toBe(0)
+        ->and($notPart['rows'][1]['closing_balance_minutes'])->toBe(90);
 });
 
 it('refuses Draft confirmation and cross-roster assignment mutations', function () {

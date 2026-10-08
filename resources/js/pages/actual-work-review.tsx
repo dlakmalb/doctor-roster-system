@@ -30,6 +30,7 @@ type Preview = {
         doctor_id: number;
         name: string;
         short_code: string;
+        is_participating: boolean;
         actual_worked_minutes: number;
         actual_night_duty_count: number;
         optional_assignment_count: number;
@@ -297,6 +298,12 @@ export default function ActualWorkReview({
                             <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1">
                                 <dt>Actual work</dt>
                                 <dd>{row.actual_worked_minutes} min</dd>
+                                <dt>Participation</dt>
+                                <dd>
+                                    {row.is_participating
+                                        ? 'Participating'
+                                        : 'Not part of team'}
+                                </dd>
                                 <dt>Actual Nights</dt>
                                 <dd>{row.actual_night_duty_count}</dd>
                                 <dt>Planned Optional</dt>
@@ -311,11 +318,11 @@ export default function ActualWorkReview({
                                 <dd>
                                     {row.most_recent_night_shift_at ?? 'None'}
                                 </dd>
-                                <dt>Monthly exclusion</dt>
+                                <dt>Full-month exclusion</dt>
                                 <dd>
                                     {row.is_month_excluded
-                                        ? 'Excluded'
-                                        : 'Included'}
+                                        ? 'Excluded, balance carried'
+                                        : 'No'}
                                 </dd>
                                 <dt>Opening balance</dt>
                                 <dd>{row.opening_balance_minutes} min</dd>

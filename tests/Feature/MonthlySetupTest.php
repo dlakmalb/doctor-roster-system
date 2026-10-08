@@ -10,11 +10,28 @@ use App\Models\DoctorRequest;
 use App\Models\Roster;
 use App\Models\ShiftType;
 use App\Models\User;
+use App\Services\DoctorMonthlyParticipationService;
 use Carbon\CarbonImmutable;
 use Database\Seeders\DoctorsSeeder;
 use Database\Seeders\ShiftTypesSeeder;
 use Illuminate\Support\Collection;
 use Inertia\Testing\AssertableInertia as Assert;
+
+function seedMonthlySetupBaselineHistory(int $year, int $month): void
+{
+    $participation = app(DoctorMonthlyParticipationService::class);
+
+    foreach (Doctor::query()->get() as $doctor) {
+        DoctorMonthlyWorkload::create([
+            'doctor_id' => $doctor->id,
+            'year' => $year,
+            'month' => $month,
+            'source' => DoctorMonthlyWorkloadSource::ManualInitial,
+            'actual_worked_minutes' => 0,
+        ]);
+        $participation->saveBaseline($doctor->id, $year, $month, true);
+    }
+}
 
 beforeEach(function (): void {
     $this->travelTo(CarbonImmutable::parse('2026-09-01 09:00:00'));
@@ -226,13 +243,7 @@ it('shows one global Initial Setup action when the manual baseline is missing', 
 it('makes next month primary after the current baseline exists', function () {
     $this->seed([DoctorsSeeder::class, ShiftTypesSeeder::class]);
     $this->travelTo(CarbonImmutable::parse('2026-10-03 09:00:00'));
-    Doctor::query()->get()->each(fn (Doctor $doctor) => DoctorMonthlyWorkload::create([
-        'doctor_id' => $doctor->id,
-        'year' => 2026,
-        'month' => 10,
-        'source' => DoctorMonthlyWorkloadSource::ManualInitial,
-        'actual_worked_minutes' => 0,
-    ]));
+    seedMonthlySetupBaselineHistory(2026, 10);
 
     $this->actingAs(User::factory()->create())
         ->get(route('dashboard'))
@@ -246,14 +257,9 @@ it('makes next month primary after the current baseline exists', function () {
 it('keeps next month primary after finalizing the current month', function () {
     $this->seed([DoctorsSeeder::class, ShiftTypesSeeder::class]);
     $this->travelTo(CarbonImmutable::parse('2026-10-03 09:00:00'));
-    Doctor::query()->get()->each(fn (Doctor $doctor) => DoctorMonthlyWorkload::create([
-        'doctor_id' => $doctor->id,
-        'year' => 2026,
-        'month' => 9,
-        'source' => DoctorMonthlyWorkloadSource::ManualInitial,
-        'actual_worked_minutes' => 0,
-    ]));
-    Roster::create(['year' => 2026, 'month' => 10, 'status' => RosterStatus::Final]);
+    seedMonthlySetupBaselineHistory(2026, 9);
+    $october = Roster::create(['year' => 2026, 'month' => 10, 'status' => RosterStatus::Final]);
+    snapshotRosterParticipation($october, Doctor::query()->get());
 
     $this->actingAs(User::factory()->create())
         ->get(route('dashboard'))
@@ -268,14 +274,9 @@ it('keeps next month primary after finalizing the current month', function () {
 it('surfaces unconfirmed previous actual work without marking it confirmed', function () {
     $this->seed([DoctorsSeeder::class, ShiftTypesSeeder::class]);
     $this->travelTo(CarbonImmutable::parse('2026-10-03 09:00:00'));
-    Doctor::query()->get()->each(fn (Doctor $doctor) => DoctorMonthlyWorkload::create([
-        'doctor_id' => $doctor->id,
-        'year' => 2026,
-        'month' => 9,
-        'source' => DoctorMonthlyWorkloadSource::ManualInitial,
-        'actual_worked_minutes' => 0,
-    ]));
+    seedMonthlySetupBaselineHistory(2026, 9);
     $october = Roster::create(['year' => 2026, 'month' => 10, 'status' => RosterStatus::Final]);
+    snapshotRosterParticipation($october, Doctor::query()->get());
 
     $this->actingAs(User::factory()->create())
         ->get(route('dashboard'))

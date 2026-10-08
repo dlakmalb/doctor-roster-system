@@ -18,11 +18,11 @@ class DoctorAssignmentEligibilityService
      * @param  Collection<int, RosterShift>  $assignedShifts
      * @return list<string>
      */
-    public function conflicts(Doctor $doctor, RosterShift $candidate, bool $isExcluded, Collection $dayOffRequests, Collection $assignedShifts, ?CarbonInterface $previousNightStart = null): array
+    public function conflicts(Doctor $doctor, RosterShift $candidate, bool $isExcluded, Collection $dayOffRequests, Collection $assignedShifts, ?CarbonInterface $previousNightStart = null, bool $checkActiveStatus = true): array
     {
         $conflicts = [];
 
-        if (! $doctor->is_active) {
+        if ($checkActiveStatus && ! $doctor->is_active) {
             $conflicts[] = 'inactive_doctor';
         }
 

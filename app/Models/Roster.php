@@ -52,6 +52,12 @@ class Roster extends Model
         return $this->hasMany(DoctorMonthlyWorkload::class);
     }
 
+    /** @return HasMany<DoctorMonthlyParticipation, $this> */
+    public function monthlyParticipations(): HasMany
+    {
+        return $this->hasMany(DoctorMonthlyParticipation::class);
+    }
+
     /** @return BelongsTo<User, $this> */
     public function creator(): BelongsTo
     {

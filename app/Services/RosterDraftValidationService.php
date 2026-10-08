@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Enums\RosterAssignmentRole;
+use App\Enums\RosterStatus;
 use App\Models\Roster;
 use App\Models\RosterShift;
 use Carbon\CarbonImmutable;
@@ -17,6 +18,12 @@ class RosterDraftValidationService
         $this->context->load($roster);
         $state = $this->context->state();
         $items = [];
+        if (! $this->context->participationSnapshotIntegrityMatches) {
+            $items[] = $this->item('Error', 'participation_snapshot_integrity', 'This roster has incomplete or mismatched saved participation records.', 'conflicts');
+        }
+        if ($roster->status === RosterStatus::Draft && ! $this->context->participationPopulationMatches) {
+            $items[] = $this->item('Error', 'participation_population_mismatch', 'Active doctor statuses no longer match this Draft roster’s saved participation. Restore the active statuses to match the saved population before finalizing.', 'conflicts');
+        }
         foreach ($this->context->shifts as $shift) {
             foreach ($shift->assignments as $assignment) {
                 $capacity = $assignment->role === RosterAssignmentRole::Main ? $shift->shiftType->main_count : $shift->shiftType->optional_count;

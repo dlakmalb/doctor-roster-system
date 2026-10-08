@@ -49,6 +49,12 @@ class Doctor extends Model
         return $this->hasMany(DoctorMonthlyWorkload::class);
     }
 
+    /** @return HasMany<DoctorMonthlyParticipation, $this> */
+    public function monthlyParticipations(): HasMany
+    {
+        return $this->hasMany(DoctorMonthlyParticipation::class);
+    }
+
     /** @return HasMany<ActualWorkException, $this> */
     public function actualWorkExceptions(): HasMany
     {

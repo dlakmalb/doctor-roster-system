@@ -16,7 +16,12 @@ use Illuminate\Validation\ValidationException;
 
 class RosterAssignmentGenerator
 {
-    public function __construct(private RosterCandidateRanker $ranker, private RosterAssignmentRecoveryService $recovery, private RosterPlanningHistoryService $history) {}
+    public function __construct(
+        private RosterCandidateRanker $ranker,
+        private RosterAssignmentRecoveryService $recovery,
+        private RosterPlanningHistoryService $history,
+        private DoctorMonthlyParticipationService $participation,
+    ) {}
 
     public function generate(Roster $roster, User $admin): void
     {
@@ -38,6 +43,7 @@ class RosterAssignmentGenerator
 
             $shifts = $roster->shifts()->with(['shiftType', 'assignments'])->get();
             $doctors = Doctor::query()->where('is_active', true)->get();
+            $this->participation->ensureRosterSnapshot($roster, $doctors);
             $excludedDoctorIds = DoctorMonthlyExclusion::query()
                 ->where('year', $roster->year)->where('month', $roster->month)
                 ->pluck('doctor_id')->flip();

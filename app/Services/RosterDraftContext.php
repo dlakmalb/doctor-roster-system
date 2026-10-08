@@ -4,8 +4,10 @@ namespace App\Services;
 
 use App\Enums\DoctorRequestType;
 use App\Enums\RosterAssignmentRole;
+use App\Enums\RosterStatus;
 use App\Models\Doctor;
 use App\Models\DoctorMonthlyExclusion;
+use App\Models\DoctorMonthlyParticipation;
 use App\Models\DoctorMonthlyWorkload;
 use App\Models\DoctorRequest;
 use App\Models\Roster;
@@ -13,6 +15,7 @@ use App\Models\RosterAssignment;
 use App\Models\RosterShift;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Collection;
+use Illuminate\Validation\ValidationException;
 
 class RosterDraftContext
 {
@@ -34,12 +37,38 @@ class RosterDraftContext
     /** @var Collection<int, int> */
     private Collection $excluded;
 
-    public function __construct(private DoctorAssignmentEligibilityService $eligibility, private RosterCandidateRanker $ranker, private RosterPlanningHistoryService $planningHistory) {}
+    /** @var Collection<int, bool> */
+    private Collection $participation;
+
+    public bool $participationPopulationMatches = true;
+
+    public bool $participationSnapshotIntegrityMatches = true;
+
+    private bool $checkActiveStatus = true;
+
+    public function __construct(private DoctorAssignmentEligibilityService $eligibility, private RosterCandidateRanker $ranker, private RosterPlanningHistoryService $planningHistory, private DoctorMonthlyParticipationService $monthlyParticipation) {}
 
     public function load(Roster $roster): void
     {
+        $this->participationPopulationMatches = true;
+        $this->participationSnapshotIntegrityMatches = true;
+        $this->checkActiveStatus = $roster->status === RosterStatus::Draft;
         $this->shifts = $roster->shifts()->with(['shiftType', 'assignments'])->get()->keyBy('id');
         $this->doctors = Doctor::query()->get()->keyBy('id');
+        try {
+            $this->monthlyParticipation->assertRosterSnapshotIntegrity($roster);
+        } catch (ValidationException) {
+            $this->participationSnapshotIntegrityMatches = false;
+        }
+        if ($this->checkActiveStatus && $this->participationSnapshotIntegrityMatches) {
+            try {
+                $this->monthlyParticipation->assertRosterPopulationMatchesActiveDoctors($roster, Doctor::query()->where('is_active', true)->get());
+            } catch (ValidationException) {
+                $this->participationPopulationMatches = false;
+            }
+        }
+        $this->participation = DoctorMonthlyParticipation::query()
+            ->where('year', $roster->year)->where('month', $roster->month)->pluck('is_participating', 'doctor_id');
         $first = CarbonImmutable::create($roster->year, $roster->month, 1)->startOfDay();
         $last = $first->endOfMonth();
         $this->excluded = DoctorMonthlyExclusion::query()->where('year', $roster->year)->where('month', $roster->month)->pluck('doctor_id')->flip();
@@ -50,6 +79,13 @@ class RosterDraftContext
             ->whereBetween('request_date', [$first, $last])->get();
         $this->history = $this->planningHistory->forMonth($roster->year, $roster->month, false);
         $this->ranker->initialize($this->shifts->values(), $this->preferred, $this->history, $first);
+    }
+
+    public function assertParticipationPopulationMatches(): void
+    {
+        if (! $this->participationPopulationMatches) {
+            throw ValidationException::withMessages(['edit' => 'Active doctor statuses no longer match this Draft roster’s saved participation. Restore the active statuses to match the saved population before editing.']);
+        }
     }
 
     public function key(int $shiftId, RosterAssignmentRole $role, int $slot): string
@@ -100,6 +136,9 @@ class RosterDraftContext
         if ($doctor === null) {
             return ['The selected doctor does not exist.'];
         }
+        if (! $this->participation->get($doctorId, false)) {
+            return ["$doctor->name is not part of the team for this month."];
+        }
         $assigned = collect();
         foreach ($state as $key => $assignedDoctorId) {
             if ($assignedDoctorId === $doctorId) {
@@ -110,7 +149,7 @@ class RosterDraftContext
             }
         }
         $historyNight = $this->history->get($doctorId)?->most_recent_night_shift_at;
-        $codes = $this->eligibility->conflicts($doctor, $shift, $this->excluded->has($doctorId), $this->dayOff->get($doctorId, collect()), $assigned, $historyNight);
+        $codes = $this->eligibility->conflicts($doctor, $shift, $this->excluded->has($doctorId), $this->dayOff->get($doctorId, collect()), $assigned, $historyNight, $this->checkActiveStatus);
 
         return array_map(fn (string $code): string => match ($code) {
             'inactive_doctor' => "$doctor->name is inactive.",

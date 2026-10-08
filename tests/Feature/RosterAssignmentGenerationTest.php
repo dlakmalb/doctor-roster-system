@@ -5,6 +5,7 @@ use App\Enums\RosterAssignmentRole;
 use App\Enums\RosterStatus;
 use App\Models\Doctor;
 use App\Models\DoctorMonthlyExclusion;
+use App\Models\DoctorMonthlyParticipation;
 use App\Models\DoctorMonthlyWorkload;
 use App\Models\DoctorRequest;
 use App\Models\RosterAssignment;
@@ -22,11 +23,14 @@ use Database\Seeders\ShiftTypesSeeder;
 use Illuminate\Support\Facades\DB;
 use Inertia\Testing\AssertableInertia as Assert;
 
-function assignmentRoster(): array
+function assignmentRoster(?callable $prepareDoctors = null): array
 {
     test()->seed([DoctorsSeeder::class, ShiftTypesSeeder::class]);
     seedInitialHistoryForGeneration();
     $admin = User::factory()->create();
+    if ($prepareDoctors !== null) {
+        $prepareDoctors();
+    }
 
     return [$admin, app(RosterStructureService::class)->create(2026, 10, $admin)];
 }
@@ -110,6 +114,45 @@ it('generates valid Main and Optional assignments and preserves them on repeat',
     expect(RosterAssignment::query()->orderBy('id')->pluck('id')->all())->toBe($ids);
 });
 
+it('preserves the creation-time participation snapshot during generation and regeneration', function () {
+    [$admin, $roster] = assignmentRoster();
+    $snapshot = DoctorMonthlyParticipation::query()
+        ->where('year', 2026)
+        ->where('month', 10)
+        ->orderBy('doctor_id')
+        ->get(['doctor_id', 'is_participating'])
+        ->toArray();
+    expect($snapshot)->toHaveCount(Doctor::query()->count())
+        ->and(collect($snapshot)->every(fn (array $row): bool => $row['is_participating']))->toBeTrue();
+
+    $this->actingAs($admin)->post(generateUrl())->assertRedirect();
+    expect(DoctorMonthlyParticipation::query()->where('year', 2026)->where('month', 10)
+        ->orderBy('doctor_id')->get(['doctor_id', 'is_participating'])->toArray())->toBe($snapshot);
+
+    $this->post(route('rosters.regenerate', ['year' => 2026, 'month' => 10]))->assertRedirect();
+    expect(DoctorMonthlyParticipation::query()->where('year', 2026)->where('month', 10)
+        ->orderBy('doctor_id')->get(['doctor_id', 'is_participating'])->toArray())->toBe($snapshot);
+});
+
+it('blocks regeneration when global active status no longer matches the Draft participation snapshot', function () {
+    [$admin, $roster] = assignmentRoster();
+    $this->actingAs($admin)->post(generateUrl())->assertRedirect();
+    $assignments = RosterAssignment::query()->orderBy('id')->get()->toArray();
+    $generatedAt = $roster->fresh()->last_generated_at;
+    $doctor = Doctor::query()->where('is_active', true)->orderBy('id')->firstOrFail();
+    $doctor->update(['is_active' => false]);
+
+    $this->from(route('rosters.show', ['year' => 2026, 'month' => 10]))
+        ->post(route('rosters.regenerate', ['year' => 2026, 'month' => 10]))
+        ->assertSessionHasErrors([
+            'roster' => 'Active doctor statuses no longer match this Draft roster’s saved participation. Restore the active statuses to match the saved population before generating or regenerating.',
+        ]);
+
+    expect(DoctorMonthlyParticipation::query()->where('doctor_id', $doctor->id)->where('year', 2026)->where('month', 10)->firstOrFail()->is_participating)->toBeTrue()
+        ->and(RosterAssignment::query()->orderBy('id')->get()->toArray())->toBe($assignments)
+        ->and($roster->fresh()->last_generated_at->equalTo($generatedAt))->toBeTrue();
+});
+
 it('fills every required position in a feasible 14-doctor month', function () {
     [$admin, $roster] = assignmentRoster();
     $recovery = app(RosterAssignmentRecoveryService::class);
@@ -172,9 +215,10 @@ it('keeps the feasible month complete across randomized regeneration', function 
 });
 
 it('excludes inactive and monthly excluded doctors while retaining other month eligibility', function () {
-    [$admin] = assignmentRoster();
+    [$admin] = assignmentRoster(function (): void {
+        Doctor::query()->orderBy('id')->firstOrFail()->update(['is_active' => false]);
+    });
     $doctors = Doctor::query()->orderBy('id')->take(3)->get();
-    $doctors[0]->update(['is_active' => false]);
     DoctorMonthlyExclusion::create(['doctor_id' => $doctors[1]->id, 'year' => 2026, 'month' => 10]);
     DoctorMonthlyExclusion::create(['doctor_id' => $doctors[2]->id, 'year' => 2026, 'month' => 11]);
     $this->actingAs($admin)->post(generateUrl())->assertRedirect();
@@ -237,11 +281,12 @@ it('applies Night recovery after the earlier shift regardless of argument order'
 });
 
 it('loads the next date Day-Off when evaluating a month-end overnight shift', function (bool $fullDayOff, int $expectedAssignments) {
-    [$admin, $roster] = assignmentRoster();
+    [$admin, $roster] = assignmentRoster(function (): void {
+        Doctor::query()->where('id', '!=', Doctor::query()->min('id'))->update(['is_active' => false]);
+    });
     $night = shiftOn('2026-10-31', 'weekend_night');
     $roster->shifts()->where('id', '!=', $night->id)->delete();
     $doctor = Doctor::query()->orderBy('id')->firstOrFail();
-    Doctor::query()->where('id', '!=', $doctor->id)->update(['is_active' => false]);
     $dayOff = DoctorRequest::create([
         'doctor_id' => $doctor->id,
         'request_type' => DoctorRequestType::DayOff,
@@ -291,8 +336,9 @@ it('honors stored previous-month night history during generation', function () {
 });
 
 it('persists partial assignments and distinguishes missing Main and Optional slots', function () {
-    [$admin] = assignmentRoster();
-    Doctor::query()->where('id', '!=', Doctor::query()->min('id'))->update(['is_active' => false]);
+    [$admin] = assignmentRoster(function (): void {
+        Doctor::query()->where('id', '!=', Doctor::query()->min('id'))->update(['is_active' => false]);
+    });
     $this->actingAs($admin)->post(generateUrl())->assertRedirect();
     expect(RosterAssignment::query()->count())->toBeGreaterThan(0);
     $this->assertDatabaseCount('doctor_monthly_workloads', Doctor::query()->count());

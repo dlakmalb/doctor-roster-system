@@ -4,6 +4,7 @@ namespace App\Http\Requests;
 
 use App\Models\Doctor;
 use App\Models\DoctorMonthlyExclusion;
+use App\Models\DoctorMonthlyParticipation;
 use App\Models\DoctorRequest;
 use Carbon\CarbonImmutable;
 use Illuminate\Contracts\Validation\ValidationRule;
@@ -41,6 +42,15 @@ class StoreDoctorMonthlyExclusionRequest extends FormRequest
 
             if (! $doctor?->is_active) {
                 $validator->errors()->add('doctor_id', 'Only active doctors can be excluded.');
+            }
+
+            $participation = DoctorMonthlyParticipation::query()
+                ->where('doctor_id', $doctorId)
+                ->where('year', $year)
+                ->where('month', $month)
+                ->first();
+            if ($participation !== null && ! $participation->is_participating) {
+                $validator->errors()->add('doctor_id', 'A doctor who is not part of the team cannot be fully excluded.');
             }
 
             if (DoctorMonthlyExclusion::where('doctor_id', $doctorId)->where('year', $year)->where('month', $month)->exists()) {

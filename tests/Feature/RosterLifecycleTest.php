@@ -7,6 +7,7 @@ use App\Enums\RosterAssignmentRole;
 use App\Enums\RosterStatus;
 use App\Models\ActualWorkException;
 use App\Models\Doctor;
+use App\Models\DoctorMonthlyParticipation;
 use App\Models\DoctorMonthlyWorkload;
 use App\Models\DoctorRequest;
 use App\Models\Roster;
@@ -14,7 +15,12 @@ use App\Models\RosterAssignment;
 use App\Models\RosterShift;
 use App\Models\ShiftType;
 use App\Models\User;
+use App\Services\DoctorMonthlyParticipationService;
+use App\Services\RosterDraftContext;
 use App\Services\RosterDraftValidationService;
+use App\Services\RosterManualEditService;
+use App\Services\RosterPlanningHistoryService;
+use Illuminate\Validation\ValidationException;
 use Inertia\Testing\AssertableInertia as Assert;
 
 function lifecycleFixture(bool $filled = true): array
@@ -23,6 +29,7 @@ function lifecycleFixture(bool $filled = true): array
     $doctors = collect(['A', 'B', 'C', 'D'])->map(fn (string $code): Doctor => Doctor::create(['name' => "Doctor $code", 'short_code' => $code, 'is_active' => true]));
     $type = ShiftType::create(['code' => 'test_day', 'name' => 'Test Day', 'start_time' => '08:00:00', 'end_time' => '14:00:00', 'duration_minutes' => 360, 'main_count' => 1, 'optional_count' => 1, 'is_overnight' => false, 'is_active' => true]);
     $roster = Roster::create(['year' => 2026, 'month' => 10, 'status' => RosterStatus::Draft, 'created_by' => $admin->id, 'last_generated_at' => now()->subDay()]);
+    app(DoctorMonthlyParticipationService::class)->snapshotRoster($roster, $doctors);
     $shift = RosterShift::create(['roster_id' => $roster->id, 'shift_date' => '2026-10-05', 'shift_type_id' => $type->id]);
     if ($filled) {
         RosterAssignment::create(['roster_shift_id' => $shift->id, 'doctor_id' => $doctors[0]->id, 'role' => RosterAssignmentRole::Main, 'slot_number' => 1]);
@@ -37,10 +44,142 @@ function lifecycleUrl(string $action): string
     return route("rosters.$action", ['year' => 2026, 'month' => 10]);
 }
 
+it('keeps an older Final roster viewable after a new doctor is added', function () {
+    [$admin, $doctors, $type] = lifecycleFixture();
+    $previous = Roster::create(['year' => 2026, 'month' => 8, 'status' => RosterStatus::Final, 'created_by' => $admin->id]);
+    $roster = Roster::create(['year' => 2026, 'month' => 9, 'status' => RosterStatus::Final, 'created_by' => $admin->id]);
+    app(DoctorMonthlyParticipationService::class)->snapshotRoster($previous, $doctors);
+    app(DoctorMonthlyParticipationService::class)->snapshotRoster($roster, $doctors);
+    $previousShift = RosterShift::create(['roster_id' => $previous->id, 'shift_date' => '2026-08-05', 'shift_type_id' => $type->id]);
+    $shift = RosterShift::create(['roster_id' => $roster->id, 'shift_date' => '2026-09-05', 'shift_type_id' => $type->id]);
+    RosterAssignment::create(['roster_shift_id' => $previousShift->id, 'doctor_id' => $doctors[0]->id, 'role' => RosterAssignmentRole::Main, 'slot_number' => 1]);
+    RosterAssignment::create(['roster_shift_id' => $shift->id, 'doctor_id' => $doctors[0]->id, 'role' => RosterAssignmentRole::Main, 'slot_number' => 1]);
+    RosterAssignment::create(['roster_shift_id' => $shift->id, 'doctor_id' => $doctors[1]->id, 'role' => RosterAssignmentRole::Optional, 'slot_number' => 1]);
+    $assignments = RosterAssignment::query()->orderBy('id')->get()->toArray();
+    $this->travelTo($roster->created_at->copy()->addMonth());
+    $newDoctor = Doctor::create(['name' => 'Doctor New', 'short_code' => 'NEW', 'is_active' => true]);
+
+    $items = app(RosterDraftValidationService::class)->validate($roster->fresh());
+    $historicalWorkload = app(RosterPlanningHistoryService::class)->forMonth(2026, 9, false);
+    expect(collect($items)->pluck('code')->contains('participation_snapshot_integrity'))->toBeFalse()
+        ->and($historicalWorkload->has($newDoctor->id))->toBeFalse()
+        ->and(RosterAssignment::query()->orderBy('id')->get()->toArray())->toBe($assignments);
+
+    $this->actingAs($admin)->get(route('rosters.show', ['year' => 2026, 'month' => 9]))->assertInertia(fn (Assert $page) => $page
+        ->component('roster')
+        ->where('status', 'final')
+        ->where('conflicts', []));
+});
+
+it('detects a deleted participation row for a doctor present at snapshot time', function () {
+    [, $doctors, , $roster] = lifecycleFixture();
+    $roster->update(['status' => RosterStatus::Final]);
+    DoctorMonthlyParticipation::query()->where('roster_id', $roster->id)->where('doctor_id', $doctors[3]->id)->delete();
+
+    expect(collect(app(RosterDraftValidationService::class)->validate($roster))->pluck('code')->contains('participation_snapshot_integrity'))->toBeTrue();
+});
+
+it('resets participation validation state when a draft context loads another roster', function () {
+    [$admin, $doctors, $type, $draft] = lifecycleFixture();
+    $doctors[3]->update(['is_active' => false]);
+    $context = app(RosterDraftContext::class);
+    $context->load($draft);
+    expect($context->participationPopulationMatches)->toBeFalse();
+    DoctorMonthlyParticipation::query()->where('roster_id', $draft->id)->where('doctor_id', $doctors[3]->id)->delete();
+    $context->load($draft);
+    expect($context->participationSnapshotIntegrityMatches)->toBeFalse()
+        ->and($context->participationPopulationMatches)->toBeTrue();
+
+    $historicalFinal = Roster::create(['year' => 2026, 'month' => 9, 'status' => RosterStatus::Final, 'created_by' => $admin->id]);
+    app(DoctorMonthlyParticipationService::class)->snapshotRoster($historicalFinal, $doctors->where('is_active', true));
+    $shift = RosterShift::create(['roster_id' => $historicalFinal->id, 'shift_date' => '2026-09-05', 'shift_type_id' => $type->id]);
+    $doctors[0]->update(['is_active' => false]);
+    $context->load($historicalFinal);
+
+    expect($context->participationPopulationMatches)->toBeTrue()
+        ->and($context->participationSnapshotIntegrityMatches)->toBeTrue()
+        ->and($context->hardReasons($doctors[0]->id, $shift, []))->toBe([]);
+});
+
+it('keeps a Final roster valid and unchanged when global active status changes later', function () {
+    [$admin, $doctors, , $roster] = lifecycleFixture();
+    $newDoctor = $doctors[3];
+    DoctorMonthlyParticipation::query()->where('roster_id', $roster->id)->where('doctor_id', $newDoctor->id)->update(['is_participating' => false]);
+    $newDoctor->update(['is_active' => false]);
+    $roster->update(['status' => RosterStatus::Final]);
+    $assignmentsBefore = RosterAssignment::query()->orderBy('id')->get()->toArray();
+
+    $doctors[0]->update(['is_active' => false]);
+    $newDoctor->update(['is_active' => true]);
+
+    $items = app(RosterDraftValidationService::class)->validate($roster->fresh());
+    expect(collect($items)->where('severity', 'Error')->all())->toBe([])
+        ->and(collect($items)->contains(fn (array $item): bool => str_contains($item['message'], 'inactive')))->toBeFalse()
+        ->and(RosterAssignment::query()->orderBy('id')->get()->toArray())->toBe($assignmentsBefore);
+
+    $this->actingAs($admin)->get(lifecycleUrl('show'))->assertInertia(fn (Assert $page) => $page
+        ->component('roster')
+        ->where('status', 'final')
+        ->where('conflicts', []));
+});
+
+it('reports population drift on a Draft roster', function () {
+    [$admin, $doctors, , $roster] = lifecycleFixture();
+    $doctors[3]->update(['is_active' => false]);
+
+    $items = app(RosterDraftValidationService::class)->validate($roster);
+    expect(collect($items)->pluck('code')->contains('participation_population_mismatch'))->toBeTrue();
+
+    $this->actingAs($admin)->postJson(lifecycleUrl('finalize'))
+        ->assertJsonPath('status', 'errors')
+        ->assertJsonFragment(['code' => 'participation_population_mismatch']);
+});
+
+it('keeps Draft restrictions after reopening a roster with status drift', function () {
+    [$admin, $doctors, , $roster, $shift] = lifecycleFixture();
+    $this->actingAs($admin)->postJson(lifecycleUrl('finalize'))->assertJsonPath('status', 'finalized');
+    $doctors[3]->update(['is_active' => false]);
+    $this->post(lifecycleUrl('reopen'))->assertRedirect(lifecycleUrl('show'));
+
+    expect($roster->fresh()->status)->toBe(RosterStatus::Draft)
+        ->and(DoctorMonthlyParticipation::query()->where('roster_id', $roster->id)->where('doctor_id', $doctors[3]->id)->value('is_participating'))->toBeTrue();
+
+    expect(fn () => app(RosterManualEditService::class)->edit($roster, $admin, 'replace', [
+        'shift_id' => $shift->id,
+        'role' => 'main',
+        'slot_number' => 1,
+        'expected_assignment_id' => null,
+        'expected_doctor_id' => null,
+        'doctor_id' => $doctors[2]->id,
+    ], true))->toThrow(ValidationException::class);
+
+    $this->postJson(lifecycleUrl('finalize'))->assertJsonPath('status', 'errors')
+        ->assertJsonFragment(['code' => 'participation_population_mismatch']);
+});
+
+it('still reports genuine scheduling and participation snapshot integrity errors on Final rosters', function () {
+    [, $doctors, , $roster, $shift] = lifecycleFixture();
+    $roster->update(['status' => RosterStatus::Final]);
+    DoctorRequest::create([
+        'doctor_id' => $doctors[0]->id,
+        'request_type' => DoctorRequestType::DayOff,
+        'request_date' => $shift->shift_date,
+        'shift_type_id' => $shift->shift_type_id,
+    ]);
+
+    $items = app(RosterDraftValidationService::class)->validate($roster);
+    expect(collect($items)->contains(fn (array $item): bool => $item['severity'] === 'Error' && $item['code'] === 'hard_conflict' && str_contains($item['message'], 'Day-Off')))->toBeTrue();
+
+    DoctorMonthlyParticipation::query()->where('roster_id', $roster->id)->where('doctor_id', $doctors[3]->id)->delete();
+    $items = app(RosterDraftValidationService::class)->validate($roster);
+    expect(collect($items)->pluck('code')->contains('participation_snapshot_integrity'))->toBeTrue();
+});
+
 it('reports multiple Main duties with the dates of the weekend period', function () {
     $admin = User::factory()->create();
     $doctor = Doctor::create(['name' => 'Dr Ganga', 'short_code' => 'G', 'is_active' => true]);
     $roster = Roster::create(['year' => 2026, 'month' => 11, 'status' => RosterStatus::Draft, 'created_by' => $admin->id]);
+    app(DoctorMonthlyParticipationService::class)->snapshotRoster($roster, collect([$doctor]));
     $nightType = ShiftType::create(['code' => 'weekday_night', 'name' => 'Weekday Night', 'start_time' => '20:00:00', 'end_time' => '08:00:00', 'duration_minutes' => 720, 'main_count' => 1, 'optional_count' => 0, 'is_overnight' => true, 'is_active' => true]);
     $weekendType = ShiftType::create(['code' => 'weekend_day', 'name' => 'Weekend Day', 'start_time' => '08:00:00', 'end_time' => '16:00:00', 'duration_minutes' => 480, 'main_count' => 1, 'optional_count' => 0, 'is_overnight' => false, 'is_active' => true]);
 
@@ -216,6 +355,20 @@ it('rechecks hard errors when warning confirmation arrives', function () {
     $doctors[0]->update(['is_active' => false]);
 
     $this->postJson(lifecycleUrl('finalize'), ['warning_signature' => $first->json('warning_signature')])->assertJsonPath('status', 'errors');
+
+    expect($roster->fresh()->status)->toBe(RosterStatus::Draft);
+});
+
+it('blocks finalization when global doctor status has drifted from saved participation', function () {
+    [$admin, $doctors, , $roster] = lifecycleFixture();
+    $outsider = $doctors[3];
+    DoctorMonthlyParticipation::query()->where('roster_id', $roster->id)->where('doctor_id', $outsider->id)->update(['is_participating' => false]);
+    $outsider->update(['is_active' => false]);
+    $outsider->update(['is_active' => true]);
+
+    $this->actingAs($admin)->postJson(lifecycleUrl('finalize'))
+        ->assertJsonPath('status', 'errors')
+        ->assertJsonPath('errors.0.code', 'participation_population_mismatch');
 
     expect($roster->fresh()->status)->toBe(RosterStatus::Draft);
 });

@@ -23,6 +23,7 @@ function confirmedExclusionFixture(): array
     $doctors = collect(['A', 'B', 'C'])->map(fn (string $code): Doctor => Doctor::create(['name' => "Doctor $code", 'short_code' => $code, 'is_active' => true]));
     seedInitialHistoryForGeneration();
     $roster = Roster::create(['year' => 2026, 'month' => 10, 'status' => RosterStatus::Final, 'created_by' => $admin->id]);
+    snapshotRosterParticipation($roster, $doctors);
     $shift = RosterShift::create(['roster_id' => $roster->id, 'shift_date' => '2026-10-01', 'shift_type_id' => ShiftType::query()->where('code', 'weekday_day')->firstOrFail()->id]);
     RosterAssignment::create(['roster_shift_id' => $shift->id, 'doctor_id' => $doctors[0]->id, 'role' => RosterAssignmentRole::Main, 'slot_number' => 1]);
 
@@ -43,6 +44,7 @@ it('recalculates confirmed and later balances through the historical exclusion s
     [$admin, $doctors, $october] = confirmedExclusionFixture();
     $this->actingAs($admin)->post(exclusionHistoryUrl('rosters.actual-work.confirm'))->assertRedirect();
     $november = Roster::create(['year' => 2026, 'month' => 11, 'status' => RosterStatus::Final, 'created_by' => $admin->id]);
+    snapshotRosterParticipation($november, $doctors);
     $this->post(route('rosters.actual-work.confirm', ['year' => 2026, 'month' => 11]))->assertRedirect();
     $december = Roster::create(['year' => 2026, 'month' => 12, 'status' => RosterStatus::Draft, 'created_by' => $admin->id]);
     RosterShift::create(['roster_id' => $december->id, 'shift_date' => '2026-12-01', 'shift_type_id' => ShiftType::query()->where('code', 'weekday_day')->firstOrFail()->id]);
@@ -110,6 +112,7 @@ it('leaves workload history untouched when the historical exclusion service has 
 it('warns when an exclusion is added after generating from an unconfirmed Final plan', function () {
     [$admin, $doctors, $october] = confirmedExclusionFixture();
     $november = Roster::create(['year' => 2026, 'month' => 11, 'status' => RosterStatus::Draft, 'created_by' => $admin->id]);
+    snapshotRosterParticipation($november, $doctors);
     RosterShift::create(['roster_id' => $november->id, 'shift_date' => '2026-11-02', 'shift_type_id' => ShiftType::query()->where('code', 'weekday_day')->firstOrFail()->id]);
     $this->actingAs($admin)->post(route('rosters.generate', ['year' => 2026, 'month' => 11]))->assertRedirect();
     $assignments = RosterAssignment::query()->whereHas('rosterShift', fn ($query) => $query->where('roster_id', $november->id))->orderBy('id')->get()->toArray();

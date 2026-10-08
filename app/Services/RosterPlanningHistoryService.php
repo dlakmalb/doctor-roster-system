@@ -7,6 +7,7 @@ use App\Enums\RosterAssignmentRole;
 use App\Enums\RosterStatus;
 use App\Models\Doctor;
 use App\Models\DoctorMonthlyExclusion;
+use App\Models\DoctorMonthlyParticipation;
 use App\Models\DoctorMonthlyWorkload;
 use App\Models\Roster;
 use Carbon\CarbonImmutable;
@@ -16,7 +17,11 @@ use Illuminate\Validation\ValidationException;
 
 class RosterPlanningHistoryService
 {
-    public function __construct(private DoctorMonthlyWorkloadService $workloads, private RosterCandidateRanker $ranker) {}
+    public function __construct(
+        private DoctorMonthlyWorkloadService $workloads,
+        private RosterCandidateRanker $ranker,
+        private DoctorMonthlyParticipationService $participation,
+    ) {}
 
     /** @return Collection<int, DoctorMonthlyWorkload> */
     public function forMonth(int $year, int $month, bool $requireFinal = true): Collection
@@ -75,13 +80,23 @@ class RosterPlanningHistoryService
     /** @return Collection<int, DoctorMonthlyWorkload> */
     private function fromPlannedRoster(Roster $roster): Collection
     {
-        $doctors = Doctor::query()->get();
+        $this->participation->assertRosterSnapshotIntegrity($roster);
+        $participationRows = DoctorMonthlyParticipation::query()
+            ->where('year', $roster->year)
+            ->where('month', $roster->month)
+            ->where('roster_id', $roster->id)
+            ->get();
+        $doctors = Doctor::query()->whereIn('id', $participationRows->pluck('doctor_id'))->get();
         $openings = $this->forMonth($roster->year, $roster->month, false);
+        $participation = $participationRows->mapWithKeys(fn (DoctorMonthlyParticipation $row): array => [
+            $row->doctor_id => $row->is_participating,
+        ]);
         $excluded = DoctorMonthlyExclusion::query()->where('year', $roster->year)->where('month', $roster->month)->pluck('doctor_id')->flip();
         $facts = [];
         foreach ($doctors as $doctor) {
             $facts[$doctor->id] = [
                 'doctor_id' => $doctor->id,
+                'is_participating' => $participation->get($doctor->id),
                 'actual_worked_minutes' => 0,
                 'actual_night_duty_count' => 0,
                 'optional_assignment_count' => 0,
@@ -121,6 +136,7 @@ class RosterPlanningHistoryService
             ->mapWithKeys(function (array $row) use ($roster): array {
                 $doctorId = $row['doctor_id'];
                 unset($row['doctor_id']);
+                unset($row['is_participating']);
 
                 return [$doctorId => new DoctorMonthlyWorkload([...$row, 'doctor_id' => $doctorId, 'year' => $roster->year, 'month' => $roster->month])];
             });

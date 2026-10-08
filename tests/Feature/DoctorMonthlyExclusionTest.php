@@ -3,6 +3,7 @@
 use App\Enums\DoctorRequestType;
 use App\Models\Doctor;
 use App\Models\DoctorMonthlyExclusion;
+use App\Models\DoctorMonthlyParticipation;
 use App\Models\DoctorRequest;
 use App\Models\User;
 use Carbon\CarbonImmutable;
@@ -47,6 +48,24 @@ it('does not deactivate a doctor when adding a monthly exclusion', function () {
     ])->assertSessionHasNoErrors();
 
     expect($doctor->fresh()->is_active)->toBeTrue();
+});
+
+it('does not allow full-month exclusion for a doctor outside the monthly team', function () {
+    [$user, $doctor] = prepareMonthlyExclusionTest();
+    DoctorMonthlyParticipation::create([
+        'doctor_id' => $doctor->id,
+        'year' => 2026,
+        'month' => 10,
+        'is_participating' => false,
+    ]);
+
+    $this->actingAs($user)->post(monthlyExclusionRoute('monthly-exclusions.store'), [
+        'doctor_id' => $doctor->id,
+    ])->assertSessionHasErrors([
+        'doctor_id' => 'A doctor who is not part of the team cannot be fully excluded.',
+    ]);
+
+    $this->assertDatabaseCount('doctor_monthly_exclusions', 0);
 });
 
 it('blocks an exclusion while the doctor has requests in that month', function () {

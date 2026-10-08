@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\Doctor;
+use App\Models\DoctorMonthlyParticipation;
 use App\Models\DoctorMonthlyWorkload;
 use App\Services\InitialWorkloadSetupService;
 use Carbon\CarbonImmutable;
@@ -17,6 +18,7 @@ class InitialWorkloadSetupController extends Controller
     {
         $setup->assertAllowedPeriod($year, $month);
         $existing = DoctorMonthlyWorkload::query()->where('year', $year)->where('month', $month)->get()->keyBy('doctor_id');
+        $participations = DoctorMonthlyParticipation::query()->where('year', $year)->where('month', $month)->get()->keyBy('doctor_id');
 
         return Inertia::render('initial-workload-setup', [
             'month' => ['year' => $year, 'month' => $month, 'label' => CarbonImmutable::create($year, $month, 1)->format('F Y')],
@@ -25,6 +27,12 @@ class InitialWorkloadSetupController extends Controller
                 'name' => $doctor->name,
                 'short_code' => $doctor->short_code,
                 'existing' => $existing->get($doctor->id),
+                'participation_status' => match (true) {
+                    $participations->has($doctor->id) && ! $participations->get($doctor->id)->is_participating => 'not_part_of_team',
+                    $existing->get($doctor->id)?->is_month_excluded => 'full_month_excluded',
+                    $participations->has($doctor->id) => 'participating',
+                    default => '',
+                },
             ]),
         ]);
     }
@@ -34,6 +42,7 @@ class InitialWorkloadSetupController extends Controller
         $input = $request->validate([
             'doctors' => ['required', 'array'],
             'doctors.*.doctor_id' => ['required', 'integer', 'exists:doctors,id'],
+            'doctors.*.participation_status' => ['required', 'string', 'in:participating,full_month_excluded,not_part_of_team'],
             'doctors.*.actual_hours' => ['required', 'numeric', 'min:0'],
             'doctors.*.actual_night_duty_count' => ['required', 'integer', 'min:0'],
             'doctors.*.optional_assignment_count' => ['required', 'integer', 'min:0'],

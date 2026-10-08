@@ -27,6 +27,7 @@ class RosterManualEditService
             $roster = Roster::query()->lockForUpdate()->findOrFail($roster->id);
             $this->requireDraft($roster);
             $this->context->load($roster);
+            $this->context->assertParticipationPopulationMatches();
             $first = $this->slot($input, '');
             $affected = [$first];
             $this->assertExpected($first, $input, '');
@@ -136,6 +137,7 @@ class RosterManualEditService
                 throw ValidationException::withMessages(['edit' => 'Undo is no longer available for this roster.']);
             }
             $this->context->load($roster);
+            $this->context->assertParticipationPopulationMatches();
             if (($record['plan_signature'] ?? null) !== $this->planSignature()) {
                 $this->stale();
             }

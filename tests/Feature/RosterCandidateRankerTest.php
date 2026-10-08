@@ -16,11 +16,14 @@ use Carbon\CarbonImmutable;
 use Database\Seeders\DoctorsSeeder;
 use Database\Seeders\ShiftTypesSeeder;
 
-function smartRoster(): array
+function smartRoster(?callable $prepareDoctors = null): array
 {
     test()->seed([DoctorsSeeder::class, ShiftTypesSeeder::class]);
     seedInitialHistoryForGeneration();
     $admin = User::factory()->create();
+    if ($prepareDoctors !== null) {
+        $prepareDoctors();
+    }
     $roster = app(RosterStructureService::class)->create(2026, 10, $admin);
     $doctors = Doctor::query()->orderBy('id')->take(2)->get();
 
@@ -258,10 +261,11 @@ it('treats equal deterministic dimensions as a tie independent of doctor ID', fu
 });
 
 it('keeps hard-ineligible preferred doctors out of generation', function () {
-    [$admin, $roster, $preferred] = smartRoster();
+    [$admin, $roster, $preferred] = smartRoster(function (): void {
+        Doctor::query()->orderBy('id')->firstOrFail()->update(['is_active' => false]);
+    });
     $shift = smartShift('2026-10-06', 'weekday_day');
     smartPreference($preferred, $shift);
-    $preferred->update(['is_active' => false]);
     $roster->shifts()->where('id', '!=', $shift->id)->delete();
 
     $this->actingAs($admin)->post(route('rosters.generate', ['year' => 2026, 'month' => 10]))->assertRedirect();
@@ -271,11 +275,13 @@ it('keeps hard-ineligible preferred doctors out of generation', function () {
 });
 
 it('preserves a Tuesday Main preference when another doctor can take Monday Night', function () {
-    [$admin, $roster, $preferred, $other] = smartRoster();
+    [$admin, $roster, $preferred, $other] = smartRoster(function (): void {
+        $eligibleIds = Doctor::query()->orderBy('id')->take(2)->pluck('id');
+        Doctor::query()->whereNotIn('id', $eligibleIds)->update(['is_active' => false]);
+    });
     $night = smartShift('2026-10-05', 'weekday_night');
     $day = smartShift('2026-10-06', 'weekday_day');
     $roster->shifts()->whereNotIn('id', [$night->id, $day->id])->delete();
-    Doctor::query()->whereNotIn('id', [$preferred->id, $other->id])->update(['is_active' => false]);
     ShiftType::query()->whereIn('id', [$night->shift_type_id, $day->shift_type_id])->update(['main_count' => 1, 'optional_count' => 0]);
     smartPreference($preferred, $day);
 
@@ -286,12 +292,14 @@ it('preserves a Tuesday Main preference when another doctor can take Monday Nigh
 });
 
 it('preserves a same-date Day Main preference when Night is planned first across random ties', function () {
-    [$admin, $roster, $preferred, $other] = smartRoster();
+    [$admin, $roster, $preferred, $other] = smartRoster(function (): void {
+        $eligibleIds = Doctor::query()->orderBy('id')->take(3)->pluck('id');
+        Doctor::query()->whereNotIn('id', $eligibleIds)->update(['is_active' => false]);
+    });
     $anotherNightCandidate = Doctor::query()->orderBy('id')->skip(2)->firstOrFail();
     $night = smartShift('2026-10-01', 'weekday_night');
     $day = smartShift('2026-10-01', 'weekday_day');
     $roster->shifts()->whereNotIn('id', [$night->id, $day->id])->delete();
-    Doctor::query()->whereNotIn('id', [$preferred->id, $other->id, $anotherNightCandidate->id])->update(['is_active' => false]);
     ShiftType::query()->whereIn('id', [$night->shift_type_id, $day->shift_type_id])->update(['main_count' => 1, 'optional_count' => 0]);
     $request = smartPreference($preferred, $day);
     $ranker = smartRanker([$request]);
@@ -314,11 +322,12 @@ it('preserves a same-date Day Main preference when Night is planned first across
 });
 
 it('fills a required Night even when it consumes the only doctors future preference', function () {
-    [$admin, $roster, $preferred] = smartRoster();
+    [$admin, $roster, $preferred] = smartRoster(function (): void {
+        Doctor::query()->where('id', '!=', Doctor::query()->min('id'))->update(['is_active' => false]);
+    });
     $night = smartShift('2026-10-05', 'weekday_night');
     $day = smartShift('2026-10-06', 'weekday_day');
     $roster->shifts()->whereNotIn('id', [$night->id, $day->id])->delete();
-    Doctor::query()->where('id', '!=', $preferred->id)->update(['is_active' => false]);
     ShiftType::query()->whereIn('id', [$night->shift_type_id, $day->shift_type_id])->update(['main_count' => 1, 'optional_count' => 0]);
     smartPreference($preferred, $day);
 

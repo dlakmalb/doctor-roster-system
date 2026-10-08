@@ -5,8 +5,10 @@ use App\Enums\RosterAssignmentRole;
 use App\Enums\RosterStatus;
 use App\Models\Doctor;
 use App\Models\DoctorMonthlyExclusion;
+use App\Models\DoctorMonthlyParticipation;
 use App\Models\DoctorMonthlyWorkload;
 use App\Models\DoctorRequest;
+use App\Models\Roster;
 use App\Models\RosterAssignment;
 use App\Models\RosterShift;
 use App\Models\User;
@@ -55,6 +57,14 @@ function optionsUrl(RosterShift $shift, string $role, int $slot, ?RosterAssignme
     return route('rosters.assignment-options', ['year' => 2026, 'month' => 10]).'?'.http_build_query($query);
 }
 
+function syncRosterParticipationToActiveDoctors(): void
+{
+    $roster = Roster::query()->where('year', 2026)->where('month', 10)->firstOrFail();
+    foreach (DoctorMonthlyParticipation::query()->where('roster_id', $roster->id)->get() as $participation) {
+        $participation->update(['is_participating' => (bool) Doctor::query()->whereKey($participation->doctor_id)->value('is_active')]);
+    }
+}
+
 it('requires authentication and rejects all manual actions on Final rosters', function () {
     [$admin, $roster, $shift, , $doctors] = editingFixture();
     $first = RosterAssignment::create(['roster_shift_id' => $shift->id, 'doctor_id' => $doctors[0]->id, 'role' => RosterAssignmentRole::Main, 'slot_number' => 1]);
@@ -90,6 +100,17 @@ it('assigns and replaces both roles, autosaves metadata, and undoes the most rec
     $this->postJson(editingUrl('undo'))->assertOk();
     expect(RosterAssignment::query()->where('roster_shift_id', $shift->id)->where('role', 'main')->where('slot_number', 1)->value('doctor_id'))->toBe($doctors[0]->id);
     $this->postJson(editingUrl('undo'))->assertUnprocessable();
+});
+
+it('does not manually assign a doctor outside the saved monthly participation population', function () {
+    [$admin, $roster, $shift, , $doctors] = editingFixture();
+    DoctorMonthlyParticipation::query()->where('roster_id', $roster->id)->where('doctor_id', $doctors[2]->id)->update(['is_participating' => false]);
+
+    $this->actingAs($admin)->postJson(editingUrl('edit'), [
+        'operation' => 'replace', ...editPayload($shift, 'main', 1), 'doctor_id' => $doctors[2]->id, 'confirm_soft_override' => true,
+    ])->assertUnprocessable()->assertJsonValidationErrors('edit');
+
+    expect(RosterAssignment::query()->where('roster_shift_id', $shift->id)->where('doctor_id', $doctors[2]->id)->exists())->toBeFalse();
 });
 
 it('keeps a manual assignment in the pre-generation presentation', function () {
@@ -331,6 +352,7 @@ it('rejects inactive, excluded, Day-Off, same-date, and Night recovery replaceme
     $candidateDoctors = Doctor::query()->orderBy('id')->take(8)->get();
     $occupant = RosterAssignment::create(['roster_shift_id' => $day->id, 'doctor_id' => $candidateDoctors[0]->id, 'role' => RosterAssignmentRole::Main, 'slot_number' => 1]);
     $candidateDoctors[1]->update(['is_active' => false]);
+    DoctorMonthlyParticipation::query()->where('doctor_id', $candidateDoctors[1]->id)->where('year', 2026)->where('month', 10)->update(['is_participating' => false]);
     DoctorMonthlyExclusion::create(['doctor_id' => $candidateDoctors[2]->id, 'year' => 2026, 'month' => 10]);
     DoctorRequest::create(['doctor_id' => $candidateDoctors[3]->id, 'request_type' => DoctorRequestType::DayOff, 'request_date' => $day->shift_date, 'shift_type_id' => $day->shift_type_id]);
     RosterAssignment::create(['roster_shift_id' => $tuesdayEvening->id, 'doctor_id' => $candidateDoctors[4]->id, 'role' => RosterAssignmentRole::Main, 'slot_number' => 1]);
@@ -339,7 +361,7 @@ it('rejects inactive, excluded, Day-Off, same-date, and Night recovery replaceme
     $this->actingAs($admin);
     foreach ([1 => 'inactive', 2 => 'excluded', 3 => 'Day-Off', 4 => 'starting on this date', 5 => 'next-day Night recovery'] as $index => $message) {
         $this->postJson(editingUrl('edit'), ['operation' => 'replace', ...editPayload($day, 'main', 1, $occupant), 'doctor_id' => $candidateDoctors[$index]->id, 'confirm_soft_override' => true])
-            ->assertUnprocessable()->assertJsonValidationErrors('edit')->assertSee($message);
+            ->assertUnprocessable()->assertJsonValidationErrors('edit')->assertSee($index === 1 ? 'not part of the team' : $message);
     }
     $this->postJson(editingUrl('edit'), ['operation' => 'replace', ...editPayload($wednesdayNight, 'main', 1), 'doctor_id' => $candidateDoctors[6]->id, 'confirm_soft_override' => true])
         ->assertUnprocessable()->assertSee('Night-to-Night recovery');
@@ -390,6 +412,7 @@ it('warns that Monday Night blocks Tuesday Preferred Work even with only one eli
     $mondayNight = RosterShift::query()->whereDate('shift_date', '2026-10-05')
         ->whereHas('shiftType', fn ($query) => $query->where('code', 'weekday_night'))->firstOrFail();
     Doctor::query()->where('id', '!=', $doctor->id)->update(['is_active' => false]);
+    syncRosterParticipationToActiveDoctors();
     DoctorRequest::create(['doctor_id' => $doctor->id, 'request_type' => DoctorRequestType::PreferredWork, 'request_date' => $tuesdayDay->shift_date, 'shift_type_id' => $tuesdayDay->shift_type_id]);
 
     $this->actingAs($admin);
@@ -409,6 +432,7 @@ it('warns that same-shift Optional blocks an exact Preferred Work Main request',
     [$admin, $roster, $shift, , $doctors] = editingFixture();
     $doctor = $doctors[0];
     Doctor::query()->where('id', '!=', $doctor->id)->update(['is_active' => false]);
+    syncRosterParticipationToActiveDoctors();
     DoctorRequest::create(['doctor_id' => $doctor->id, 'request_type' => DoctorRequestType::PreferredWork, 'request_date' => $shift->shift_date, 'shift_type_id' => $shift->shift_type_id]);
     $payload = ['operation' => 'replace', ...editPayload($shift, 'optional', 1), 'doctor_id' => $doctor->id];
 
@@ -441,6 +465,7 @@ it('does not warn about Preferred Work already impossible from an unrelated Day-
     $mondayNight = RosterShift::query()->whereDate('shift_date', '2026-10-05')
         ->whereHas('shiftType', fn ($query) => $query->where('code', 'weekday_night'))->firstOrFail();
     Doctor::query()->where('id', '!=', $doctor->id)->update(['is_active' => false]);
+    syncRosterParticipationToActiveDoctors();
     DoctorRequest::create(['doctor_id' => $doctor->id, 'request_type' => DoctorRequestType::PreferredWork, 'request_date' => $tuesdayDay->shift_date, 'shift_type_id' => $tuesdayDay->shift_type_id]);
     DoctorRequest::create(['doctor_id' => $doctor->id, 'request_type' => DoctorRequestType::DayOff, 'request_date' => $tuesdayDay->shift_date, 'shift_type_id' => $tuesdayDay->shift_type_id]);
 
@@ -454,6 +479,7 @@ it('does not warn about Preferred Work already fulfilled by Main', function () {
     $mondayDay = RosterShift::query()->whereDate('shift_date', '2026-10-05')
         ->whereHas('shiftType', fn ($query) => $query->where('code', 'weekday_day'))->firstOrFail();
     Doctor::query()->where('id', '!=', $doctor->id)->update(['is_active' => false]);
+    syncRosterParticipationToActiveDoctors();
     DoctorRequest::create(['doctor_id' => $doctor->id, 'request_type' => DoctorRequestType::PreferredWork, 'request_date' => $tuesdayDay->shift_date, 'shift_type_id' => $tuesdayDay->shift_type_id]);
     RosterAssignment::create(['roster_shift_id' => $tuesdayDay->id, 'doctor_id' => $doctor->id, 'role' => RosterAssignmentRole::Main, 'slot_number' => 1]);
 

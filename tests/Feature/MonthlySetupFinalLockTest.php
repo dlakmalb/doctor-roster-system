@@ -12,6 +12,7 @@ use App\Models\RosterAssignment;
 use App\Models\RosterShift;
 use App\Models\ShiftType;
 use App\Models\User;
+use App\Services\DoctorMonthlyParticipationService;
 use Carbon\CarbonImmutable;
 use Database\Seeders\DoctorsSeeder;
 use Database\Seeders\ShiftTypesSeeder;
@@ -28,6 +29,7 @@ function monthlySetupFinalFixture(bool $final = true, bool $actualWorkStarted = 
     test()->actingAs($admin)->post(route('initial-workload.save', ['year' => 2026, 'month' => 10]), [
         'doctors' => $doctors->map(fn (Doctor $doctor): array => [
             'doctor_id' => $doctor->id,
+            'participation_status' => 'participating',
             'actual_hours' => '0',
             'actual_night_duty_count' => 0,
             'optional_assignment_count' => 0,
@@ -66,6 +68,7 @@ function monthlySetupFinalFixture(bool $final = true, bool $actualWorkStarted = 
         'updated_by' => $admin->id,
         'last_generated_at' => now(),
     ]);
+    app(DoctorMonthlyParticipationService::class)->snapshotRoster($roster, $doctors->where('is_active', true));
     $shift = RosterShift::create([
         'roster_id' => $roster->id,
         'shift_date' => '2026-11-02',

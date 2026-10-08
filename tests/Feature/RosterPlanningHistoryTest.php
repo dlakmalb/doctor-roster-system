@@ -7,12 +7,14 @@ use App\Enums\RosterStatus;
 use App\Models\ActualWorkException;
 use App\Models\Doctor;
 use App\Models\DoctorMonthlyExclusion;
+use App\Models\DoctorMonthlyParticipation;
 use App\Models\DoctorMonthlyWorkload;
 use App\Models\Roster;
 use App\Models\RosterAssignment;
 use App\Models\RosterShift;
 use App\Models\ShiftType;
 use App\Models\User;
+use App\Services\DoctorMonthlyParticipationService;
 use App\Services\RosterDraftValidationService;
 use App\Services\RosterHistoryReadinessService;
 use App\Services\RosterPlanningHistoryService;
@@ -32,8 +34,10 @@ function planningFixture(): array
             'actual_worked_minutes' => 0,
             'closing_balance_minutes' => $doctor->id === $doctors[0]->id ? 60 : 0,
         ]);
+        app(DoctorMonthlyParticipationService::class)->saveBaseline($doctor->id, 2026, 9, true);
     }
     $october = Roster::create(['year' => 2026, 'month' => 10, 'status' => RosterStatus::Final, 'created_by' => $admin->id, 'finalized_at' => now()]);
+    snapshotRosterParticipation($october, $doctors);
     $nightType = ShiftType::query()->where('code', 'weekday_night')->firstOrFail();
     $shift = RosterShift::create(['roster_id' => $october->id, 'shift_date' => '2026-10-30', 'shift_type_id' => $nightType->id]);
     $main = RosterAssignment::create(['roster_shift_id' => $shift->id, 'doctor_id' => $doctors[0]->id, 'role' => RosterAssignmentRole::Main, 'slot_number' => 1]);
@@ -112,6 +116,13 @@ it('warns on a Final next roster after the previous planned roster is finalized 
     $this->travel(2)->seconds();
     $october->update(['status' => RosterStatus::Draft, 'reopened_at' => now()]);
     $replacement = Doctor::create(['name' => 'Doctor D', 'short_code' => 'D', 'is_active' => true]);
+    DoctorMonthlyParticipation::create([
+        'doctor_id' => $replacement->id,
+        'roster_id' => $october->id,
+        'year' => 2026,
+        'month' => 10,
+        'is_participating' => true,
+    ]);
     $main->update(['doctor_id' => $replacement->id]);
     $this->travel(2)->seconds();
     $october->update(['status' => RosterStatus::Final, 'finalized_at' => now()]);

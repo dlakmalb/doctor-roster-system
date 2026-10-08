@@ -30,6 +30,7 @@ function workflowBaseline($doctors): array
 {
     return ['doctors' => $doctors->map(fn (Doctor $doctor): array => [
         'doctor_id' => $doctor->id,
+        'participation_status' => 'participating',
         'actual_hours' => '0',
         'actual_night_duty_count' => 0,
         'optional_assignment_count' => 0,
@@ -251,6 +252,7 @@ it('carries a confirmed historical correction forward without changing a later d
     $this->actingAs($admin)->post(workflowUrl('initial-workload.save', 2026, 9), workflowBaseline($doctors))->assertRedirect();
 
     $october = Roster::create(['year' => 2026, 'month' => 10, 'status' => RosterStatus::Final, 'created_by' => $admin->id]);
+    snapshotRosterParticipation($october, $doctors);
     $octoberShift = RosterShift::create(['roster_id' => $october->id, 'shift_date' => '2026-10-01', 'shift_type_id' => $dayType->id]);
     $octoberAssignment = RosterAssignment::create([
         'roster_shift_id' => $octoberShift->id, 'doctor_id' => $doctors[0]->id,
@@ -258,6 +260,7 @@ it('carries a confirmed historical correction forward without changing a later d
     ]);
     $this->post(workflowUrl('rosters.actual-work.confirm', 2026, 10))->assertRedirect();
     $november = Roster::create(['year' => 2026, 'month' => 11, 'status' => RosterStatus::Final, 'created_by' => $admin->id]);
+    snapshotRosterParticipation($november, $doctors);
     $novemberShift = RosterShift::create(['roster_id' => $november->id, 'shift_date' => '2026-11-02', 'shift_type_id' => $dayType->id]);
     $novemberAssignment = RosterAssignment::create([
         'roster_shift_id' => $novemberShift->id, 'doctor_id' => $doctors[1]->id,
