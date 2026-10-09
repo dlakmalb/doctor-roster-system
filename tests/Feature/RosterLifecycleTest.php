@@ -169,7 +169,12 @@ it('still reports genuine scheduling and participation snapshot integrity errors
     ]);
 
     $items = app(RosterDraftValidationService::class)->validate($roster);
-    expect(collect($items)->contains(fn (array $item): bool => $item['severity'] === 'Error' && $item['code'] === 'hard_conflict' && str_contains($item['message'], 'Day-Off')))->toBeTrue();
+    expect(collect($items)->contains(fn (array $item): bool => $item['severity'] === 'Error'
+        && $item['code'] === 'hard_conflict'
+        && $item['target'] === "slot-$shift->id-main-1"
+        && str_contains($item['message'], $doctors[0]->name)
+        && str_contains($item['message'], 'requested Test Day off on Oct 5')
+        && str_contains($item['message'], 'overlaps that request')))->toBeTrue();
 
     DoctorMonthlyParticipation::query()->where('roster_id', $roster->id)->where('doctor_id', $doctors[3]->id)->delete();
     $items = app(RosterDraftValidationService::class)->validate($roster);

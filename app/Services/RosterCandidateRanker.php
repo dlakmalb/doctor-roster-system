@@ -7,6 +7,7 @@ use App\Models\Doctor;
 use App\Models\DoctorMonthlyWeekdayPreference;
 use App\Models\DoctorMonthlyWorkload;
 use App\Models\DoctorRequest;
+use App\Models\DoctorWeekendGroupMembership;
 use App\Models\RosterShift;
 use Carbon\CarbonImmutable;
 use Carbon\CarbonInterface;
@@ -48,6 +49,12 @@ class RosterCandidateRanker
 
     private CarbonImmutable $firstDate;
 
+    /** @var array<int, Collection<int, DoctorWeekendGroupMembership>> */
+    private array $weekendGroups = [];
+
+    /** @var array<string, string> */
+    private array $scheduledWeekendGroups = [];
+
     public function __construct(private DoctorAssignmentEligibilityService $eligibility) {}
 
     /**
@@ -57,7 +64,7 @@ class RosterCandidateRanker
      * @param  array<int, array<int, true>>  $restrictedShiftTypes
      * @param  Collection<int, DoctorMonthlyWeekdayPreference>  $monthlyWeekdayPreferences
      */
-    public function initialize(Collection $shifts, Collection $preferredRequests, Collection $history, CarbonImmutable $firstDate, array $restrictedShiftTypes = [], ?Collection $monthlyWeekdayPreferences = null): void
+    public function initialize(Collection $shifts, Collection $preferredRequests, Collection $history, CarbonImmutable $firstDate, array $restrictedShiftTypes = [], ?Collection $monthlyWeekdayPreferences = null, array $weekendRotation = []): void
     {
         $this->preferences = [];
         $this->monthlyWeekdayPreferences = [];
@@ -67,6 +74,8 @@ class RosterCandidateRanker
         $this->resetRecordedAssignments();
         $this->history = $history->all();
         $this->firstDate = $firstDate;
+        $this->weekendGroups = $weekendRotation['assignments'] ?? [];
+        $this->scheduledWeekendGroups = $weekendRotation['expected'] ?? [];
 
         $shiftByDateAndType = [];
         foreach ($shifts as $shift) {
@@ -248,6 +257,12 @@ class RosterCandidateRanker
         $history = $this->history[$doctorId] ?? null;
         $dimensions = [];
 
+        $rotationWeekend = $this->rotationWeekendStart($shift);
+        if ($role === RosterAssignmentRole::Main && $rotationWeekend !== null && isset($this->scheduledWeekendGroups[$rotationWeekend])) {
+            $actualGroup = $this->groupFor($doctorId, $rotationWeekend);
+            $dimensions[] = $actualGroup === $this->scheduledWeekendGroups[$rotationWeekend] ? 0 : 1;
+        }
+
         if ($role === RosterAssignmentRole::Main) {
             $dimensions[] = isset($this->preferences[$doctorId][$shift->id]) ? 0 : 1;
         }
@@ -278,6 +293,36 @@ class RosterCandidateRanker
         }
 
         return $dimensions;
+    }
+
+    public function rotationWeekendStart(RosterShift $shift): ?string
+    {
+        if (! str_starts_with($shift->shiftType->code, 'weekend_')) {
+            return null;
+        }
+        $date = CarbonImmutable::instance($shift->shift_date);
+
+        return ($date->isSunday() ? $date->subDay() : $date)->toDateString();
+    }
+
+    public function groupFor(int $doctorId, string $saturday): ?string
+    {
+        return ($this->weekendGroups[$doctorId] ?? collect())
+            ->filter(fn (DoctorWeekendGroupMembership $membership): bool => $membership->effective_from_saturday->toDateString() <= $saturday)
+            ->last()?->group_code;
+    }
+
+    public function isScheduledGroupCandidate(Doctor $doctor, RosterShift $shift, RosterAssignmentRole $role): ?bool
+    {
+        if ($role !== RosterAssignmentRole::Main) {
+            return null;
+        }
+        $saturday = $this->rotationWeekendStart($shift);
+        if ($saturday === null || ! isset($this->scheduledWeekendGroups[$saturday])) {
+            return null;
+        }
+
+        return $this->groupFor($doctor->id, $saturday) === $this->scheduledWeekendGroups[$saturday];
     }
 
     /**

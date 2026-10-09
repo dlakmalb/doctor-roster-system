@@ -23,6 +23,7 @@ class RosterAssignmentGenerator
         private RosterAssignmentRecoveryService $recovery,
         private RosterPlanningHistoryService $history,
         private DoctorMonthlyParticipationService $participation,
+        private WeekendGroupRotationService $weekendRotation,
     ) {}
 
     public function generate(Roster $roster, User $admin): void
@@ -67,6 +68,10 @@ class RosterAssignmentGenerator
                 ->whereBetween('request_date', [$firstDate, $lastDate])->get();
             $monthlyWeekdayPreferences = DoctorMonthlyWeekdayPreference::query()
                 ->where('year', $roster->year)->where('month', $roster->month)->get();
+            $weekendRotation = $this->weekendRotation->forMonth($roster->year, $roster->month, $doctors, $shifts);
+            if ($weekendRotation['error'] !== null) {
+                throw ValidationException::withMessages(['roster' => $weekendRotation['error']]);
+            }
 
             if (! $replace) {
                 foreach ($shifts as $shift) {
@@ -84,7 +89,7 @@ class RosterAssignmentGenerator
                 }
             }
 
-            $this->ranker->initialize($shifts, $preferredRequests, $previousHistory, $firstDate, $restrictedShiftTypes, $monthlyWeekdayPreferences);
+            $this->ranker->initialize($shifts, $preferredRequests, $previousHistory, $firstDate, $restrictedShiftTypes, $monthlyWeekdayPreferences, $weekendRotation);
             $assignments = $this->recovery->plan($shifts, $doctors, $excludedDoctorIds, $dayOffRequests, $previousHistory, $this->ranker, $restrictedShiftTypes);
 
             if ($replace) {

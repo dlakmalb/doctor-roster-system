@@ -51,7 +51,7 @@ class RosterDraftContext
 
     private bool $checkActiveStatus = true;
 
-    public function __construct(private DoctorAssignmentEligibilityService $eligibility, private RosterCandidateRanker $ranker, private RosterPlanningHistoryService $planningHistory, private DoctorMonthlyParticipationService $monthlyParticipation) {}
+    public function __construct(private DoctorAssignmentEligibilityService $eligibility, private RequestIntervalService $requestIntervals, private RosterCandidateRanker $ranker, private RosterPlanningHistoryService $planningHistory, private DoctorMonthlyParticipationService $monthlyParticipation) {}
 
     public function load(Roster $roster): void
     {
@@ -148,30 +148,119 @@ class RosterDraftContext
             return ['The selected doctor does not exist.'];
         }
         if (! $this->participation->get($doctorId, false)) {
-            return ["$doctor->name is not part of the team for this month."];
+            return ["$doctor->name is not participating in the {$shift->shift_date->format('F')} roster."];
         }
         $assigned = collect();
+        $assignments = [];
         foreach ($state as $key => $assignedDoctorId) {
             if ($assignedDoctorId === $doctorId) {
-                $assignedShift = $this->shifts->get((int) explode(':', $key)[0]);
+                [$assignedShiftId, $assignedRole, $assignedSlot] = explode(':', $key);
+                $assignedShift = $this->shifts->get((int) $assignedShiftId);
                 if ($assignedShift !== null) {
                     $assigned->push($assignedShift);
+                    $assignments[] = [
+                        'shift' => $assignedShift,
+                        'role' => RosterAssignmentRole::from($assignedRole),
+                        'slot' => (int) $assignedSlot,
+                    ];
                 }
             }
         }
         $historyNight = $this->history->get($doctorId)?->most_recent_night_shift_at;
         $codes = $this->eligibility->conflicts($doctor, $shift, $this->excluded->has($doctorId), $this->dayOff->get($doctorId, collect()), $assigned, $historyNight, $this->checkActiveStatus, isset($this->restrictedShiftTypes[$doctorId][$shift->shift_type_id]));
 
-        return array_map(fn (string $code): string => match ($code) {
-            'inactive_doctor' => "$doctor->name is inactive.",
-            'monthly_exclusion' => "$doctor->name is excluded for this month.",
-            'monthly_shift_restriction' => "$doctor->name is restricted from this shift type this month.",
-            'day_off_overlap' => "$doctor->name has a Day-Off request overlapping this shift.",
-            'same_start_date' => "$doctor->name is already assigned to a shift starting on this date.",
-            'next_day_night_recovery' => "$doctor->name is unavailable due to next-day Night recovery.",
-            'night_to_night_recovery' => "$doctor->name is unavailable due to Night-to-Night recovery.",
-            default => "$doctor->name has a scheduling conflict ($code).",
+        $dayOffRequest = $this->dayOff->get($doctorId, collect())->first(fn (DoctorRequest $request): bool => $this->requestIntervals->overlaps(
+            $this->requestIntervals->forDate($shift->shift_date, $shift->shiftType),
+            $this->requestIntervals->forRequest($request),
+        ));
+        $sameDateAssignment = collect($assignments)->first(fn (array $assignment): bool => $assignment['shift']->shift_date->isSameDay($shift->shift_date));
+        $nextDayNightAssignment = collect($assignments)->first(fn (array $assignment): bool => $this->eligibility->shiftConflict($shift, $assignment['shift']) === 'next_day_night_recovery');
+        $nightToNightAssignment = collect($assignments)->first(fn (array $assignment): bool => $this->eligibility->shiftConflict($shift, $assignment['shift']) === 'night_to_night_recovery');
+        $monthName = $shift->shift_date->format('F');
+
+        return array_map(function (string $code) use ($doctor, $shift, $dayOffRequest, $sameDateAssignment, $nextDayNightAssignment, $nightToNightAssignment, $historyNight, $monthName): string {
+            return match ($code) {
+                'inactive_doctor' => "$doctor->name is inactive and cannot be assigned to the roster.",
+                'monthly_exclusion' => "$doctor->name is excluded from the $monthName roster.",
+                'monthly_shift_restriction' => "$doctor->name cannot work {$shift->shiftType->name} shifts in $monthName because of a monthly shift restriction.",
+                'day_off_overlap' => $this->dayOffMessage($doctor->name, $shift, $dayOffRequest),
+                'same_start_date' => $this->sameDateAssignmentMessage($doctor->name, $sameDateAssignment),
+                'next_day_night_recovery' => $this->nextDayNightRecoveryMessage($doctor->name, $shift, $nextDayNightAssignment, $historyNight),
+                'night_to_night_recovery' => $this->nightToNightRecoveryMessage($doctor->name, $shift, $nightToNightAssignment, $historyNight),
+                default => "$doctor->name has a scheduling conflict ($code).",
+            };
         }, $codes);
+    }
+
+    private function dayOffMessage(string $doctorName, RosterShift $shift, ?DoctorRequest $request): string
+    {
+        $date = $request?->request_date->format('M j') ?? $shift->shift_date->format('M j');
+        $requestDescription = $request?->shiftType === null ? 'time off' : "{$request->shiftType->name} off";
+
+        return "$doctorName requested $requestDescription on $date. This shift overlaps that request.";
+    }
+
+    /** @param array{shift: RosterShift, role: RosterAssignmentRole, slot: int}|null $assignment */
+    private function sameDateAssignmentMessage(string $doctorName, ?array $assignment): string
+    {
+        if ($assignment === null) {
+            return "$doctorName is already assigned to another shift on this date. A doctor can only work one shift per day.";
+        }
+
+        $date = $assignment['shift']->shift_date->format('M j');
+        $shiftName = $assignment['shift']->shiftType->name;
+        $role = ucfirst($assignment['role']->value);
+        $slot = $assignment['slot'];
+
+        return "$doctorName is already assigned to $date — $shiftName ($role Slot $slot). A doctor can only work one shift per day.";
+    }
+
+    /** @param array{shift: RosterShift, role: RosterAssignmentRole, slot: int}|null $nightAssignment */
+    private function nextDayNightRecoveryMessage(string $doctorName, RosterShift $shift, ?array $nightAssignment, ?\Carbon\CarbonInterface $historyNight): string
+    {
+        if ($nightAssignment !== null) {
+            $assignedShift = $nightAssignment['shift'];
+            $date = $assignedShift->shift_date->format('M j');
+            $shiftName = $assignedShift->shiftType->name;
+            $role = ucfirst($nightAssignment['role']->value);
+            $slot = $nightAssignment['slot'];
+
+            if ($assignedShift->shiftType->is_overnight && $assignedShift->shift_date->lt($shift->shift_date)) {
+                return "$doctorName worked a $shiftName shift on $date ($role Slot $slot) and needs a rest day before another shift.";
+            }
+
+            return "$doctorName has a $shiftName assignment on $date ($role Slot $slot), immediately after this Night shift. A rest day is required between duties.";
+        }
+
+        if ($historyNight !== null) {
+            return "$doctorName worked a Night shift on {$historyNight->format('M j')} and needs a rest day before another shift.";
+        }
+
+        return "$doctorName needs a rest day between this shift and the conflicting Night duty.";
+    }
+
+    /** @param array{shift: RosterShift, role: RosterAssignmentRole, slot: int}|null $nightAssignment */
+    private function nightToNightRecoveryMessage(string $doctorName, RosterShift $shift, ?array $nightAssignment, ?\Carbon\CarbonInterface $historyNight): string
+    {
+        if ($nightAssignment !== null) {
+            $assignedShift = $nightAssignment['shift'];
+            $date = $assignedShift->shift_date->format('M j');
+            $shiftName = $assignedShift->shiftType->name;
+            $role = ucfirst($nightAssignment['role']->value);
+            $slot = $nightAssignment['slot'];
+
+            return "$doctorName has a $shiftName assignment on $date ($role Slot $slot), too close to this Night shift. Leave a rest day between Night duties.";
+        }
+
+        $otherNightDate = $historyNight;
+        $dates = collect([$shift->shift_date, $otherNightDate])
+            ->filter()
+            ->sortBy(fn (\Carbon\CarbonInterface $date): int => $date->timestamp)
+            ->map(fn (\Carbon\CarbonInterface $date): string => $date->format('M j'))
+            ->values();
+        $dateMessage = $dates->count() === 2 ? ' on '.$dates->join(' and ') : '';
+
+        return "$doctorName has Night duties$dateMessage that are too close together. Leave a rest day between Night shifts.";
     }
 
     /** @param array<string, int> $state

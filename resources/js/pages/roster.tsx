@@ -164,6 +164,24 @@ export default function Roster({
     );
     const isFinalizationWarningsOpen =
         finalizationWarnings.length > 0 && warningSignature !== null;
+    const pickerContext = picker
+        ? days
+              .flatMap((day) => day.shifts.map((shift) => ({ day, shift })))
+              .find(({ shift }) => shift.id === picker.shift_id)
+        : null;
+    const pickerSlot =
+        picker && pickerContext
+            ? pickerContext.shift[picker.role].find(
+                  (slot) => slot.slot_number === picker.slot_number,
+              )
+            : null;
+    const replacementOptions = picker
+        ? options.filter((doctor) => doctor.id !== picker.expected_doctor_id)
+        : options;
+    const hasNoEligibleReplacement =
+        picker !== null &&
+        picker.expected_assignment_id !== null &&
+        replacementOptions.every((doctor) => !doctor.eligible);
     const [showScrollToTop, setShowScrollToTop] = useState(false);
     const [pending, setPending] = useState<Record<
         string,
@@ -914,11 +932,25 @@ export default function Roster({
                 >
                     <div className="flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-xl bg-white shadow-xl">
                         <header className="flex shrink-0 items-center justify-between gap-4 border-b border-slate-200 px-4 py-3 sm:px-5">
-                            <h2 className="text-lg font-semibold">
-                                {picker.expected_assignment_id
-                                    ? 'Replace doctor'
-                                    : 'Assign doctor'}
-                            </h2>
+                            <div>
+                                <h2 className="text-lg font-semibold">
+                                    {picker.expected_assignment_id
+                                        ? `Replace ${pickerSlot?.doctor?.name ?? 'Doctor'}`
+                                        : 'Assign Doctor'}
+                                </h2>
+                                {pickerContext && (
+                                    <p className="text-sm text-slate-600">
+                                        {pickerContext.day.label.split(', ')[1]}
+                                        {' · '}
+                                        {pickerContext.shift.name}
+                                        {' · '}
+                                        {picker.role === 'main'
+                                            ? 'Main'
+                                            : 'Optional'}{' '}
+                                        Slot {picker.slot_number}
+                                    </p>
+                                )}
+                            </div>
                             <button
                                 type="button"
                                 aria-label="Close"
@@ -933,8 +965,24 @@ export default function Roster({
                                 Eligible doctors are ordered by scheduling
                                 preference. Choose any eligible doctor.
                             </p>
+                            {hasNoEligibleReplacement && (
+                                <div className="mt-4 rounded-lg border border-sky-200 bg-sky-50 p-3 text-sm text-sky-950">
+                                    <p className="font-semibold">
+                                        No eligible replacement doctors
+                                    </p>
+                                    <p className="mt-1">
+                                        All other doctors are unavailable for
+                                        this position.
+                                    </p>
+                                    <p className="mt-1">
+                                        You can keep the current assignment or
+                                        try Swap to exchange duties with another
+                                        doctor.
+                                    </p>
+                                </div>
+                            )}
                             <ul className="mt-4 space-y-2">
-                                {options.map((doctor) => (
+                                {replacementOptions.map((doctor) => (
                                     <li
                                         key={doctor.id}
                                         className="rounded-lg border border-slate-200 p-3 text-sm"

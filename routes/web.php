@@ -20,6 +20,7 @@ use App\Http\Controllers\RosterManualEditController;
 use App\Http\Controllers\RosterPdfController;
 use App\Http\Controllers\RosterPrintController;
 use App\Http\Controllers\RosterReopenController;
+use App\Http\Controllers\WeekendGroupManagementController;
 use App\Http\Middleware\EnsureMonthlySetupEditable;
 use App\Http\Middleware\EnsureMonthlySetupPlanningPeriod;
 use Illuminate\Http\RedirectResponse;
@@ -36,6 +37,16 @@ Route::middleware('guest')->group(function (): void {
 Route::middleware('auth')->group(function (): void {
     Route::post('/logout', LogoutController::class)->name('logout');
     Route::get('/dashboard', DashboardController::class)->name('dashboard');
+
+    Route::get('/weekend-groups/{year}/{month}', [WeekendGroupManagementController::class, 'show'])
+        ->where(['year' => '[1-9][0-9]{3}', 'month' => '(?:[1-9]|1[0-2])'])
+        ->name('weekend-groups.show');
+    Route::post('/weekend-groups/{year}/{month}', [WeekendGroupManagementController::class, 'store'])
+        ->where(['year' => '[1-9][0-9]{3}', 'month' => '(?:[1-9]|1[0-2])'])
+        ->name('weekend-groups.store');
+    Route::put('/weekend-groups/{year}/{month}/configuration', [WeekendGroupManagementController::class, 'configure'])
+        ->where(['year' => '[1-9][0-9]{3}', 'month' => '(?:[1-9]|1[0-2])'])
+        ->name('weekend-groups.configure');
 
     Route::prefix('/rosters/{year}/{month}')
         ->where(['year' => '[1-9][0-9]{3}', 'month' => '(?:[1-9]|1[0-2])'])

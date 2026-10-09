@@ -51,9 +51,17 @@ class RosterAssignmentOptionsController extends Controller
             } elseif ($source?->role !== null && $source->role !== $role) {
                 unset($testing[$context->key($shift->id, $source->role, $source->slot_number)]);
             }
-            $reasons = $sameShiftEmptyTarget && ! $isOptionalPromotion
-                ? ['Already assigned to this shift.', ...$context->hardReasons($doctor->id, $shift, $testing)]
-                : ($source?->role === $role ? ['Already assigned to another '.$role->value.' slot on this shift.'] : $context->hardReasons($doctor->id, $shift, $testing));
+            if ($source?->role === $role) {
+                unset($testing[$context->key($shift->id, $source->role, $source->slot_number)]);
+                $reasons = [
+                    'This doctor is already assigned to '.ucfirst($role->value).' Slot '.$source->slot_number.' of this shift.',
+                    ...$context->hardReasons($doctor->id, $shift, $testing),
+                ];
+            } elseif ($sameShiftEmptyTarget && ! $isOptionalPromotion) {
+                $reasons = ['Already assigned to this shift.', ...$context->hardReasons($doctor->id, $shift, $testing)];
+            } else {
+                $reasons = $context->hardReasons($doctor->id, $shift, $testing);
+            }
             $options[] = [
                 'id' => $doctor->id,
                 'name' => $doctor->name,

@@ -20,6 +20,7 @@ import {
 import AppLayout from '@/components/app-layout';
 import { show as showRoster } from '@/routes/rosters';
 import { generateRoster as generateRosterFromSetup } from '@/routes/monthly-setup';
+import { show as showWeekendGroups } from '@/routes/weekend-groups';
 import { Head, Link, router, useForm } from '@inertiajs/react';
 import type { FormEvent } from 'react';
 import { useMemo, useState } from 'react';
@@ -442,6 +443,12 @@ export default function MonthlySetup(props: PageProps) {
                         View Final Roster
                     </Link>
                 )}
+                <Link
+                    href={showWeekendGroups.url(props.month)}
+                    className="inline-flex min-h-11 items-center justify-center rounded-lg border border-slate-300 px-4 py-2.5 text-sm font-semibold text-slate-800"
+                >
+                    Weekend Group Rotation
+                </Link>
             </div>
 
             {isFinal && (
@@ -889,7 +896,7 @@ export default function MonthlySetup(props: PageProps) {
                                 className="flex flex-col gap-3 py-3 sm:flex-row sm:items-center sm:justify-between"
                             >
                                 <p className="font-semibold text-slate-900">
-                                    {preference.doctor.name} —{' '}
+                                    {preference.doctor.name} -{' '}
                                     {preference.shift_type.name}:{' '}
                                     {preference.weekday_name}
                                     {preference.doctor.is_active === false && (

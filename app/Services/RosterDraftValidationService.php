@@ -4,13 +4,15 @@ namespace App\Services;
 
 use App\Enums\RosterAssignmentRole;
 use App\Enums\RosterStatus;
+use App\Models\Doctor;
+use App\Models\DoctorMonthlyParticipation;
 use App\Models\Roster;
 use App\Models\RosterShift;
 use Carbon\CarbonImmutable;
 
 class RosterDraftValidationService
 {
-    public function __construct(private RosterDraftContext $context, private RosterCandidateRanker $ranker, private RosterPlanningHistoryService $history) {}
+    public function __construct(private RosterDraftContext $context, private RosterCandidateRanker $ranker, private RosterPlanningHistoryService $history, private WeekendGroupRotationService $weekendRotation) {}
 
     /** @return list<array{severity: string, code: string, message: string, target: string}> */
     public function validate(Roster $roster): array
@@ -61,20 +63,51 @@ class RosterDraftValidationService
             }
         }
         $weekends = [];
+        $assignedDoctorIds = collect($state)->values()->unique();
+        $participatingDoctorIds = DoctorMonthlyParticipation::query()
+            ->where('year', $roster->year)
+            ->where('month', $roster->month)
+            ->where('is_participating', true)
+            ->pluck('doctor_id');
+        $rotationDoctors = Doctor::query()->whereIn('id', $participatingDoctorIds->merge($assignedDoctorIds)->unique())->get();
+        $rotation = $this->weekendRotation->forMonth(
+            $roster->year,
+            $roster->month,
+            $rotationDoctors,
+            $this->context->shifts->values(),
+        );
+        if ($rotation['error'] !== null) {
+            $items[] = $this->item('Warning', 'weekend_group_configuration', $rotation['error'], 'conflicts');
+        }
         foreach ($state as $key => $doctorId) {
             [$shiftId, $role] = explode(':', $key);
             if ($role !== RosterAssignmentRole::Main->value) {
                 continue;
             }
             $shift = $this->context->shifts->get((int) $shiftId);
-            $weekend = $this->ranker->weekendKey($shift);
+            $weekend = $rotation['configured'] && $rotation['error'] === null
+                ? $this->ranker->rotationWeekendStart($shift)
+                : $this->ranker->weekendKey($shift);
             if ($weekend !== null) {
+                if ($rotation['configured'] && $rotation['error'] === null) {
+                    $actualGroup = $this->weekendRotation->groupFor($rotation['assignments'], (int) $doctorId, $weekend);
+                    $expectedGroup = $rotation['expected'][$weekend] ?? null;
+                    if ($actualGroup !== null && $expectedGroup !== null && $actualGroup !== $expectedGroup) {
+                        $doctor = $this->context->doctors->get((int) $doctorId);
+                        $items[] = $this->item(
+                            'Warning',
+                            'weekend_group_exception',
+                            "{$shift->shift_date->format('M j')} {$shift->shiftType->name}: {$doctor->name} (Group $actualGroup) is assigned during Group $expectedGroup's scheduled weekend. Review this cross-group exception.",
+                            "shift-$shift->id",
+                        );
+                    }
+                }
                 $weekends[$doctorId][$weekend][] = $shift;
             }
         }
         foreach ($weekends as $doctorId => $periods) {
             foreach ($periods as $weekend => $shifts) {
-                if (count($shifts) > 1) {
+                if (count($shifts) > 1 && ! ($rotation['configured'] && $rotation['error'] === null)) {
                     $doctor = $this->context->doctors->get((int) $doctorId);
                     $weekendStart = CarbonImmutable::parse($weekend);
                     $weekendEnd = $weekendStart->addDay();

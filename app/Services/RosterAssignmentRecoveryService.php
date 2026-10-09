@@ -211,6 +211,9 @@ class RosterAssignmentRecoveryService
         $candidates = [];
         $orderedDoctors = $this->ranker->ordered($eligibleDoctors, $shift, $role, $assignedByDoctor);
         foreach ($orderedDoctors as $ranking => $doctor) {
+            if (! $allowReassignment && $this->ranker->isScheduledGroupCandidate($doctor, $shift, $role) === false) {
+                continue;
+            }
             $this->diagnostics['candidates']++;
             $blockers = [];
             foreach ($this->conflictingShiftIds($shift) as $conflictingShiftId) {
@@ -254,7 +257,15 @@ class RosterAssignmentRecoveryService
                 break;
             }
         }
-        usort($candidates, fn (array $left, array $right): int => count($left['blockers']) <=> count($right['blockers']) ?: $left['ranking'] <=> $right['ranking']);
+        usort($candidates, function (array $left, array $right) use ($shift, $role): int {
+            $leftGroupMatch = $this->ranker->isScheduledGroupCandidate($left['doctor'], $shift, $role);
+            $rightGroupMatch = $this->ranker->isScheduledGroupCandidate($right['doctor'], $shift, $role);
+            if ($leftGroupMatch !== null && $rightGroupMatch !== null && $leftGroupMatch !== $rightGroupMatch) {
+                return $leftGroupMatch ? -1 : 1;
+            }
+
+            return count($left['blockers']) <=> count($right['blockers']) ?: $left['ranking'] <=> $right['ranking'];
+        });
 
         foreach ($candidates as $candidate) {
             $doctor = $candidate['doctor'];

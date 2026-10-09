@@ -120,7 +120,7 @@ function AssignmentCard({
                                 type="button"
                                 disabled={processing}
                                 onClick={() => record('main_absent')}
-                                className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium disabled:opacity-50"
+                                className="cursor-pointer rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium disabled:opacity-50"
                             >
                                 Mark Absent
                             </button>
@@ -157,7 +157,7 @@ function AssignmentCard({
                                 type="button"
                                 disabled={processing || !replacementId}
                                 onClick={() => record('replacement')}
-                                className="rounded-lg bg-teal-700 px-3 py-2 text-sm font-semibold text-white disabled:opacity-50"
+                                className="cursor-pointer rounded-lg bg-teal-700 px-3 py-2 text-sm font-semibold text-white disabled:opacity-50"
                             >
                                 Record Replacement
                             </button>
@@ -167,7 +167,7 @@ function AssignmentCard({
                             type="button"
                             disabled={processing}
                             onClick={() => record('optional_worked')}
-                            className="rounded-lg bg-teal-700 px-3 py-2 text-sm font-semibold text-white disabled:opacity-50"
+                            className="cursor-pointer rounded-lg bg-teal-700 px-3 py-2 text-sm font-semibold text-white disabled:opacity-50"
                         >
                             Mark Worked
                         </button>
@@ -184,7 +184,7 @@ function AssignmentCard({
                             {({ processing: removing }) => (
                                 <button
                                     disabled={removing}
-                                    className="rounded-lg border border-red-300 px-3 py-2 text-sm font-medium text-red-700 disabled:opacity-50"
+                                    className="cursor-pointer rounded-lg border border-red-300 px-3 py-2 text-sm font-medium text-red-700 disabled:opacity-50"
                                 >
                                     Remove Exception
                                 </button>
@@ -346,7 +346,7 @@ export default function ActualWorkReview({
                     {({ processing }) => (
                         <button
                             disabled={processing}
-                            className="rounded-lg bg-teal-700 px-5 py-3 font-semibold text-white disabled:opacity-50"
+                            className="cursor-pointer rounded-lg bg-teal-700 px-5 py-3 font-semibold text-white disabled:opacity-50"
                         >
                             Confirm Actual Work
                         </button>
