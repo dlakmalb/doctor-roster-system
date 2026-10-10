@@ -475,9 +475,9 @@ it('rejects inactive, excluded, Day-Off, same-date, and Night recovery replaceme
     foreach ([1 => 'inactive', 2 => 'excluded', 3 => 'requested Weekday Day off on Oct 6', 4 => 'one shift per day', 5 => 'needs a rest day'] as $index => $message) {
         $response = $this->postJson(editingUrl('edit'), ['operation' => 'replace', ...editPayload($day, 'main', 1, $occupant), 'doctor_id' => $candidateDoctors[$index]->id, 'confirm_soft_override' => true]);
         $response->assertUnprocessable()->assertJsonValidationErrors('edit')->assertSee(match ($index) {
-                1 => 'not participating in the October roster',
-                default => $message,
-            });
+            1 => 'not participating in the October roster',
+            default => $message,
+        });
         if ($index === 3) {
             $response->assertSee($candidateDoctors[$index]->name)
                 ->assertSee('This shift overlaps that request.');

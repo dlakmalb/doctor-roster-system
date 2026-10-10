@@ -13,7 +13,9 @@ return new class extends Migration
             $table->unsignedSmallInteger('year');
             $table->unsignedTinyInteger('month');
             $table->string('status')->default('draft');
+            $table->unsignedBigInteger('participation_snapshot_max_doctor_id')->nullable();
             $table->timestamp('last_generated_at')->nullable();
+            $table->string('generated_history_fingerprint', 64)->nullable();
             $table->timestamp('finalized_at')->nullable();
             $table->timestamp('reopened_at')->nullable();
             $table->timestamp('actual_work_confirmed_at')->nullable();

@@ -11,7 +11,6 @@ use App\Models\DoctorMonthlyWeekdayPreference;
 use App\Models\DoctorRequest;
 use App\Models\Roster;
 use App\Models\RosterAssignment;
-use App\Models\RosterShift;
 use App\Models\ShiftType;
 use App\Services\RequestIntervalService;
 use Carbon\CarbonImmutable;
@@ -184,8 +183,8 @@ class October2026DoctorRequestsSeeder extends Seeder
     }
 
     /** @param list<array<string, mixed>> $requests
-     * @param list<array<string, mixed>> $restrictions
-     * @param list<array<string, mixed>> $preferences
+     * @param  list<array<string, mixed>>  $restrictions
+     * @param  list<array<string, mixed>>  $preferences
      */
     private function assertDefinitions(array $requests, array $restrictions, array $preferences, RequestIntervalService $intervals): void
     {
@@ -244,8 +243,8 @@ class October2026DoctorRequestsSeeder extends Seeder
     }
 
     /** @param list<array<string, mixed>> $requests
-     * @param list<array<string, mixed>> $restrictions
-     * @param list<array<string, mixed>> $preferences
+     * @param  list<array<string, mixed>>  $restrictions
+     * @param  list<array<string, mixed>>  $preferences
      */
     private function assertNoMonthlyExclusions(array $requests, array $restrictions, array $preferences): void
     {
@@ -256,9 +255,9 @@ class October2026DoctorRequestsSeeder extends Seeder
     }
 
     /** @param list<array{doctor_id: int, year: int, month: int, shift_type_id: int, weekday: int}> $preferences
-     * @param Collection<int, DoctorMonthlyShiftRestriction> $restrictions
-     * @param Collection<string, Doctor> $doctors
-     * @param Collection<string, ShiftType> $shiftTypes
+     * @param  Collection<int, DoctorMonthlyShiftRestriction>  $restrictions
+     * @param  Collection<string, Doctor>  $doctors
+     * @param  Collection<string, ShiftType>  $shiftTypes
      */
     private function assertNoRestrictedPreferences(array $preferences, Collection $restrictions, Collection $doctors, Collection $shiftTypes): void
     {
@@ -277,8 +276,8 @@ class October2026DoctorRequestsSeeder extends Seeder
     }
 
     /** @param list<array<string, mixed>> $expected
-     * @param Collection<int, Model> $existing
-     * @param list<string> $extraKeys
+     * @param  Collection<int, Model>  $existing
+     * @param  list<string>  $extraKeys
      * @return list<array<string, mixed>>
      */
     private function missingRows(array $expected, Collection $existing, string $shiftKey, array $extraKeys = []): array
@@ -296,7 +295,7 @@ class October2026DoctorRequestsSeeder extends Seeder
     }
 
     /** @param list<array<string, mixed>> $expected
-     * @param Collection<int, DoctorRequest> $existing
+     * @param  Collection<int, DoctorRequest>  $existing
      * @return list<array<string, mixed>>
      */
     private function missingRequests(array $expected, Collection $existing, RequestIntervalService $intervals): array
@@ -323,6 +322,7 @@ class October2026DoctorRequestsSeeder extends Seeder
                 if ($matches->count() > 1) {
                     $this->fail("Duplicate October requests already exist for doctor {$request['doctor']} on {$request['request_date']}.");
                 }
+
                 continue;
             }
             $sameIdentity = $existing->first(fn (DoctorRequest $candidate): bool => $candidate->doctor_id === $request['doctor_id']

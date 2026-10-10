@@ -17,6 +17,7 @@ use App\Models\ShiftType;
 use App\Models\User;
 use App\Services\DoctorMonthlyParticipationService;
 use App\Services\DoctorMonthlyWorkloadService;
+use App\Services\RosterPlanningHistoryService;
 use Database\Seeders\ShiftTypesSeeder;
 use Inertia\Testing\AssertableInertia as Assert;
 
@@ -53,7 +54,7 @@ it('uses the roster participation snapshot after a doctor status changes', funct
 
     $hirushini->update(['is_active' => true]);
     actualShift($roster, '2026-10-01', 'weekday_day', $doctors[1]);
-    $preview = app(DoctorMonthlyWorkloadService::class)->preview($roster);
+    $preview = actualPreview($roster);
     $hirushiniPreview = collect($preview['rows'])->firstWhere('doctor_id', $hirushini->id);
 
     $this->actingAs($admin)->post(actualUrl('confirm', $roster))->assertRedirect();
@@ -81,6 +82,14 @@ function actualShift(Roster $roster, string $date, string $code, Doctor $main, ?
 function actualUrl(string $action, Roster $roster, array $extra = []): string
 {
     return route("rosters.actual-work.$action", ['year' => $roster->year, 'month' => $roster->month, ...$extra]);
+}
+
+function actualPreview(Roster $roster): array
+{
+    return app(DoctorMonthlyWorkloadService::class)->preview(
+        $roster,
+        app(RosterPlanningHistoryService::class)->forMonth($roster->year, $roster->month),
+    );
 }
 
 it('counts assumed Main work and planned Optional history without changing assignments', function () {
@@ -113,13 +122,13 @@ it('stores no actual doctor for Main absence and restores assumed work on remova
     $this->put(actualUrl('save', $roster, ['assignment' => $main->id]), ['exception_type' => 'main_absent'])->assertRedirect();
 
     $absence = ActualWorkException::query()->where('planned_assignment_id', $main->id)->firstOrFail();
-    $absentHistory = collect(app(DoctorMonthlyWorkloadService::class)->preview($roster)['rows'])->firstWhere('doctor_id', $doctors[0]->id);
+    $absentHistory = collect(actualPreview($roster)['rows'])->firstWhere('doctor_id', $doctors[0]->id);
     expect($absence->actual_doctor_id)->toBeNull()
         ->and($absentHistory['actual_worked_minutes'])->toBe(0)
         ->and($absentHistory['actual_night_duty_count'])->toBe(0);
 
     $this->delete(actualUrl('remove', $roster, ['exception' => $absence->id]))->assertRedirect();
-    $restoredHistory = collect(app(DoctorMonthlyWorkloadService::class)->preview($roster)['rows'])->firstWhere('doctor_id', $doctors[0]->id);
+    $restoredHistory = collect(actualPreview($roster)['rows'])->firstWhere('doctor_id', $doctors[0]->id);
     expect($restoredHistory['actual_worked_minutes'])->toBe(720)
         ->and($restoredHistory['actual_night_duty_count'])->toBe(1);
 
@@ -136,7 +145,7 @@ it('applies and removes Main absence, replacement, and Optional work as factual 
     $planned = RosterAssignment::query()->orderBy('id')->get()->toArray();
     $this->actingAs($admin);
     $this->put(actualUrl('save', $roster, ['assignment' => $main->id]), ['exception_type' => 'main_absent'])->assertRedirect();
-    $preview = app(DoctorMonthlyWorkloadService::class)->preview($roster)['rows'];
+    $preview = actualPreview($roster)['rows'];
     $absent = collect($preview)->firstWhere('doctor_id', $doctors[0]->id);
     expect($absent['actual_worked_minutes'])->toBe(0)
         ->and($absent['actual_night_duty_count'])->toBe(0)
@@ -178,7 +187,7 @@ it('uses Friday, Saturday, and Sunday duties in the final weekend period across 
     $july = Roster::create(['year' => 2026, 'month' => 7, 'status' => RosterStatus::Final, 'created_by' => $admin->id]);
     snapshotRosterParticipation($july, $doctors);
     actualShift($july, '2026-07-31', 'weekday_night', $doctors[0]);
-    $preview = app(DoctorMonthlyWorkloadService::class)->preview($july)['rows'];
+    $preview = actualPreview($july)['rows'];
     expect(collect($preview)->firstWhere('doctor_id', $doctors[0]->id)['worked_final_weekend'])->toBeTrue();
 });
 

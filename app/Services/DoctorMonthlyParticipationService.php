@@ -35,6 +35,41 @@ class DoctorMonthlyParticipationService
         ]);
     }
 
+    /** @param iterable<int|string> $doctorIds
+     * @return Collection<int, bool>
+     */
+    public function forRoster(Roster $roster, iterable $doctorIds): Collection
+    {
+        $this->assertRosterSnapshotIntegrity($roster);
+        $doctorIds = $this->normalizeDoctorIds($doctorIds);
+        $rows = DoctorMonthlyParticipation::query()
+            ->where('roster_id', $roster->id)
+            ->where('year', $roster->year)
+            ->where('month', $roster->month)
+            ->whereIn('doctor_id', $doctorIds)
+            ->get()
+            ->keyBy('doctor_id');
+
+        return $doctorIds->mapWithKeys(fn (int $doctorId): array => [
+            $doctorId => $rows->get($doctorId)?->is_participating ?? false,
+        ]);
+    }
+
+    /** @return Collection<int, int> */
+    public function doctorIdsForRoster(Roster $roster): Collection
+    {
+        $this->assertRosterSnapshotIntegrity($roster);
+
+        return DoctorMonthlyParticipation::query()
+            ->where('roster_id', $roster->id)
+            ->where('year', $roster->year)
+            ->where('month', $roster->month)
+            ->orderBy('doctor_id')
+            ->pluck('doctor_id')
+            ->map(fn ($doctorId): int => (int) $doctorId)
+            ->values();
+    }
+
     /** @param iterable<int|string> $doctorIds */
     public function hasCompleteMonth(int $year, int $month, iterable $doctorIds): bool
     {
@@ -60,10 +95,11 @@ class DoctorMonthlyParticipationService
     public function snapshotRoster(Roster $roster, Collection $participatingDoctors): void
     {
         $participatingIds = $participatingDoctors->pluck('id')->map(fn (int|string $doctorId): int => (int) $doctorId)->all();
+        $doctors = Doctor::query()->orderBy('id')->get(['id']);
         $timestamp = now();
         $rows = [];
 
-        foreach (Doctor::query()->orderBy('id')->get(['id']) as $doctor) {
+        foreach ($doctors as $doctor) {
             $rows[] = [
                 'doctor_id' => $doctor->id,
                 'roster_id' => $roster->id,
@@ -77,6 +113,10 @@ class DoctorMonthlyParticipationService
 
         foreach (array_chunk($rows, 500) as $chunk) {
             DoctorMonthlyParticipation::query()->insertOrIgnore($chunk);
+        }
+
+        if ($roster->participation_snapshot_max_doctor_id === null) {
+            $roster->update(['participation_snapshot_max_doctor_id' => $doctors->max('id')]);
         }
     }
 
@@ -117,8 +157,15 @@ class DoctorMonthlyParticipationService
 
     public function assertRosterSnapshotIntegrity(Roster $roster): void
     {
+        $snapshotMaxDoctorId = $roster->participation_snapshot_max_doctor_id;
+        if ($snapshotMaxDoctorId === null) {
+            throw ValidationException::withMessages([
+                'roster' => 'This roster is missing its participation snapshot boundary. Resolve the monthly participation records before continuing.',
+            ]);
+        }
+
         $doctorIds = Doctor::query()
-            ->where('created_at', '<=', $roster->created_at)
+            ->where('id', '<=', $snapshotMaxDoctorId)
             ->pluck('id')
             ->map(fn ($doctorId): int => (int) $doctorId)
             ->sort()
@@ -128,9 +175,15 @@ class DoctorMonthlyParticipationService
             ->where('month', $roster->month)
             ->whereIn('doctor_id', $doctorIds)
             ->get();
+        $hasUnexpectedDoctor = DoctorMonthlyParticipation::query()
+            ->where('year', $roster->year)
+            ->where('month', $roster->month)
+            ->where('doctor_id', '>', $snapshotMaxDoctorId)
+            ->exists();
         $recordedDoctorIds = $rows->pluck('doctor_id')->map(fn ($doctorId): int => (int) $doctorId)->sort()->values();
 
-        if ($rows->count() !== $doctorIds->count()
+        if ($hasUnexpectedDoctor
+            || $rows->count() !== $doctorIds->count()
             || $recordedDoctorIds->all() !== $doctorIds->all()
             || $rows->contains(fn (DoctorMonthlyParticipation $row): bool => (int) $row->roster_id !== $roster->id)) {
             throw ValidationException::withMessages([

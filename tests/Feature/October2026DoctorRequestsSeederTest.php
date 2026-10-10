@@ -1,8 +1,8 @@
 <?php
 
 use App\Enums\DoctorRequestType;
-use App\Enums\RosterStatus;
 use App\Enums\RosterAssignmentRole;
+use App\Enums\RosterStatus;
 use App\Models\Doctor;
 use App\Models\DoctorMonthlyShiftRestriction;
 use App\Models\DoctorMonthlyWeekdayPreference;
@@ -19,8 +19,8 @@ use Database\Seeders\DoctorsSeeder;
 use Database\Seeders\October2026DoctorRequestsSeeder;
 use Database\Seeders\September2026HistoricalBaselineSeeder;
 use Database\Seeders\ShiftTypesSeeder;
-use Illuminate\Validation\ValidationException;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\ValidationException;
 
 function prepareOctoberDoctorRequests(): void
 {

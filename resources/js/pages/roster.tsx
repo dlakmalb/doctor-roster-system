@@ -483,7 +483,7 @@ export default function Roster({
                                 onClick={() => {
                                     if (
                                         window.confirm(
-                                            'Regenerating will replace all current Draft assignments for this month. Continue?',
+                                            'Regenerating will replace every current Draft assignment for this month, including manually adjusted assignments. Continue?',
                                         )
                                     ) {
                                         regeneration.post(

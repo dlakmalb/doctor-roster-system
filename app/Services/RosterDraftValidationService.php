@@ -119,10 +119,9 @@ class RosterDraftValidationService
             }
         }
 
-        if ($roster->last_generated_at !== null) {
+        if ($roster->status === RosterStatus::Draft && $roster->last_generated_at !== null && $roster->generated_history_fingerprint !== null) {
             $previous = CarbonImmutable::create($roster->year, $roster->month, 1)->subMonth();
-            $historyUpdatedAt = $this->history->freshness($roster->year, $roster->month);
-            if ($historyUpdatedAt !== null && $historyUpdatedAt->greaterThan($roster->last_generated_at)) {
+            if ($roster->generated_history_fingerprint !== $this->history->fingerprint($roster->year, $roster->month)) {
                 $items[] = $this->item('Warning', 'stale_history', "{$previous->format('F Y')} history changed after this roster was generated. Review or regenerate this roster because fairness calculations may be stale.", 'conflicts');
             }
         }

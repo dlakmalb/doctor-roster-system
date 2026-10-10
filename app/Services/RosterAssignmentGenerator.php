@@ -63,6 +63,7 @@ class RosterAssignmentGenerator
                 ->whereBetween('request_date', [$firstDate->subDay(), $lastDate->addDay()])
                 ->get()->toBase()->groupBy('doctor_id');
             $previousHistory = $this->history->forMonth($roster->year, $roster->month);
+            $historyFingerprint = $this->history->fingerprintRows($previousHistory);
             $preferredRequests = DoctorRequest::query()
                 ->where('request_type', DoctorRequestType::PreferredWork->value)
                 ->whereBetween('request_date', [$firstDate, $lastDate])->get();
@@ -99,7 +100,7 @@ class RosterAssignmentGenerator
                 RosterAssignment::create($assignment);
             }
 
-            $roster->update(['last_generated_at' => now(), 'updated_by' => $admin->id]);
+            $roster->update(['last_generated_at' => now(), 'generated_history_fingerprint' => $historyFingerprint, 'updated_by' => $admin->id]);
         });
 
         $undo = session()->get(RosterManualEditService::UNDO_KEY);

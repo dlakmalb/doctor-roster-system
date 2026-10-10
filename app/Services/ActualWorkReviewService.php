@@ -17,7 +17,7 @@ use Illuminate\Validation\ValidationException;
 /** @phpstan-import-type BalancedRow from DoctorMonthlyWorkloadService */
 class ActualWorkReviewService
 {
-    public function __construct(private DoctorMonthlyWorkloadService $workloads) {}
+    public function __construct(private DoctorMonthlyWorkloadService $workloads, private RosterPlanningHistoryService $history) {}
 
     public function save(Roster $roster, int $assignmentId, ActualWorkExceptionType $type, ?int $replacementDoctorId, User $admin): void
     {
@@ -49,7 +49,7 @@ class ActualWorkReviewService
                 'actual_doctor_id' => $actualDoctorId,
                 'recorded_by' => $admin->id,
             ])->save();
-            $preview = $this->workloads->preview($roster);
+            $preview = $this->preview($roster);
             $this->refreshConfirmed($roster, $admin, $preview);
         });
     }
@@ -61,7 +61,7 @@ class ActualWorkReviewService
             $exception = ActualWorkException::query()->whereKey($exceptionId)
                 ->whereHas('rosterShift', fn ($query) => $query->where('roster_id', $roster->id))->lockForUpdate()->firstOrFail();
             $exception->delete();
-            $preview = $this->workloads->preview($roster);
+            $preview = $this->preview($roster);
             $this->refreshConfirmed($roster, $admin, $preview);
         });
     }
@@ -70,7 +70,7 @@ class ActualWorkReviewService
     {
         DB::transaction(function () use ($roster, $admin): void {
             $roster = $this->lockedFinalRoster($roster);
-            $this->workloads->persistRoster($roster);
+            $this->workloads->persistRoster($roster, $this->preview($roster));
             $roster->update(['actual_work_confirmed_at' => now(), 'actual_work_confirmed_by' => $admin->id]);
             $this->workloads->recalculateLater($roster->year, $roster->month);
         });
@@ -83,7 +83,7 @@ class ActualWorkReviewService
             $roster = Roster::query()->where('year', $year)->where('month', $month)->lockForUpdate()->first();
             $change();
             if ($roster !== null && $roster->status === RosterStatus::Final && $roster->actual_work_confirmed_at !== null) {
-                $this->refreshConfirmed($roster, $admin, $this->workloads->preview($roster));
+                $this->refreshConfirmed($roster, $admin, $this->preview($roster));
             } elseif ($roster !== null && $roster->status === RosterStatus::Final) {
                 $roster->touch();
             }
@@ -98,6 +98,12 @@ class ActualWorkReviewService
         }
 
         return $locked;
+    }
+
+    /** @return array{average: int, rows: list<BalancedRow>} */
+    private function preview(Roster $roster): array
+    {
+        return $this->workloads->preview($roster, $this->history->forMonth($roster->year, $roster->month));
     }
 
     /** @param array{average: int, rows: list<BalancedRow>} $preview */

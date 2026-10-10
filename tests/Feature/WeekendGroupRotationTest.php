@@ -6,6 +6,7 @@ use App\Models\Doctor;
 use App\Models\DoctorMonthlyParticipation;
 use App\Models\DoctorWeekendGroupMembership;
 use App\Models\RosterAssignment;
+use App\Models\User;
 use App\Models\WeekendRotationConfiguration;
 use App\Services\RosterAssignmentGenerator;
 use App\Services\RosterAssignmentRecoveryService;
@@ -15,8 +16,8 @@ use App\Services\RosterStructureService;
 use App\Services\WeekendGroupRotationService;
 use Carbon\CarbonImmutable;
 use Database\Seeders\DoctorsSeeder;
-use Database\Seeders\ShiftTypesSeeder;
 use Database\Seeders\October2026WeekendRotationSeeder;
+use Database\Seeders\ShiftTypesSeeder;
 
 function seedWeekendRotationGroups(string $effectiveFrom = '2026-09-26'): void
 {
@@ -42,7 +43,7 @@ it('continues the alternating rotation across month boundaries from its Saturday
     $this->seed([DoctorsSeeder::class, ShiftTypesSeeder::class]);
     WeekendRotationConfiguration::query()->create(['anchor_saturday' => '2026-09-26', 'anchor_group' => 'B']);
     seedWeekendRotationGroups();
-    $admin = App\Models\User::factory()->create();
+    $admin = User::factory()->create();
     $october = app(RosterStructureService::class)->create(2026, 10, $admin);
     $doctors = Doctor::query()->where('is_active', true)->get();
     $rotation = app(WeekendGroupRotationService::class)->forMonth(2026, 10, $doctors, $october->shifts()->with('shiftType')->get());
@@ -72,7 +73,7 @@ it('uses effective membership changes without changing earlier weekend membershi
         'group_code' => 'B',
         'effective_from_saturday' => '2026-10-17',
     ]);
-    $roster = app(RosterStructureService::class)->create(2026, 10, App\Models\User::factory()->create());
+    $roster = app(RosterStructureService::class)->create(2026, 10, User::factory()->create());
     $rotation = app(WeekendGroupRotationService::class)->forMonth(2026, 10, collect([$doctor]), $roster->shifts()->with('shiftType')->get());
 
     expect(app(WeekendGroupRotationService::class)->groupFor($rotation['assignments'], $doctor->id, '2026-10-10'))->toBe('A')
@@ -85,7 +86,7 @@ it('prioritizes scheduled group membership ahead of workload fairness and leaves
     seedWeekendRotationGroups();
     $groupA = Doctor::query()->where('short_code', 'T')->firstOrFail();
     $groupB = Doctor::query()->where('short_code', 'N')->firstOrFail();
-    $roster = app(RosterStructureService::class)->create(2026, 10, App\Models\User::factory()->create());
+    $roster = app(RosterStructureService::class)->create(2026, 10, User::factory()->create());
     $shifts = $roster->shifts()->with(['shiftType', 'assignments'])->get();
     $rotation = app(WeekendGroupRotationService::class)->forMonth(2026, 10, collect([$groupA, $groupB]), $shifts);
     $ranker = app(RosterCandidateRanker::class);
@@ -109,7 +110,7 @@ it('uses the opposite group only after the scheduled group cannot fill a mandato
             'effective_from_saturday' => '2026-09-26',
         ]);
     }
-    $roster = app(RosterStructureService::class)->create(2026, 10, App\Models\User::factory()->create());
+    $roster = app(RosterStructureService::class)->create(2026, 10, User::factory()->create());
     $weekendDay = $roster->shifts()->whereDate('shift_date', '2026-10-03')->whereHas('shiftType', fn ($query) => $query->where('code', 'weekend_day'))->with(['shiftType', 'assignments'])->firstOrFail();
     $shifts = collect([$weekendDay]);
     $rotation = app(WeekendGroupRotationService::class)->forMonth(2026, 10, collect([$groupA, $groupB]), $roster->shifts()->with('shiftType')->get());
@@ -130,7 +131,7 @@ it('uses the opposite group only after the scheduled group cannot fill a mandato
 it('generates an October roster with all Main positions covered using the configured rotation', function () {
     $this->seed([DoctorsSeeder::class, ShiftTypesSeeder::class]);
     seedInitialHistoryForGeneration();
-    $admin = App\Models\User::factory()->create();
+    $admin = User::factory()->create();
     $roster = app(RosterStructureService::class)->create(2026, 10, $admin);
     $this->seed(October2026WeekendRotationSeeder::class);
 
@@ -152,7 +153,7 @@ it('shows monthly group membership history and the scheduled weekend list', func
     WeekendRotationConfiguration::query()->create(['anchor_saturday' => '2026-09-26', 'anchor_group' => 'B']);
     seedWeekendRotationGroups();
 
-    $this->actingAs(App\Models\User::factory()->create())
+    $this->actingAs(User::factory()->create())
         ->get(route('weekend-groups.show', ['year' => 2026, 'month' => 10]))
         ->assertOk()
         ->assertInertia(fn ($page) => $page
@@ -175,7 +176,7 @@ it('validates management coverage for each selected-month weekend', function () 
         'effective_from_saturday' => '2026-10-10',
     ]);
 
-    $this->actingAs(App\Models\User::factory()->create())
+    $this->actingAs(User::factory()->create())
         ->get(route('weekend-groups.show', ['year' => 2026, 'month' => 10]))
         ->assertOk()
         ->assertInertia(fn ($page) => $page
@@ -202,7 +203,7 @@ it('validates historical rotation against saved participation after doctor statu
         'group_code' => 'A',
         'effective_from_saturday' => '2026-10-03',
     ]);
-    $roster = app(RosterStructureService::class)->create(2026, 9, App\Models\User::factory()->create());
+    $roster = app(RosterStructureService::class)->create(2026, 9, User::factory()->create());
     DoctorMonthlyParticipation::query()->where('roster_id', $roster->id)->update(['is_participating' => false]);
     DoctorMonthlyParticipation::query()->where('roster_id', $roster->id)->where('doctor_id', $hirushini->id)->update(['is_participating' => true]);
     $roster->update(['status' => RosterStatus::Final]);
@@ -220,7 +221,7 @@ it('records a future membership change with the acting administrator and protect
     $this->seed([DoctorsSeeder::class, ShiftTypesSeeder::class]);
     WeekendRotationConfiguration::query()->create(['anchor_saturday' => '2026-09-26', 'anchor_group' => 'B']);
     seedWeekendRotationGroups();
-    $admin = App\Models\User::factory()->create();
+    $admin = User::factory()->create();
     $doctor = Doctor::query()->where('short_code', 'K')->firstOrFail();
 
     $this->actingAs($admin)
@@ -250,7 +251,7 @@ it('records a future membership change with the acting administrator and protect
 it('seeds October groups idempotently without changing doctor status or existing draft assignments', function () {
     $this->seed([DoctorsSeeder::class, ShiftTypesSeeder::class]);
     $statuses = Doctor::query()->pluck('is_active', 'id')->all();
-    $admin = App\Models\User::factory()->create();
+    $admin = User::factory()->create();
     $roster = app(RosterStructureService::class)->create(2026, 10, $admin);
     $shift = $roster->shifts()->whereDate('shift_date', '2026-10-03')
         ->whereHas('shiftType', fn ($query) => $query->where('code', 'weekend_day'))->firstOrFail();
@@ -281,7 +282,7 @@ it('replaces repeated-weekend warnings with informational cross-group exceptions
     $this->seed([DoctorsSeeder::class, ShiftTypesSeeder::class]);
     WeekendRotationConfiguration::query()->create(['anchor_saturday' => '2026-09-26', 'anchor_group' => 'B']);
     seedWeekendRotationGroups();
-    $roster = app(RosterStructureService::class)->create(2026, 10, App\Models\User::factory()->create());
+    $roster = app(RosterStructureService::class)->create(2026, 10, User::factory()->create());
     $saturdayDay = $roster->shifts()->whereDate('shift_date', '2026-10-03')->whereHas('shiftType', fn ($query) => $query->where('code', 'weekend_day'))->firstOrFail();
     $sundayDay = $roster->shifts()->whereDate('shift_date', '2026-10-04')->whereHas('shiftType', fn ($query) => $query->where('code', 'weekend_day'))->firstOrFail();
     $inGroup = Doctor::query()->where('short_code', 'T')->firstOrFail();

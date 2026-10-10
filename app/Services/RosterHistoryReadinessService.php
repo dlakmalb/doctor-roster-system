@@ -19,12 +19,15 @@ class RosterHistoryReadinessService
         $previous = CarbonImmutable::create($year, $month, 1)->subMonth();
         $previousRoster = Roster::query()->where('year', $previous->year)->where('month', $previous->month)->first();
         $doctorIds = Doctor::query()->pluck('id');
-        $doctorCount = $doctorIds->count();
+        $historicalDoctorIds = $previousRoster === null || $previousRoster->status !== RosterStatus::Final
+            ? $doctorIds
+            : $this->participation->doctorIdsForRoster($previousRoster);
+        $doctorCount = $historicalDoctorIds->count();
         $rows = DoctorMonthlyWorkload::query()->where('year', $previous->year)->where('month', $previous->month);
-        $complete = $doctorCount > 0 && (clone $rows)->whereIn('doctor_id', $doctorIds)->count() === $doctorCount;
+        $complete = $doctorCount > 0 && (clone $rows)->whereIn('doctor_id', $historicalDoctorIds)->count() === $doctorCount;
         if ($previousRoster !== null) {
-            $participationComplete = $this->participation->hasCompleteMonth($previous->year, $previous->month, $doctorIds);
-            $actualComplete = $complete && (clone $rows)->whereIn('doctor_id', $doctorIds)->where('roster_id', $previousRoster->id)->where('source', DoctorMonthlyWorkloadSource::System->value)->count() === $doctorCount;
+            $participationComplete = $this->participation->hasCompleteMonth($previous->year, $previous->month, $historicalDoctorIds);
+            $actualComplete = $complete && (clone $rows)->whereIn('doctor_id', $historicalDoctorIds)->where('roster_id', $previousRoster->id)->where('source', DoctorMonthlyWorkloadSource::System->value)->count() === $doctorCount;
             $ready = $participationComplete && $previousRoster->status === RosterStatus::Final && ($previousRoster->actual_work_confirmed_at === null || $actualComplete);
             $basis = ! $ready ? null : ($previousRoster->actual_work_confirmed_at === null ? 'final_planned' : 'confirmed_actual');
             $action = $previousRoster->status === RosterStatus::Draft ? 'finalize' : 'review';
@@ -36,8 +39,8 @@ class RosterHistoryReadinessService
                 default => null,
             };
         } else {
-            $participationComplete = $this->participation->hasCompleteMonth($previous->year, $previous->month, $doctorIds);
-            $ready = $participationComplete && $complete && (clone $rows)->whereIn('doctor_id', $doctorIds)->where('source', DoctorMonthlyWorkloadSource::ManualInitial->value)->count() === $doctorCount;
+            $participationComplete = $this->participation->hasCompleteMonth($previous->year, $previous->month, $historicalDoctorIds);
+            $ready = $participationComplete && $complete && (clone $rows)->whereIn('doctor_id', $historicalDoctorIds)->where('source', DoctorMonthlyWorkloadSource::ManualInitial->value)->count() === $doctorCount;
             $action = 'initial_setup';
             $message = $ready ? null : "Complete Initial Setup for {$previous->format('F Y')} before generating {$this->label($year, $month)}.";
             $basis = $ready ? 'manual_initial' : null;

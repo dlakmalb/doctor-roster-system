@@ -14,7 +14,9 @@ use Illuminate\Support\Carbon;
  * @property int $year
  * @property int $month
  * @property RosterStatus $status
+ * @property int|null $participation_snapshot_max_doctor_id
  * @property Carbon|null $last_generated_at
+ * @property string|null $generated_history_fingerprint
  * @property Carbon|null $actual_work_confirmed_at
  * @property Carbon|null $finalized_at
  * @property int|null $finalized_by
@@ -24,7 +26,7 @@ use Illuminate\Support\Carbon;
  * @property Carbon|null $created_at
  * @property Carbon|null $updated_at
  */
-#[Fillable(['year', 'month', 'status', 'last_generated_at', 'finalized_at', 'reopened_at', 'actual_work_confirmed_at', 'created_by', 'updated_by', 'finalized_by', 'reopened_by', 'actual_work_confirmed_by'])]
+#[Fillable(['year', 'month', 'status', 'participation_snapshot_max_doctor_id', 'last_generated_at', 'generated_history_fingerprint', 'finalized_at', 'reopened_at', 'actual_work_confirmed_at', 'created_by', 'updated_by', 'finalized_by', 'reopened_by', 'actual_work_confirmed_by'])]
 class Roster extends Model
 {
     protected function casts(): array
@@ -33,6 +35,7 @@ class Roster extends Model
             'year' => 'integer',
             'month' => 'integer',
             'status' => RosterStatus::class,
+            'participation_snapshot_max_doctor_id' => 'integer',
             'last_generated_at' => 'datetime',
             'finalized_at' => 'datetime',
             'reopened_at' => 'datetime',

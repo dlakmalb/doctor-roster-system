@@ -300,7 +300,8 @@ it('keeps November as the October planning month even after November is Final', 
         'source' => DoctorMonthlyWorkloadSource::ManualInitial,
         'actual_worked_minutes' => 0,
     ]));
-    Roster::create(['year' => 2026, 'month' => 11, 'status' => RosterStatus::Final]);
+    $november = Roster::create(['year' => 2026, 'month' => 11, 'status' => RosterStatus::Final]);
+    snapshotRosterParticipation($november, Doctor::query()->get());
     $this->actingAs(User::factory()->create())->get(route('dashboard'))
         ->assertInertia(fn (Assert $page) => $page
             ->where('primaryMonth.label', 'November 2026')

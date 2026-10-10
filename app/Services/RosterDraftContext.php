@@ -16,6 +16,7 @@ use App\Models\Roster;
 use App\Models\RosterAssignment;
 use App\Models\RosterShift;
 use Carbon\CarbonImmutable;
+use Carbon\CarbonInterface;
 use Illuminate\Support\Collection;
 use Illuminate\Validation\ValidationException;
 
@@ -216,7 +217,7 @@ class RosterDraftContext
     }
 
     /** @param array{shift: RosterShift, role: RosterAssignmentRole, slot: int}|null $nightAssignment */
-    private function nextDayNightRecoveryMessage(string $doctorName, RosterShift $shift, ?array $nightAssignment, ?\Carbon\CarbonInterface $historyNight): string
+    private function nextDayNightRecoveryMessage(string $doctorName, RosterShift $shift, ?array $nightAssignment, ?CarbonInterface $historyNight): string
     {
         if ($nightAssignment !== null) {
             $assignedShift = $nightAssignment['shift'];
@@ -240,7 +241,7 @@ class RosterDraftContext
     }
 
     /** @param array{shift: RosterShift, role: RosterAssignmentRole, slot: int}|null $nightAssignment */
-    private function nightToNightRecoveryMessage(string $doctorName, RosterShift $shift, ?array $nightAssignment, ?\Carbon\CarbonInterface $historyNight): string
+    private function nightToNightRecoveryMessage(string $doctorName, RosterShift $shift, ?array $nightAssignment, ?CarbonInterface $historyNight): string
     {
         if ($nightAssignment !== null) {
             $assignedShift = $nightAssignment['shift'];
@@ -255,8 +256,8 @@ class RosterDraftContext
         $otherNightDate = $historyNight;
         $dates = collect([$shift->shift_date, $otherNightDate])
             ->filter()
-            ->sortBy(fn (\Carbon\CarbonInterface $date): int => $date->timestamp)
-            ->map(fn (\Carbon\CarbonInterface $date): string => $date->format('M j'))
+            ->sortBy(fn (CarbonInterface $date): int => $date->timestamp)
+            ->map(fn (CarbonInterface $date): string => $date->format('M j'))
             ->values();
         $dateMessage = $dates->count() === 2 ? ' on '.$dates->join(' and ') : '';
 

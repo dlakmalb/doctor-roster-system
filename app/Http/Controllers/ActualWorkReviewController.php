@@ -8,6 +8,7 @@ use App\Models\Roster;
 use App\Models\User;
 use App\Services\ActualWorkReviewService;
 use App\Services\DoctorMonthlyWorkloadService;
+use App\Services\RosterPlanningHistoryService;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -17,7 +18,7 @@ use Inertia\Response;
 
 class ActualWorkReviewController extends Controller
 {
-    public function show(int $year, int $month, DoctorMonthlyWorkloadService $workloads): Response
+    public function show(int $year, int $month, DoctorMonthlyWorkloadService $workloads, RosterPlanningHistoryService $history): Response
     {
         $roster = $this->roster($year, $month);
         $roster->load(['shifts' => fn ($query) => $query->orderBy('shift_date'), 'shifts.shiftType', 'shifts.assignments.doctor', 'shifts.assignments.actualWorkExceptions.actualDoctor']);
@@ -68,7 +69,7 @@ class ActualWorkReviewController extends Controller
             'shifts' => $shifts,
             'doctors' => Doctor::query()->orderBy('short_code')->get(['id', 'name', 'short_code']),
             'summary' => $summary,
-            'preview' => $workloads->preview($roster),
+            'preview' => $workloads->preview($roster, $history->forMonth($roster->year, $roster->month)),
         ]);
     }
 

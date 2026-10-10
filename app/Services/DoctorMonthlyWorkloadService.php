@@ -11,6 +11,7 @@ use App\Models\DoctorMonthlyWorkload;
 use App\Models\Roster;
 use Carbon\CarbonImmutable;
 use Carbon\CarbonInterface;
+use Illuminate\Support\Collection;
 use Illuminate\Validation\ValidationException;
 
 /**
@@ -22,15 +23,16 @@ class DoctorMonthlyWorkloadService
     public function __construct(private RosterCandidateRanker $ranker, private DoctorMonthlyParticipationService $participation) {}
 
     /**
+     * @param  Collection<int, DoctorMonthlyWorkload>  $openingHistory
      * @return array{average: int, rows: list<BalancedRow>}
      */
-    public function preview(Roster $roster): array
+    public function preview(Roster $roster, Collection $openingHistory): array
     {
-        $doctors = Doctor::query()->orderBy('name')->get();
+        $doctorIds = $this->participation->doctorIdsForRoster($roster);
+        $doctors = Doctor::query()->whereIn('id', $doctorIds)->orderBy('name')->get();
         $shifts = $roster->shifts()->with(['shiftType', 'assignments', 'assignments.actualWorkExceptions'])->get();
-        $previous = CarbonImmutable::create($roster->year, $roster->month, 1)->subMonth();
-        $openings = DoctorMonthlyWorkload::query()->where('year', $previous->year)->where('month', $previous->month)->get()->keyBy('doctor_id');
-        $participation = $this->participation->forMonth($roster->year, $roster->month, $doctors->modelKeys());
+        $openings = $openingHistory;
+        $participation = $this->participation->forRoster($roster, $doctors->modelKeys());
         $excluded = DoctorMonthlyExclusion::query()->where('year', $roster->year)->where('month', $roster->month)->pluck('doctor_id')->flip();
         $facts = [];
         foreach ($doctors as $doctor) {
@@ -134,9 +136,9 @@ class DoctorMonthlyWorkloadService
     }
 
     /** @param array{average: int, rows: list<BalancedRow>}|null $preview */
-    public function persistRoster(Roster $roster, ?array $preview = null): void
+    public function persistRoster(Roster $roster, array $preview): void
     {
-        foreach (($preview ?? $this->preview($roster))['rows'] as $row) {
+        foreach ($preview['rows'] as $row) {
             $doctorId = $row['doctor_id'];
             unset($row['doctor_id']);
             if (array_key_exists('name', $row)) {
@@ -161,12 +163,21 @@ class DoctorMonthlyWorkloadService
         $doctorIds = Doctor::query()->pluck('id');
         foreach ($periods as $rows) {
             $first = $rows->firstOrFail();
-            if ($rows->count() !== $doctorIds->count() || $doctorIds->diff($rows->pluck('doctor_id'))->isNotEmpty()) {
+            $roster = $first->roster_id === null ? null : Roster::query()->find($first->roster_id);
+            $periodDoctorIds = $roster === null ? $doctorIds : $this->participation->doctorIdsForRoster($roster);
+            if ($roster !== null) {
+                $workloadDoctorIds = $rows->pluck('doctor_id')->map(fn ($doctorId): int => (int) $doctorId)->sort()->values();
+                if ($workloadDoctorIds->all() !== $periodDoctorIds->sort()->values()->all()) {
+                    throw ValidationException::withMessages(['history' => 'A later workload period has missing or unexpected doctor records.']);
+                }
+            } elseif ($rows->count() !== $doctorIds->count() || $doctorIds->diff($rows->pluck('doctor_id'))->isNotEmpty()) {
                 throw ValidationException::withMessages(['history' => 'A later workload period is missing a doctor record.']);
             }
             $previous = CarbonImmutable::create($first->year, $first->month, 1)->subMonth();
-            $openings = DoctorMonthlyWorkload::query()->where('year', $previous->year)->where('month', $previous->month)->get()->keyBy('doctor_id');
-            $participation = $this->participation->forMonth($first->year, $first->month, $doctorIds);
+            $openings = DoctorMonthlyWorkload::query()->where('year', $previous->year)->where('month', $previous->month)->whereIn('doctor_id', $periodDoctorIds)->get()->keyBy('doctor_id');
+            $participation = $roster === null
+                ? $this->participation->forMonth($first->year, $first->month, $doctorIds)
+                : $this->participation->forRoster($roster, $periodDoctorIds);
             $facts = $rows->map(fn (DoctorMonthlyWorkload $row): array => [
                 'doctor_id' => $row->doctor_id,
                 'is_participating' => $participation->get($row->doctor_id),
