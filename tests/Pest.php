@@ -1,6 +1,12 @@
 <?php
 
+use App\Enums\DoctorMonthlyWorkloadSource;
+use App\Models\Doctor;
+use App\Models\DoctorMonthlyWorkload;
+use App\Models\Roster;
+use App\Services\DoctorMonthlyParticipationService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Collection;
 use Tests\TestCase;
 
 /*
@@ -47,4 +53,25 @@ expect()->extend('toBeOne', function () {
 function something()
 {
     // ..
+}
+
+function seedInitialHistoryForGeneration(): void
+{
+    $participation = app(DoctorMonthlyParticipationService::class);
+    foreach (Doctor::query()->get() as $doctor) {
+        DoctorMonthlyWorkload::query()->firstOrCreate(
+            ['doctor_id' => $doctor->id, 'year' => 2026, 'month' => 9],
+            ['source' => DoctorMonthlyWorkloadSource::ManualInitial, 'actual_worked_minutes' => 0],
+        );
+        $participation->saveBaseline($doctor->id, 2026, 9, $doctor->is_active);
+    }
+}
+
+/** @param Collection<int, Doctor>|null $participatingDoctors */
+function snapshotRosterParticipation(Roster $roster, ?Collection $participatingDoctors = null): void
+{
+    app(DoctorMonthlyParticipationService::class)->snapshotRoster(
+        $roster,
+        $participatingDoctors ?? Doctor::query()->where('is_active', true)->get(),
+    );
 }

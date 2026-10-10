@@ -1,0 +1,439 @@
+<?php
+
+use App\Enums\ActualWorkExceptionType;
+use App\Enums\DoctorMonthlyWorkloadSource;
+use App\Enums\RosterAssignmentRole;
+use App\Enums\RosterStatus;
+use App\Models\ActualWorkException;
+use App\Models\Doctor;
+use App\Models\DoctorMonthlyWorkload;
+use App\Models\Roster;
+use App\Models\RosterAssignment;
+use App\Models\RosterShift;
+use App\Models\ShiftType;
+use App\Models\User;
+use App\Services\DoctorMonthlyParticipationService;
+use App\Services\DoctorMonthlyWorkloadService;
+use App\Services\RosterAssignmentGenerator;
+use App\Services\RosterDraftValidationService;
+use App\Services\RosterHistoryReadinessService;
+use App\Services\RosterPlanningHistoryService;
+use Database\Seeders\ShiftTypesSeeder;
+use Illuminate\Validation\ValidationException;
+use Inertia\Testing\AssertableInertia as Assert;
+
+function historyFixture(): array
+{
+    test()->seed(ShiftTypesSeeder::class);
+    $admin = User::factory()->create();
+    $doctors = collect(['A', 'B'])->map(fn (string $code): Doctor => Doctor::create(['name' => "Doctor $code", 'short_code' => $code, 'is_active' => true]));
+
+    return [$admin, $doctors];
+}
+
+function baselinePayload($doctors, string $firstHours = '6'): array
+{
+    return ['doctors' => $doctors->values()->map(fn (Doctor $doctor, int $index): array => [
+        'doctor_id' => $doctor->id,
+        'participation_status' => 'participating',
+        'actual_hours' => $index === 0 ? $firstHours : '0',
+        'actual_night_duty_count' => $index === 0 ? 1 : 0,
+        'optional_assignment_count' => $index === 0 ? 2 : 0,
+        'worked_final_weekend' => $index === 0,
+        'most_recent_night_shift_at' => $index === 0 ? '2026-09-30 20:00:00' : null,
+    ])->all()];
+}
+
+it('excludes a nonmember from the baseline average and gives them neutral history', function () {
+    test()->seed(ShiftTypesSeeder::class);
+    $admin = User::factory()->create();
+    $codes = ['H', 'C', ...array_map(fn (int $number): string => 'P'.$number, range(1, 13))];
+    $doctors = collect($codes)->map(fn (string $code): Doctor => Doctor::create([
+        'name' => "Doctor $code",
+        'short_code' => $code,
+        'is_active' => $code !== 'C',
+    ]));
+    Roster::create(['year' => 2026, 'month' => 10, 'status' => RosterStatus::Draft, 'created_by' => $admin->id]);
+    $entries = $doctors->map(fn (Doctor $doctor): array => [
+        'doctor_id' => $doctor->id,
+        'participation_status' => $doctor->short_code === 'C' ? 'not_part_of_team' : 'participating',
+        'actual_hours' => $doctor->short_code === 'H' ? '7' : '0',
+        'actual_night_duty_count' => $doctor->short_code === 'H' ? 1 : 0,
+        'optional_assignment_count' => $doctor->short_code === 'H' ? 2 : 0,
+        'worked_final_weekend' => $doctor->short_code === 'H',
+        'most_recent_night_shift_at' => $doctor->short_code === 'H' ? '2026-09-30 20:00:00' : null,
+    ])->all();
+
+    $this->actingAs($admin)
+        ->post(route('initial-workload.save', ['year' => 2026, 'month' => 9]), ['doctors' => $entries])
+        ->assertRedirect();
+
+    $rows = DoctorMonthlyWorkload::query()->where('month', 9)->get()->keyBy('doctor_id');
+    $participation = app(DoctorMonthlyParticipationService::class)->forMonth(2026, 9, $doctors->pluck('id')->all());
+    $hirushini = $doctors->firstWhere('short_code', 'H');
+    $umanga = $doctors->firstWhere('short_code', 'C');
+    expect($rows)->toHaveCount(15)
+        ->and($participation->get($hirushini->id))->toBeTrue()
+        ->and($participation->get($umanga->id))->toBeFalse()
+        ->and($rows[$hirushini->id]->closing_balance_minutes)->toBe(390)
+        ->and($rows[$hirushini->id]->actual_night_duty_count)->toBe(1)
+        ->and($rows[$hirushini->id]->optional_assignment_count)->toBe(2)
+        ->and($rows[$umanga->id]->closing_balance_minutes)->toBe(0)
+        ->and($rows[$umanga->id]->actual_night_duty_count)->toBe(0)
+        ->and($rows[$umanga->id]->optional_assignment_count)->toBe(0)
+        ->and(app(RosterHistoryReadinessService::class)->forMonth(2026, 10)['ready'])->toBeTrue();
+});
+
+it('rejects workload facts for a doctor marked not part of the baseline team', function () {
+    [$admin, $doctors] = historyFixture();
+    $entries = baselinePayload($doctors)['doctors'];
+    $entries[0]['participation_status'] = 'not_part_of_team';
+
+    $this->actingAs($admin)
+        ->post(route('initial-workload.save', ['year' => 2026, 'month' => 9]), ['doctors' => $entries])
+        ->assertSessionHasErrors('baseline');
+
+    $this->assertDatabaseCount('doctor_monthly_workloads', 0);
+    $this->assertDatabaseCount('doctor_monthly_participations', 0);
+});
+
+it('keeps provisional Final readiness tied to the saved roster population', function () {
+    [$admin, $doctors] = historyFixture();
+    $this->actingAs($admin)
+        ->post(route('initial-workload.save', ['year' => 2026, 'month' => 9]), baselinePayload($doctors))
+        ->assertRedirect();
+    $october = Roster::create(['year' => 2026, 'month' => 10, 'status' => RosterStatus::Final, 'created_by' => $admin->id]);
+    snapshotRosterParticipation($october, $doctors);
+    Doctor::create(['name' => 'Doctor New', 'short_code' => 'NEW', 'is_active' => true]);
+
+    $readiness = app(RosterHistoryReadinessService::class)->forMonth(2026, 11);
+
+    expect($readiness['ready'])->toBeTrue()
+        ->and($readiness['basis'])->toBe('final_planned');
+});
+
+it('keeps confirmed actual readiness tied to the saved roster population', function () {
+    [$admin, $doctors] = historyFixture();
+    $this->actingAs($admin)->post(route('initial-workload.save', ['year' => 2026, 'month' => 9]), baselinePayload($doctors))->assertRedirect();
+    $october = Roster::create(['year' => 2026, 'month' => 10, 'status' => RosterStatus::Final, 'created_by' => $admin->id]);
+    snapshotRosterParticipation($october, $doctors);
+    $this->post(route('rosters.actual-work.confirm', ['year' => 2026, 'month' => 10]))->assertRedirect();
+    Doctor::create(['name' => 'Doctor New', 'short_code' => 'NEW', 'is_active' => true]);
+
+    $readiness = app(RosterHistoryReadinessService::class)->forMonth(2026, 11);
+
+    expect($readiness['ready'])->toBeTrue()
+        ->and($readiness['basis'])->toBe('confirmed_actual');
+});
+
+it('saves and corrects only the initial baseline with zero opening balances', function () {
+    [$admin, $doctors] = historyFixture();
+    $url = route('initial-workload.save', ['year' => 2026, 'month' => 9]);
+    $this->actingAs($admin)->post($url, baselinePayload($doctors))->assertRedirect();
+    $rows = DoctorMonthlyWorkload::query()->where('month', 9)->orderBy('doctor_id')->get();
+    expect($rows)->toHaveCount(2)
+        ->and($rows[0]->source)->toBe(DoctorMonthlyWorkloadSource::ManualInitial)
+        ->and($rows[0]->roster_id)->toBeNull()
+        ->and($rows[0]->opening_balance_minutes)->toBe(0)
+        ->and($rows[0]->closing_balance_minutes)->toBe(180)
+        ->and($rows[1]->closing_balance_minutes)->toBe(-180)
+        ->and($rows[0]->actual_night_duty_count)->toBe(1)
+        ->and($rows[0]->optional_assignment_count)->toBe(2)
+        ->and($rows[0]->worked_final_weekend)->toBeTrue()
+        ->and($rows[0]->most_recent_night_shift_at?->format('Y-m-d H:i:s'))->toBe('2026-09-30 20:00:00');
+    $this->post($url, baselinePayload($doctors, '12'))->assertRedirect();
+    expect($rows[0]->fresh()->closing_balance_minutes)->toBe(360);
+    $this->post(route('initial-workload.save', ['year' => 2026, 'month' => 10]), baselinePayload($doctors))->assertSessionHasErrors('baseline');
+    $this->get(route('initial-workload.show', ['year' => 2026, 'month' => 9]))->assertInertia(fn (Assert $page) => $page
+        ->component('initial-workload-setup')->where('doctors.0.existing.actual_worked_minutes', 720));
+});
+
+it('requires baseline before first generation and a Final planned roster before later generation', function () {
+    [$admin, $doctors] = historyFixture();
+    $october = Roster::create(['year' => 2026, 'month' => 10, 'status' => RosterStatus::Draft, 'created_by' => $admin->id]);
+    $generateOctober = route('rosters.generate', ['year' => 2026, 'month' => 10]);
+    $this->actingAs($admin)->post($generateOctober)->assertSessionHasErrors('roster');
+    $this->post(route('initial-workload.save', ['year' => 2026, 'month' => 9]), baselinePayload($doctors))->assertRedirect();
+    $this->post($generateOctober)->assertRedirect();
+    $november = Roster::create(['year' => 2026, 'month' => 11, 'status' => RosterStatus::Draft, 'created_by' => $admin->id]);
+    $generateNovember = route('rosters.generate', ['year' => 2026, 'month' => 11]);
+    $this->post($generateNovember)->assertSessionHasErrors(['roster' => 'Finalize October 2026 before generating November 2026.']);
+    $this->post(route('rosters.regenerate', ['year' => 2026, 'month' => 11]))->assertSessionHasErrors('roster');
+    $october->update(['status' => RosterStatus::Final, 'finalized_at' => now()]);
+    $this->post($generateNovember)->assertRedirect();
+    expect($november->fresh()->last_generated_at)->not->toBeNull()
+        ->and($october->fresh()->actual_work_confirmed_at)->toBeNull();
+});
+
+it('recalculates later balances after a confirmed earlier correction without changing planned assignments', function () {
+    [$admin, $doctors] = historyFixture();
+    $this->actingAs($admin)->post(route('initial-workload.save', ['year' => 2026, 'month' => 9]), baselinePayload($doctors, '0'))->assertRedirect();
+    $day = ShiftType::query()->where('code', 'weekday_day')->firstOrFail();
+    $october = Roster::create(['year' => 2026, 'month' => 10, 'status' => RosterStatus::Final, 'created_by' => $admin->id]);
+    snapshotRosterParticipation($october, $doctors);
+    $shift = RosterShift::create(['roster_id' => $october->id, 'shift_date' => '2026-10-01', 'shift_type_id' => $day->id]);
+    $assignment = RosterAssignment::create(['roster_shift_id' => $shift->id, 'doctor_id' => $doctors[0]->id, 'role' => RosterAssignmentRole::Main, 'slot_number' => 1]);
+    $this->post(route('rosters.actual-work.confirm', ['year' => 2026, 'month' => 10]))->assertRedirect();
+    $november = Roster::create(['year' => 2026, 'month' => 11, 'status' => RosterStatus::Final, 'created_by' => $admin->id]);
+    snapshotRosterParticipation($november, $doctors);
+    $laterDoctor = Doctor::create(['name' => 'Doctor Later', 'short_code' => 'L', 'is_active' => true]);
+    $this->post(route('rosters.actual-work.confirm', ['year' => 2026, 'month' => 11]))->assertRedirect();
+    $before = DoctorMonthlyWorkload::query()->where('doctor_id', $doctors[0]->id)->where('month', 11)->firstOrFail();
+    expect($before->opening_balance_minutes)->toBe(180);
+    expect(DoctorMonthlyWorkload::query()->where('doctor_id', $laterDoctor->id)->whereIn('month', [10, 11])->exists())->toBeFalse();
+
+    $this->put(route('rosters.actual-work.save', ['year' => 2026, 'month' => 10, 'assignment' => $assignment->id]), ['exception_type' => 'main_absent'])->assertRedirect();
+
+    $after = $before->fresh();
+    expect($after->opening_balance_minutes)->toBe(0)
+        ->and($after->actual_worked_minutes)->toBe(0)
+        ->and($after->closing_balance_minutes)->toBe(0)
+        ->and(DoctorMonthlyWorkload::query()->where('doctor_id', $laterDoctor->id)->whereIn('month', [10, 11])->exists())->toBeFalse()
+        ->and($assignment->fresh()->doctor_id)->toBe($doctors[0]->id);
+});
+
+it('rejects later workload periods with missing snapshot rows', function () {
+    [$admin, $doctors] = historyFixture();
+    $this->actingAs($admin)->post(route('initial-workload.save', ['year' => 2026, 'month' => 9]), baselinePayload($doctors, '0'))->assertRedirect();
+    $october = Roster::create(['year' => 2026, 'month' => 10, 'status' => RosterStatus::Final, 'created_by' => $admin->id]);
+    snapshotRosterParticipation($october, $doctors);
+    $this->post(route('rosters.actual-work.confirm', ['year' => 2026, 'month' => 10]))->assertRedirect();
+    $november = Roster::create(['year' => 2026, 'month' => 11, 'status' => RosterStatus::Final, 'created_by' => $admin->id]);
+    snapshotRosterParticipation($november, $doctors);
+    $this->post(route('rosters.actual-work.confirm', ['year' => 2026, 'month' => 11]))->assertRedirect();
+    DoctorMonthlyWorkload::query()->where('doctor_id', $doctors[1]->id)->where('month', 11)->delete();
+
+    expect(fn () => app(DoctorMonthlyWorkloadService::class)->recalculateLater(2026, 10))
+        ->toThrow(ValidationException::class, 'A later workload period has missing or unexpected doctor records.');
+});
+
+it('rejects later workload periods with rows outside the saved snapshot', function () {
+    [$admin, $doctors] = historyFixture();
+    $this->actingAs($admin)->post(route('initial-workload.save', ['year' => 2026, 'month' => 9]), baselinePayload($doctors, '0'))->assertRedirect();
+    $october = Roster::create(['year' => 2026, 'month' => 10, 'status' => RosterStatus::Final, 'created_by' => $admin->id]);
+    snapshotRosterParticipation($october, $doctors);
+    $this->post(route('rosters.actual-work.confirm', ['year' => 2026, 'month' => 10]))->assertRedirect();
+    $november = Roster::create(['year' => 2026, 'month' => 11, 'status' => RosterStatus::Final, 'created_by' => $admin->id]);
+    snapshotRosterParticipation($november, $doctors);
+    $this->post(route('rosters.actual-work.confirm', ['year' => 2026, 'month' => 11]))->assertRedirect();
+    $laterDoctor = Doctor::create(['name' => 'Doctor Later', 'short_code' => 'L', 'is_active' => true]);
+    DoctorMonthlyWorkload::create([
+        'doctor_id' => $laterDoctor->id,
+        'roster_id' => $november->id,
+        'year' => 2026,
+        'month' => 11,
+        'source' => DoctorMonthlyWorkloadSource::System,
+        'actual_worked_minutes' => 0,
+    ]);
+
+    expect(fn () => app(DoctorMonthlyWorkloadService::class)->recalculateLater(2026, 10))
+        ->toThrow(ValidationException::class, 'A later workload period has missing or unexpected doctor records.');
+});
+
+it('uses provisional finalized history as the next month opening balance', function () {
+    [$admin, $doctors] = historyFixture();
+    $this->actingAs($admin)->post(route('initial-workload.save', ['year' => 2026, 'month' => 9]), baselinePayload($doctors, '0'))->assertRedirect();
+    $october = Roster::create(['year' => 2026, 'month' => 10, 'status' => RosterStatus::Final, 'created_by' => $admin->id, 'finalized_at' => now()]);
+    snapshotRosterParticipation($october, $doctors);
+    $shift = RosterShift::create(['roster_id' => $october->id, 'shift_date' => '2026-10-01', 'shift_type_id' => ShiftType::query()->where('code', 'weekday_day')->firstOrFail()->id]);
+    RosterAssignment::create(['roster_shift_id' => $shift->id, 'doctor_id' => $doctors[0]->id, 'role' => RosterAssignmentRole::Main, 'slot_number' => 1]);
+    $november = Roster::create(['year' => 2026, 'month' => 11, 'status' => RosterStatus::Draft, 'created_by' => $admin->id]);
+    snapshotRosterParticipation($november, $doctors);
+
+    $history = app(RosterPlanningHistoryService::class)->forMonth(2026, 11);
+    $preview = app(DoctorMonthlyWorkloadService::class)->preview($november, $history)['rows'];
+
+    expect(DoctorMonthlyWorkload::query()->where('year', 2026)->where('month', 10)->exists())->toBeFalse()
+        ->and($history[$doctors[0]->id]->closing_balance_minutes)->toBe(180)
+        ->and($history[$doctors[1]->id]->closing_balance_minutes)->toBe(-180)
+        ->and(collect($preview)->firstWhere('doctor_id', $doctors[0]->id)['opening_balance_minutes'])->toBe(180)
+        ->and(collect($preview)->firstWhere('doctor_id', $doctors[1]->id)['opening_balance_minutes'])->toBe(-180);
+});
+
+it('includes unconfirmed replacement exceptions in provisional night and weekend history', function () {
+    [$admin, $doctors] = historyFixture();
+    $this->actingAs($admin)->post(route('initial-workload.save', ['year' => 2026, 'month' => 9]), baselinePayload($doctors, '0'))->assertRedirect();
+    $october = Roster::create(['year' => 2026, 'month' => 10, 'status' => RosterStatus::Final, 'created_by' => $admin->id, 'finalized_at' => now()]);
+    snapshotRosterParticipation($october, $doctors);
+    $shift = RosterShift::create(['roster_id' => $october->id, 'shift_date' => '2026-10-31', 'shift_type_id' => ShiftType::query()->where('code', 'weekend_night')->firstOrFail()->id]);
+    $assignment = RosterAssignment::create(['roster_shift_id' => $shift->id, 'doctor_id' => $doctors[0]->id, 'role' => RosterAssignmentRole::Main, 'slot_number' => 1]);
+    ActualWorkException::create([
+        'roster_shift_id' => $shift->id,
+        'planned_assignment_id' => $assignment->id,
+        'exception_type' => ActualWorkExceptionType::Replacement,
+        'actual_doctor_id' => $doctors[1]->id,
+        'recorded_by' => $admin->id,
+    ]);
+
+    $history = app(RosterPlanningHistoryService::class)->forMonth(2026, 11);
+
+    expect($october->fresh()->actual_work_confirmed_at)->toBeNull()
+        ->and($history[$doctors[0]->id]->actual_worked_minutes)->toBe(0)
+        ->and($history[$doctors[0]->id]->actual_night_duty_count)->toBe(0)
+        ->and($history[$doctors[1]->id]->actual_worked_minutes)->toBe($shift->shiftType->duration_minutes)
+        ->and($history[$doctors[1]->id]->actual_night_duty_count)->toBe(1)
+        ->and($history[$doctors[1]->id]->worked_final_weekend)->toBeTrue()
+        ->and($history[$doctors[1]->id]->most_recent_night_shift_at?->format('Y-m-d H:i:s'))->toBe('2026-10-31 16:00:00');
+});
+
+it('excludes an unconfirmed Main absence from provisional Night history', function () {
+    [$admin, $doctors] = historyFixture();
+    $this->actingAs($admin)->post(route('initial-workload.save', ['year' => 2026, 'month' => 9]), baselinePayload($doctors, '0'))->assertRedirect();
+    $october = Roster::create(['year' => 2026, 'month' => 10, 'status' => RosterStatus::Final, 'created_by' => $admin->id, 'finalized_at' => now()]);
+    snapshotRosterParticipation($october, $doctors);
+    $shift = RosterShift::create(['roster_id' => $october->id, 'shift_date' => '2026-10-31', 'shift_type_id' => ShiftType::query()->where('code', 'weekend_night')->firstOrFail()->id]);
+    $assignment = RosterAssignment::create(['roster_shift_id' => $shift->id, 'doctor_id' => $doctors[0]->id, 'role' => RosterAssignmentRole::Main, 'slot_number' => 1]);
+    ActualWorkException::create([
+        'roster_shift_id' => $shift->id,
+        'planned_assignment_id' => $assignment->id,
+        'exception_type' => ActualWorkExceptionType::MainAbsent,
+        'actual_doctor_id' => null,
+        'recorded_by' => $admin->id,
+    ]);
+
+    $history = app(RosterPlanningHistoryService::class)->forMonth(2026, 11);
+
+    expect($october->fresh()->actual_work_confirmed_at)->toBeNull()
+        ->and($history[$doctors[0]->id]->actual_worked_minutes)->toBe(0)
+        ->and($history[$doctors[0]->id]->actual_night_duty_count)->toBe(0)
+        ->and($history[$doctors[0]->id]->most_recent_night_shift_at)->toBeNull()
+        ->and($history[$doctors[0]->id]->worked_final_weekend)->toBeFalse();
+});
+
+it('credits an unconfirmed Optional Worked exception once in provisional weekend history', function () {
+    [$admin, $doctors] = historyFixture();
+    $this->actingAs($admin)->post(route('initial-workload.save', ['year' => 2026, 'month' => 9]), baselinePayload($doctors, '0'))->assertRedirect();
+    $october = Roster::create(['year' => 2026, 'month' => 10, 'status' => RosterStatus::Final, 'created_by' => $admin->id, 'finalized_at' => now()]);
+    snapshotRosterParticipation($october, $doctors);
+    $shift = RosterShift::create(['roster_id' => $october->id, 'shift_date' => '2026-10-31', 'shift_type_id' => ShiftType::query()->where('code', 'weekend_day')->firstOrFail()->id]);
+    RosterAssignment::create(['roster_shift_id' => $shift->id, 'doctor_id' => $doctors[0]->id, 'role' => RosterAssignmentRole::Main, 'slot_number' => 1]);
+    $optional = RosterAssignment::create(['roster_shift_id' => $shift->id, 'doctor_id' => $doctors[1]->id, 'role' => RosterAssignmentRole::Optional, 'slot_number' => 1]);
+    ActualWorkException::create([
+        'roster_shift_id' => $shift->id,
+        'planned_assignment_id' => $optional->id,
+        'exception_type' => ActualWorkExceptionType::OptionalWorked,
+        'actual_doctor_id' => $doctors[1]->id,
+        'recorded_by' => $admin->id,
+    ]);
+
+    $history = app(RosterPlanningHistoryService::class)->forMonth(2026, 11);
+
+    expect($history[$doctors[0]->id]->actual_worked_minutes)->toBe($shift->shiftType->duration_minutes)
+        ->and($history[$doctors[1]->id]->actual_worked_minutes)->toBe($shift->shiftType->duration_minutes)
+        ->and($history[$doctors[1]->id]->actual_night_duty_count)->toBe(0)
+        ->and($history[$doctors[1]->id]->worked_final_weekend)->toBeTrue()
+        ->and($history[$doctors[1]->id]->most_recent_night_shift_at)->toBeNull()
+        ->and($history[$doctors[1]->id]->optional_assignment_count)->toBe(1);
+});
+
+it('calculates earlier roster history without relying on doctor creation timestamps', function () {
+    [$admin, $doctors] = historyFixture();
+    $this->actingAs($admin)->post(route('initial-workload.save', ['year' => 2026, 'month' => 9]), baselinePayload($doctors, '0'))->assertRedirect();
+    $october = Roster::create(['year' => 2026, 'month' => 10, 'status' => RosterStatus::Final, 'created_by' => $admin->id, 'finalized_at' => now()]);
+    snapshotRosterParticipation($october, $doctors);
+    RosterShift::create(['roster_id' => $october->id, 'shift_date' => '2026-10-01', 'shift_type_id' => ShiftType::query()->where('code', 'weekday_day')->firstOrFail()->id]);
+    $laterDoctor = Doctor::create(['name' => 'Doctor Later', 'short_code' => 'L', 'is_active' => true]);
+    expect($laterDoctor->id)->toBeGreaterThan($october->participation_snapshot_max_doctor_id);
+
+    $history = app(RosterPlanningHistoryService::class)->forMonth(2026, 11);
+
+    expect($history)->toHaveCount(2)
+        ->and($history->has($laterDoctor->id))->toBeFalse();
+});
+
+it('carries an initial baseline correction through confirmed later history', function () {
+    [$admin, $doctors] = historyFixture();
+    $baselineUrl = route('initial-workload.save', ['year' => 2026, 'month' => 9]);
+    $this->actingAs($admin)->post($baselineUrl, baselinePayload($doctors, '0'))->assertRedirect();
+    $october = Roster::create(['year' => 2026, 'month' => 10, 'status' => RosterStatus::Final, 'created_by' => $admin->id]);
+    snapshotRosterParticipation($october, $doctors);
+    $shift = RosterShift::create(['roster_id' => $october->id, 'shift_date' => '2026-10-01', 'shift_type_id' => ShiftType::query()->where('code', 'weekday_day')->firstOrFail()->id]);
+    $assignment = RosterAssignment::create(['roster_shift_id' => $shift->id, 'doctor_id' => $doctors[0]->id, 'role' => RosterAssignmentRole::Main, 'slot_number' => 1]);
+    $this->post(route('rosters.actual-work.confirm', ['year' => 2026, 'month' => 10]))->assertRedirect();
+    $history = DoctorMonthlyWorkload::query()->where('doctor_id', $doctors[0]->id)->where('month', 10)->firstOrFail();
+    expect($history->opening_balance_minutes)->toBe(0)
+        ->and($history->closing_balance_minutes)->toBe(180);
+
+    $this->post($baselineUrl, baselinePayload($doctors, '6'))->assertRedirect();
+
+    expect($history->fresh()->opening_balance_minutes)->toBe(180)
+        ->and($history->fresh()->actual_worked_minutes)->toBe(360)
+        ->and($history->fresh()->closing_balance_minutes)->toBe(360)
+        ->and($assignment->fresh()->doctor_id)->toBe($doctors[0]->id);
+});
+
+it('warns when the previous confirmed history changes after generation', function () {
+    [$admin, $doctors] = historyFixture();
+    $this->actingAs($admin)->post(route('initial-workload.save', ['year' => 2026, 'month' => 9]), baselinePayload($doctors, '0'))->assertRedirect();
+    $october = Roster::create(['year' => 2026, 'month' => 10, 'status' => RosterStatus::Draft, 'created_by' => $admin->id]);
+    expect($october->generated_history_fingerprint)->toBeNull();
+    $this->post(route('rosters.generate', ['year' => 2026, 'month' => 10]))->assertRedirect();
+    $generatedAt = $october->fresh()->last_generated_at;
+    $generatedFingerprint = $october->fresh()->generated_history_fingerprint;
+    $generatedAssignmentIds = RosterAssignment::query()->whereHas('rosterShift', fn ($query) => $query->where('roster_id', $october->id))->orderBy('id')->pluck('id')->all();
+    expect($generatedFingerprint)->toMatch('/^[a-f0-9]{64}$/');
+    $this->post(route('initial-workload.save', ['year' => 2026, 'month' => 9]), baselinePayload($doctors, '6'))->assertRedirect();
+    $warnings = app(RosterDraftValidationService::class)->validate($october->fresh());
+    expect(collect($warnings)->contains(fn (array $item): bool => $item['severity'] === 'Warning' && str_contains($item['message'], 'history changed')))->toBeTrue()
+        ->and($october->fresh()->last_generated_at?->equalTo($generatedAt))->toBeTrue()
+        ->and($october->fresh()->generated_history_fingerprint)->toBe($generatedFingerprint)
+        ->and(RosterAssignment::query()->whereHas('rosterShift', fn ($query) => $query->where('roster_id', $october->id))->orderBy('id')->pluck('id')->all())->toBe($generatedAssignmentIds);
+    $this->travel(2)->seconds();
+    $this->post(route('rosters.regenerate', ['year' => 2026, 'month' => 10]))->assertRedirect();
+    $warnings = app(RosterDraftValidationService::class)->validate($october->fresh());
+    expect(collect($warnings)->contains(fn (array $item): bool => str_contains($item['message'], 'history changed')))->toBeFalse()
+        ->and($october->fresh()->generated_history_fingerprint)->toBe(app(RosterPlanningHistoryService::class)->fingerprint(2026, 10));
+
+    $publishedAssignmentIds = RosterAssignment::query()->whereHas('rosterShift', fn ($query) => $query->where('roster_id', $october->id))->orderBy('id')->pluck('id')->all();
+    $october->update(['status' => RosterStatus::Final, 'finalized_at' => now()]);
+    $this->post(route('initial-workload.save', ['year' => 2026, 'month' => 9]), baselinePayload($doctors, '0'))->assertRedirect();
+    $finalWarnings = app(RosterDraftValidationService::class)->validate($october->fresh());
+    expect(collect($finalWarnings)->contains(fn (array $item): bool => $item['code'] === 'stale_history'))->toBeFalse()
+        ->and($october->fresh()->status)->toBe(RosterStatus::Final)
+        ->and(RosterAssignment::query()->whereHas('rosterShift', fn ($query) => $query->where('roster_id', $october->id))->orderBy('id')->pluck('id')->all())->toBe($publishedAssignmentIds);
+});
+
+it('detects rapid exception edits and recognizes when history returns to its generated value', function () {
+    [$admin, $doctors] = historyFixture();
+    $this->actingAs($admin)->post(route('initial-workload.save', ['year' => 2026, 'month' => 9]), baselinePayload($doctors, '0'))->assertRedirect();
+    $october = Roster::create(['year' => 2026, 'month' => 10, 'status' => RosterStatus::Final, 'created_by' => $admin->id, 'finalized_at' => now()]);
+    snapshotRosterParticipation($october, $doctors);
+    $shift = RosterShift::create(['roster_id' => $october->id, 'shift_date' => '2026-10-31', 'shift_type_id' => ShiftType::query()->where('code', 'weekend_night')->firstOrFail()->id]);
+    $assignment = RosterAssignment::create(['roster_shift_id' => $shift->id, 'doctor_id' => $doctors[0]->id, 'role' => RosterAssignmentRole::Main, 'slot_number' => 1]);
+    $november = Roster::create(['year' => 2026, 'month' => 11, 'status' => RosterStatus::Draft, 'created_by' => $admin->id]);
+    snapshotRosterParticipation($november, $doctors);
+    $novemberShift = RosterShift::create(['roster_id' => $november->id, 'shift_date' => '2026-11-02', 'shift_type_id' => ShiftType::query()->where('code', 'weekday_day')->firstOrFail()->id]);
+    $this->actingAs($admin);
+    app(RosterAssignmentGenerator::class)->generate($november, $admin);
+    $fingerprint = $november->fresh()->generated_history_fingerprint;
+    $assignmentIds = RosterAssignment::query()->where('roster_shift_id', $novemberShift->id)->orderBy('id')->pluck('id')->all();
+    expect($fingerprint)->toMatch('/^[a-f0-9]{64}$/')->and($assignmentIds)->not->toBeEmpty();
+    $absence = ActualWorkException::create([
+        'roster_shift_id' => $shift->id,
+        'planned_assignment_id' => $assignment->id,
+        'exception_type' => ActualWorkExceptionType::MainAbsent,
+        'recorded_by' => $admin->id,
+    ]);
+    $hasStaleWarning = fn (): bool => collect(app(RosterDraftValidationService::class)->validate($november->fresh()))->contains(fn (array $item): bool => $item['code'] === 'stale_history');
+    expect($hasStaleWarning())->toBeTrue()
+        ->and($november->fresh()->generated_history_fingerprint)->toBe($fingerprint)
+        ->and(RosterAssignment::query()->where('roster_shift_id', $novemberShift->id)->orderBy('id')->pluck('id')->all())->toBe($assignmentIds);
+    $absence->update(['exception_type' => ActualWorkExceptionType::Replacement, 'actual_doctor_id' => $doctors[1]->id]);
+    expect($hasStaleWarning())->toBeTrue();
+    $absence->delete();
+    expect($hasStaleWarning())->toBeFalse()
+        ->and($november->fresh()->generated_history_fingerprint)->toBe($fingerprint);
+
+    ActualWorkException::create([
+        'roster_shift_id' => $shift->id,
+        'planned_assignment_id' => $assignment->id,
+        'exception_type' => ActualWorkExceptionType::MainAbsent,
+        'recorded_by' => $admin->id,
+    ]);
+    expect($hasStaleWarning())->toBeTrue();
+    app(RosterAssignmentGenerator::class)->regenerate($november->fresh(), $admin);
+    expect($november->fresh()->status)->toBe(RosterStatus::Draft)
+        ->and($november->fresh()->generated_history_fingerprint)->toBe(app(RosterPlanningHistoryService::class)->fingerprint(2026, 11))
+        ->and(RosterAssignment::query()->where('roster_shift_id', $novemberShift->id)->exists())->toBeTrue()
+        ->and(collect(app(RosterDraftValidationService::class)->validate($november->fresh()))->contains(fn (array $item): bool => $item['code'] === 'stale_history'))->toBeFalse();
+});
