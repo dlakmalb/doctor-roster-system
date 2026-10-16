@@ -5,7 +5,8 @@ import {
     store as saveMembership,
 } from '@/routes/weekend-groups';
 import { Head, Link, useForm } from '@inertiajs/react';
-import type { FormEvent } from 'react';
+import { useEffect, useState } from 'react';
+import type { FormEvent, ReactNode } from 'react';
 
 type Doctor = { id: number; name: string; short_code: string };
 type Membership = {
@@ -24,7 +25,91 @@ type Props = {
     configurationError: string | null;
 };
 
+type SectionName = 'schedule' | 'memberships' | 'history' | 'change';
+
+function Chevron({ expanded }: { expanded: boolean }) {
+    return (
+        <svg
+            aria-hidden="true"
+            viewBox="0 0 20 20"
+            fill="none"
+            className="size-5 shrink-0 text-slate-500"
+        >
+            {expanded ? (
+                <path
+                    d="m5 12 5-5 5 5"
+                    stroke="currentColor"
+                    strokeWidth="1.8"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                />
+            ) : (
+                <path
+                    d="m5 8 5 5 5-5"
+                    stroke="currentColor"
+                    strokeWidth="1.8"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                />
+            )}
+        </svg>
+    );
+}
+
+function CollapsibleSection({
+    id,
+    title,
+    summary,
+    expanded,
+    onToggle,
+    children,
+}: {
+    id: string;
+    title: string;
+    summary: string;
+    expanded: boolean;
+    onToggle: () => void;
+    children: ReactNode;
+}) {
+    return (
+        <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <h2 className="text-lg font-semibold text-slate-950">
+                <button
+                    type="button"
+                    aria-expanded={expanded}
+                    aria-controls={`${id}-content`}
+                    onClick={onToggle}
+                    className="flex w-full cursor-pointer items-center justify-between gap-4 rounded-lg text-left hover:bg-slate-50 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-teal-700"
+                >
+                    <span className="text-left">
+                        <span className="block">{title}</span>
+                        <span className="mt-1 block text-xs font-normal text-slate-500">
+                            {summary}
+                        </span>
+                    </span>
+                    <Chevron expanded={expanded} />
+                </button>
+            </h2>
+            <div
+                id={`${id}-content`}
+                aria-hidden={!expanded}
+                inert={!expanded}
+                className="grid overflow-hidden transition-[grid-template-rows] duration-200 ease-out motion-reduce:transition-none"
+                style={{ gridTemplateRows: expanded ? '1fr' : '0fr' }}
+            >
+                <div className="min-h-0 overflow-hidden">{children}</div>
+            </div>
+        </section>
+    );
+}
+
 export default function WeekendGroups(props: Props) {
+    const [expandedSections, setExpandedSections] = useState({
+        schedule: true,
+        memberships: true,
+        history: false,
+        change: false,
+    });
     const form = useForm({
         doctor_id: '',
         group_code: 'A' as 'A' | 'B',
@@ -34,6 +119,22 @@ export default function WeekendGroups(props: Props) {
         anchor_saturday: '',
         anchor_group: 'B' as 'A' | 'B',
     });
+
+    useEffect(() => {
+        if (Object.keys(form.errors).length > 0) {
+            setExpandedSections((current) => ({ ...current, change: true }));
+        }
+        if (Object.keys(configurationForm.errors).length > 0) {
+            setExpandedSections((current) => ({ ...current, schedule: true }));
+        }
+    }, [form.errors, configurationForm.errors]);
+
+    function toggleSection(section: SectionName): void {
+        setExpandedSections((current) => ({
+            ...current,
+            [section]: !current[section],
+        }));
+    }
 
     function submit(event: FormEvent<HTMLFormElement>) {
         event.preventDefault();
@@ -69,10 +170,13 @@ export default function WeekendGroups(props: Props) {
                     </Link>
                 </header>
 
-                <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-                    <h2 className="text-lg font-semibold text-slate-950">
-                        Weekend schedule
-                    </h2>
+                <CollapsibleSection
+                    id="weekend-schedule"
+                    title="Weekend schedule"
+                    summary={`${props.weekends.length} scheduled ${props.weekends.length === 1 ? 'weekend' : 'weekends'}`}
+                    expanded={expandedSections.schedule}
+                    onToggle={() => toggleSection('schedule')}
+                >
                     <p className="mt-1 text-sm text-slate-600">
                         Saturday and Sunday Main positions prioritize the
                         scheduled group. Eligible opposite-group doctors may
@@ -165,46 +269,57 @@ export default function WeekendGroups(props: Props) {
                             {props.configurationError}
                         </p>
                     )}
-                </section>
+                </CollapsibleSection>
 
-                <section className="grid gap-5 lg:grid-cols-2">
-                    {(['A', 'B'] as const).map((group) => (
-                        <div
-                            key={group}
-                            className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"
-                        >
-                            <h2 className="text-lg font-semibold text-slate-950">
-                                Group {group}
-                            </h2>
-                            <ul className="mt-3 space-y-2">
-                                {props.memberships
-                                    .filter((item) => item.group === group)
-                                    .map((item) => (
-                                        <li
-                                            key={item.id}
-                                            className="flex justify-between gap-3 border-b border-slate-100 pb-2 text-sm"
-                                        >
-                                            <span>
-                                                {item.doctor.short_code} ·{' '}
-                                                {item.doctor.name}
-                                                {!item.doctor.is_active &&
-                                                    ' (inactive)'}
-                                            </span>
-                                            <span className="shrink-0 text-slate-500">
-                                                From{' '}
-                                                {item.effective_from_saturday}
-                                            </span>
-                                        </li>
-                                    ))}
-                            </ul>
-                        </div>
-                    ))}
-                </section>
+                <CollapsibleSection
+                    id="current-group-memberships"
+                    title="Current group memberships"
+                    summary={`Group A: ${props.memberships.filter((item) => item.group === 'A').length} doctors • Group B: ${props.memberships.filter((item) => item.group === 'B').length} doctors`}
+                    expanded={expandedSections.memberships}
+                    onToggle={() => toggleSection('memberships')}
+                >
+                    <div className="mt-3 grid gap-5 lg:grid-cols-2">
+                        {(['A', 'B'] as const).map((group) => (
+                            <div
+                                key={group}
+                                className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"
+                            >
+                                <h3 className="text-base font-semibold text-slate-950">
+                                    Group {group}
+                                </h3>
+                                <ul className="mt-3 space-y-2">
+                                    {props.memberships
+                                        .filter((item) => item.group === group)
+                                        .map((item) => (
+                                            <li
+                                                key={item.id}
+                                                className="flex justify-between gap-3 border-b border-slate-100 pb-2 text-sm"
+                                            >
+                                                <span>
+                                                    {item.doctor.short_code} ·{' '}
+                                                    {item.doctor.name}
+                                                    {!item.doctor.is_active &&
+                                                        ' (inactive)'}
+                                                </span>
+                                                <span className="shrink-0 text-slate-500">
+                                                    From{' '}
+                                                    {item.effective_from_saturday}
+                                                </span>
+                                            </li>
+                                        ))}
+                                </ul>
+                            </div>
+                        ))}
+                    </div>
+                </CollapsibleSection>
 
-                <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-                    <h2 className="text-lg font-semibold text-slate-950">
-                        Membership history through {props.month.label}
-                    </h2>
+                <CollapsibleSection
+                    id="membership-history"
+                    title={`Membership history through ${props.month.label}`}
+                    summary={`${props.membershipHistory.length} ${props.membershipHistory.length === 1 ? 'record' : 'records'}`}
+                    expanded={expandedSections.history}
+                    onToggle={() => toggleSection('history')}
+                >
                     <div className="mt-3 divide-y divide-slate-100">
                         {props.membershipHistory.map((item) => (
                             <p
@@ -225,12 +340,15 @@ export default function WeekendGroups(props: Props) {
                             No membership history is recorded.
                         </p>
                     )}
-                </section>
+                </CollapsibleSection>
 
-                <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-                    <h2 className="text-lg font-semibold text-slate-950">
-                        Record a membership change
-                    </h2>
+                <CollapsibleSection
+                    id="record-membership-change"
+                    title="Record a membership change"
+                    summary="Add an effective-dated doctor group membership"
+                    expanded={expandedSections.change}
+                    onToggle={() => toggleSection('change')}
+                >
                     <p className="mt-1 text-sm text-slate-600">
                         Changes begin on a Saturday and keep earlier membership
                         history. Final rosters that would be affected are
@@ -314,7 +432,7 @@ export default function WeekendGroups(props: Props) {
                             </button>
                         </div>
                     </form>
-                </section>
+                </CollapsibleSection>
             </div>
         </AppLayout>
     );

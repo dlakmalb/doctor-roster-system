@@ -136,9 +136,43 @@ function getShiftLabel(shiftType: ShiftType): string {
     return shiftType.name;
 }
 
+function Chevron({ expanded }: { expanded: boolean }) {
+    return (
+        <svg
+            aria-hidden="true"
+            viewBox="0 0 20 20"
+            fill="none"
+            className="size-5 shrink-0 text-slate-500"
+        >
+            {expanded ? (
+                <path
+                    d="m5 12 5-5 5 5"
+                    stroke="currentColor"
+                    strokeWidth="1.8"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                />
+            ) : (
+                <path
+                    d="m5 8 5 5 5-5"
+                    stroke="currentColor"
+                    strokeWidth="1.8"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                />
+            )}
+        </svg>
+    );
+}
+
 export default function MonthlySetup(props: PageProps) {
     const isFinal = props.rosterStatus === 'final';
     const [requestKind, setRequestKind] = useState<RequestKind>('off_request');
+    const [expandedSections, setExpandedSections] = useState({
+        restrictions: true,
+        weekdays: false,
+        requests: false,
+    });
     const [editingId, setEditingId] = useState<number | null>(null);
     const [exclusionProcessing, setExclusionProcessing] = useState(false);
     const form = useForm<RequestPayload>({
@@ -196,6 +230,13 @@ export default function MonthlySetup(props: PageProps) {
         );
     }, [form.data.request_date, props.shiftTypes]);
 
+    function toggleSection(section: keyof typeof expandedSections): void {
+        setExpandedSections((current) => ({
+            ...current,
+            [section]: !current[section],
+        }));
+    }
+
     function resetForm(): void {
         setEditingId(null);
         setRequestKind('off_request');
@@ -227,14 +268,28 @@ export default function MonthlySetup(props: PageProps) {
                 {
                     preserveScroll: true,
                     onSuccess: resetForm,
-                    onError: (errors) => form.setError(errors),
+                    onError: (errors) => {
+                        form.setError(errors);
+                        setExpandedSections((current) => ({
+                            ...current,
+                            requests: true,
+                        }));
+                    },
                     onFinish: () => setExclusionProcessing(false),
                 },
             );
             return;
         }
 
-        const options = { preserveScroll: true, onSuccess: resetForm };
+        const options = {
+            preserveScroll: true,
+            onSuccess: resetForm,
+            onError: () =>
+                setExpandedSections((current) => ({
+                    ...current,
+                    requests: true,
+                })),
+        };
         if (editingId === null) {
             form.post(storeRequest.url(props.month), options);
             return;
@@ -255,6 +310,7 @@ export default function MonthlySetup(props: PageProps) {
         }
 
         setEditingId(request.id);
+        setExpandedSections((current) => ({ ...current, requests: true }));
         setRequestKind(request.kind);
         form.setData({
             doctor_id: request.doctor.id,
@@ -301,6 +357,7 @@ export default function MonthlySetup(props: PageProps) {
             (restriction) => restriction.doctor.id === doctorId,
         );
         setEditingRestrictionId(restrictions[0]?.id ?? null);
+        setExpandedSections((current) => ({ ...current, restrictions: true }));
         restrictionForm.setData({
             doctor_id: doctorId,
             shift_type_ids: restrictions.map(
@@ -314,6 +371,11 @@ export default function MonthlySetup(props: PageProps) {
         event.preventDefault();
         const options = {
             preserveScroll: true,
+            onError: () =>
+                setExpandedSections((current) => ({
+                    ...current,
+                    restrictions: true,
+                })),
             onSuccess: () => {
                 setEditingRestrictionId(null);
                 restrictionForm.reset();
@@ -346,7 +408,15 @@ export default function MonthlySetup(props: PageProps) {
         if (editingWeekdayPreferenceId === null) {
             weekdayPreferenceForm.post(
                 storeWeekdayPreference.url(props.month),
-                { preserveScroll: true, onSuccess: resetWeekdayPreferenceForm },
+                {
+                    preserveScroll: true,
+                    onSuccess: resetWeekdayPreferenceForm,
+                    onError: () =>
+                        setExpandedSections((current) => ({
+                            ...current,
+                            weekdays: true,
+                        })),
+                },
             );
             return;
         }
@@ -354,6 +424,10 @@ export default function MonthlySetup(props: PageProps) {
         const weekday = weekdayPreferenceForm.data.weekdays[0];
         if (weekday === undefined) {
             weekdayPreferenceForm.setError('weekdays', 'Select a weekday.');
+            setExpandedSections((current) => ({
+                ...current,
+                weekdays: true,
+            }));
             return;
         }
         router.put(
@@ -369,7 +443,13 @@ export default function MonthlySetup(props: PageProps) {
             {
                 preserveScroll: true,
                 onSuccess: resetWeekdayPreferenceForm,
-                onError: (errors) => weekdayPreferenceForm.setError(errors),
+                onError: (errors) => {
+                    weekdayPreferenceForm.setError(errors);
+                    setExpandedSections((current) => ({
+                        ...current,
+                        weekdays: true,
+                    }));
+                },
             },
         );
     }
@@ -379,6 +459,7 @@ export default function MonthlySetup(props: PageProps) {
             return;
         }
         setEditingWeekdayPreferenceId(preference.id);
+        setExpandedSections((current) => ({ ...current, weekdays: true }));
         weekdayPreferenceForm.setData({
             doctor_id: preference.doctor.id,
             shift_type_id: preference.shift_type.id,
@@ -473,16 +554,42 @@ export default function MonthlySetup(props: PageProps) {
             )}
 
             <section className="mb-5 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
-                <div>
-                    <h2 className="text-xl font-semibold text-slate-950">
-                        Monthly Shift Restrictions
-                    </h2>
-                    <p className="mt-1 text-sm text-slate-600">
-                        Restrict a doctor from selected shift types for{' '}
-                        {props.month.label}. No restriction means all shift
-                        types are allowed.
-                    </p>
-                </div>
+                <h2 className="text-xl font-semibold text-slate-950">
+                    <button
+                        type="button"
+                        aria-expanded={expandedSections.restrictions}
+                        aria-controls="monthly-shift-restrictions-content"
+                        onClick={() => toggleSection('restrictions')}
+                        className="cursor-pointer flex w-full items-center justify-between gap-4 rounded-lg text-left hover:bg-slate-50 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-teal-700"
+                    >
+                    <span className="text-left">
+                        <span className="block">Monthly Shift Restrictions</span>
+                        <span className="mt-1 block text-sm text-slate-600">
+                            Restrict a doctor from selected shift types for{' '}
+                            {props.month.label}. No restriction means all shift
+                            types are allowed.
+                        </span>
+                        <span className="mt-1 block text-xs text-slate-500">
+                            {new Set(props.shiftRestrictions.map((item) => item.doctor.id)).size}{' '}
+                            {new Set(props.shiftRestrictions.map((item) => item.doctor.id)).size === 1 ? 'doctor' : 'doctors'}
+                            {' '}with restrictions
+                        </span>
+                    </span>
+                    <Chevron expanded={expandedSections.restrictions} />
+                    </button>
+                </h2>
+                <div
+                    id="monthly-shift-restrictions-content"
+                    aria-hidden={!expandedSections.restrictions}
+                    inert={!expandedSections.restrictions}
+                    className="grid overflow-hidden transition-[grid-template-rows] duration-200 ease-out motion-reduce:transition-none"
+                    style={{
+                        gridTemplateRows: expandedSections.restrictions
+                            ? '1fr'
+                            : '0fr',
+                    }}
+                >
+                <div className="min-h-0 overflow-hidden">
                 {!isFinal && (
                     <form
                         onSubmit={saveRestrictions}
@@ -681,19 +788,49 @@ export default function MonthlySetup(props: PageProps) {
                         })}
                     </div>
                 )}
+                </div>
+                </div>
             </section>
 
             <section className="mb-5 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
-                <div>
-                    <h2 className="text-xl font-semibold text-slate-950">
-                        Monthly Preferred Weekdays
-                    </h2>
-                    <p className="mt-1 text-sm text-slate-600">
-                        These preferences gently influence scheduling for{' '}
-                        {props.month.label}. They are not guaranteed assignments
-                        and do not create extra duties.
-                    </p>
-                </div>
+                <h2 className="text-xl font-semibold text-slate-950">
+                    <button
+                        type="button"
+                        aria-expanded={expandedSections.weekdays}
+                        aria-controls="monthly-weekday-preferences-content"
+                        onClick={() => toggleSection('weekdays')}
+                        className="cursor-pointer flex w-full items-center justify-between gap-4 rounded-lg text-left hover:bg-slate-50 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-teal-700"
+                    >
+                    <span className="text-left">
+                        <span className="block">Monthly Preferred Weekdays</span>
+                        <span className="mt-1 block text-sm text-slate-600">
+                            These preferences gently influence scheduling for{' '}
+                            {props.month.label}. They are not guaranteed assignments
+                            and do not create extra duties.
+                        </span>
+                        <span className="mt-1 block text-xs text-slate-500">
+                            {props.weekdayPreferences.length}{' '}
+                            {props.weekdayPreferences.length === 1
+                                ? 'preference'
+                                : 'preferences'}{' '}
+                            configured
+                        </span>
+                    </span>
+                    <Chevron expanded={expandedSections.weekdays} />
+                    </button>
+                </h2>
+                <div
+                    id="monthly-weekday-preferences-content"
+                    aria-hidden={!expandedSections.weekdays}
+                    inert={!expandedSections.weekdays}
+                    className="grid overflow-hidden transition-[grid-template-rows] duration-200 ease-out motion-reduce:transition-none"
+                    style={{
+                        gridTemplateRows: expandedSections.weekdays
+                            ? '1fr'
+                            : '0fr',
+                    }}
+                >
+                <div className="min-h-0 overflow-hidden">
                 {!isFinal && (
                     <form
                         onSubmit={submitWeekdayPreference}
@@ -958,30 +1095,53 @@ export default function MonthlySetup(props: PageProps) {
                         ))}
                     </div>
                 )}
+                </div>
+                </div>
             </section>
 
             <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
-                <div className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
-                    <div>
-                        <h2 className="text-xl font-semibold text-slate-950">
-                            Doctor Requests
-                        </h2>
-                        <p className="mt-1 text-sm text-slate-600">
+                <h2 className="text-xl font-semibold text-slate-950">
+                    <button
+                        type="button"
+                        aria-expanded={expandedSections.requests}
+                        aria-controls="doctor-requests-content"
+                        onClick={() => toggleSection('requests')}
+                        className="cursor-pointer flex w-full items-center justify-between gap-4 rounded-lg text-left hover:bg-slate-50 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-teal-700"
+                    >
+                    <span className="text-left">
+                        <span className="block">Doctor Requests</span>
+                        <span className="mt-1 block text-sm text-slate-600">
                             {isFinal
                                 ? `Review the requests and exclusions recorded for ${props.month.label}.`
                                 : `Add and review requests for ${props.month.label}.`}
-                        </p>
-                    </div>
-                    <div className="flex flex-wrap gap-x-5 gap-y-1 text-sm text-slate-600">
-                        {summaryItems.map(([label, value]) => (
-                            <span key={label}>
-                                {label}:{' '}
-                                <strong className="text-slate-900">
-                                    {value}
-                                </strong>
-                            </span>
-                        ))}
-                    </div>
+                        </span>
+                        <span className="mt-1 block text-xs text-slate-500">
+                            {props.requests.length}{' '}
+                            {props.requests.length === 1 ? 'request' : 'requests'}
+                        </span>
+                    </span>
+                    <Chevron expanded={expandedSections.requests} />
+                    </button>
+                </h2>
+                <div
+                    id="doctor-requests-content"
+                    aria-hidden={!expandedSections.requests}
+                    inert={!expandedSections.requests}
+                    className="grid overflow-hidden transition-[grid-template-rows] duration-200 ease-out motion-reduce:transition-none"
+                    style={{
+                        gridTemplateRows: expandedSections.requests
+                            ? '1fr'
+                            : '0fr',
+                    }}
+                >
+                <div className="min-h-0 overflow-hidden">
+                <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-sm text-slate-600">
+                    {summaryItems.map(([label, value]) => (
+                        <span key={label}>
+                            {label}:{' '}
+                            <strong className="text-slate-900">{value}</strong>
+                        </span>
+                    ))}
                 </div>
 
                 {!isFinal && (
@@ -1274,6 +1434,8 @@ export default function MonthlySetup(props: PageProps) {
                             )}
                         </article>
                     ))}
+                </div>
+                </div>
                 </div>
             </section>
         </AppLayout>
