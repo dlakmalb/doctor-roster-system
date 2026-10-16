@@ -257,7 +257,7 @@ it('marks same-shift doctors unavailable for an empty slot and rejects a crafted
         ->assertJsonFragment(['id' => $doctors[0]->id, 'eligible' => false, 'reasons' => ['Already assigned to this shift.']])
         ->assertJsonFragment(['id' => $doctors[1]->id, 'eligible' => false, 'reasons' => ['Already assigned to this shift.']])
         ->assertJsonFragment(['id' => $doctors[2]->id, 'eligible' => false, 'reasons' => ['Already assigned to this shift.']])
-        ->assertJsonFragment(['id' => $doctors[3]->id, 'eligible' => false, 'reasons' => ["{$doctors[3]->name} is already assigned to Oct 6 — Weekday Day (Optional Slot 1). A doctor can only work one shift per day."]])
+        ->assertJsonFragment(['id' => $doctors[3]->id, 'eligible' => false, 'reasons' => ["{$doctors[3]->name} is already assigned to Oct 6 - Weekday Day (Optional Slot 1). A doctor can only work one shift per day."]])
         ->assertJsonFragment(['id' => $doctors[4]->id, 'eligible' => true, 'reasons' => []]);
 
     $mainAssignment = RosterAssignment::query()->where('roster_shift_id', $shift->id)
@@ -302,7 +302,7 @@ it('describes an existing same-date Optional assignment and preserves Optional-t
     $this->actingAs($admin);
 
     $this->getJson(optionsUrl($evening, 'main', 1))->assertOk()
-        ->assertJsonFragment(['id' => $doctor->id, 'eligible' => false, 'reasons' => ["{$doctor->name} is already assigned to Oct 6 — Weekday Day (Optional Slot 1). A doctor can only work one shift per day."]]);
+        ->assertJsonFragment(['id' => $doctor->id, 'eligible' => false, 'reasons' => ["{$doctor->name} is already assigned to Oct 6 - Weekday Day (Optional Slot 1). A doctor can only work one shift per day."]]);
     $this->getJson(optionsUrl($day, 'main', 1))->assertOk()
         ->assertJsonFragment(['id' => $doctor->id, 'eligible' => true, 'source_assignment_id' => $optional->id]);
 });

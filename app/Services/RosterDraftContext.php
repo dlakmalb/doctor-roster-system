@@ -213,7 +213,7 @@ class RosterDraftContext
         $role = ucfirst($assignment['role']->value);
         $slot = $assignment['slot'];
 
-        return "$doctorName is already assigned to $date — $shiftName ($role Slot $slot). A doctor can only work one shift per day.";
+        return "$doctorName is already assigned to $date - $shiftName ($role Slot $slot). A doctor can only work one shift per day.";
     }
 
     /** @param array{shift: RosterShift, role: RosterAssignmentRole, slot: int}|null $nightAssignment */

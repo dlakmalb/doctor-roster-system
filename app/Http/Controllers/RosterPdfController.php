@@ -16,7 +16,7 @@ class RosterPdfController extends Controller
         $filename = sprintf('doctor-roster-%04d-%02d%s.pdf', $year, $month, $roster->status === RosterStatus::Draft ? '-draft' : '');
 
         return Pdf::loadView('rosters.document', [...$document->build($roster), 'print_button' => false])
-            ->setPaper('a4', 'landscape')
+            ->setPaper('a4', 'portrait')
             ->download($filename);
     }
 }

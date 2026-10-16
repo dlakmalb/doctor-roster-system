@@ -119,7 +119,9 @@ it('connects setup, generation, editing, finalization, actual work, documents, a
 
     $document = app(RosterDocumentService::class)->build($october->fresh());
     expect($document['status'])->toBe('final')->and($document['is_draft'])->toBeFalse()
-        ->and(count($document['rows']))->toBe($october->shifts()->count());
+        ->and(array_column($document['rows'], 'date'))->toBe(array_map(
+            fn (int $day): string => sprintf('2026-10-%02d', $day), range(1, 31),
+        ));
     $pdf = $this->get(workflowUrl('rosters.pdf', 2026, 10))->assertOk();
     expect(substr($pdf->getContent(), 0, 4))->toBe('%PDF');
 

@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Enums\RosterAssignmentRole;
 use App\Enums\RosterStatus;
+use App\Models\Doctor;
 use App\Models\Roster;
 use App\Models\RosterAssignment;
 use App\Models\RosterShift;
@@ -12,30 +13,63 @@ use Carbon\CarbonImmutable;
 class RosterDocumentService
 {
     /**
-     * @return array{month: string, status: string, is_draft: bool, rows: list<array{date: string, shift: string, time: string, main: list<string>, optional: list<string>}>}
+     * @return array{month: string, status: string, is_draft: bool, rows: list<array{date: string, day: string, number: int, weekend: bool, cells: list<array{main: list<string>, optional: list<string>}>}>, doctors: list<array{code: string, name: string}>, schedules: list<array{label: string, time: string}>}
      */
     public function build(Roster $roster): array
     {
         $roster->load(['shifts.shiftType', 'shifts.assignments.doctor']);
-        $rows = array_values($roster->shifts
-            ->sort(fn (RosterShift $first, RosterShift $second): int => [
-                $first->shift_date->toDateString(), $first->shiftType->start_time, $first->id,
-            ] <=> [
-                $second->shift_date->toDateString(), $second->shiftType->start_time, $second->id,
-            ])
-            ->map(fn (RosterShift $shift): array => [
-                'date' => $shift->shift_date->format('D, M j'),
-                'shift' => $shift->shiftType->name,
-                'time' => $this->time($shift),
-                'main' => $this->slots($shift, RosterAssignmentRole::Main),
-                'optional' => $this->slots($shift, RosterAssignmentRole::Optional),
-            ])->all());
+        $month = CarbonImmutable::create($roster->year, $roster->month, 1)->startOfDay();
+        $shiftsByDate = $roster->shifts->groupBy(fn (RosterShift $shift): string => $shift->shift_date->toDateString());
+        $rows = [];
+
+        for ($date = $month; $date->month === $month->month; $date = $date->addDay()) {
+            $shifts = $shiftsByDate->get($date->toDateString(), collect())
+                ->keyBy(fn (RosterShift $shift): string => $shift->shiftType->code);
+            $day = $this->cell($shifts->get($date->isWeekend() ? 'weekend_day' : 'weekday_day'));
+            $evening = $this->cell($shifts->get('weekday_evening'));
+            $night = $this->cell($shifts->get($date->isWeekend() ? 'weekend_night' : 'weekday_night'));
+
+            if ($date->isWeekend()) {
+                $evening = ['main' => [], 'optional' => array_slice($day['optional'], 3)];
+                $day['optional'] = array_slice($day['optional'], 0, 3);
+            }
+
+            $rows[] = [
+                'date' => $date->toDateString(),
+                'day' => $date->format('D'),
+                'number' => $date->day,
+                'weekend' => $date->isWeekend(),
+                'cells' => [$day, $evening, $night],
+            ];
+        }
+
+        $doctors = $roster->shifts->flatMap(fn (RosterShift $shift) => $shift->assignments)
+            ->map(fn (RosterAssignment $assignment): Doctor => $assignment->doctor)
+            ->unique('id')
+            ->sortBy(fn (Doctor $doctor): array => [$doctor->short_code !== 'N', $doctor->short_code])
+            ->values()
+            ->map(fn (Doctor $doctor): array => ['code' => $doctor->short_code, 'name' => $doctor->name])->all();
+        $schedules = $roster->shifts->unique('shift_type_id')
+            ->sortBy(fn (RosterShift $shift): array => [$shift->shiftType->code, $shift->shiftType->start_time])
+            ->map(fn (RosterShift $shift): array => ['label' => $shift->shiftType->name, 'time' => $this->time($shift)])
+            ->values()->all();
 
         return [
-            'month' => CarbonImmutable::create($roster->year, $roster->month, 1)->format('F Y'),
+            'month' => $month->format('F Y'),
             'status' => $roster->status->value,
             'is_draft' => $roster->status === RosterStatus::Draft,
             'rows' => $rows,
+            'doctors' => $doctors,
+            'schedules' => $schedules,
+        ];
+    }
+
+    /** @return array{main: list<string>, optional: list<string>} */
+    private function cell(?RosterShift $shift): array
+    {
+        return $shift === null ? ['main' => [], 'optional' => []] : [
+            'main' => $this->slots($shift, RosterAssignmentRole::Main),
+            'optional' => $this->slots($shift, RosterAssignmentRole::Optional),
         ];
     }
 
@@ -57,7 +91,7 @@ class RosterDocumentService
         for ($number = 1; $number <= $required; $number++) {
             /** @var RosterAssignment|null $assignment */
             $assignment = $assignments->get($number);
-            $slots[] = $assignment === null ? 'UNFILLED' : $assignment->doctor->short_code.' - '.$assignment->doctor->name;
+            $slots[] = $assignment === null ? '-' : $assignment->doctor->short_code;
         }
 
         return $slots;
