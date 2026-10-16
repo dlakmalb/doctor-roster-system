@@ -42,7 +42,9 @@
         <div class="toolbar"><button type="button" onclick="window.print()">Print</button></div>
     @endif
     <h1>Working Duty Roster - {{ strtoupper($month) }}</h1>
-    <p class="status {{ $is_draft ? 'draft' : '' }}">{{ $is_draft ? 'DRAFT' : 'Final' }}</p>
+    @if ($is_draft)
+        <p class="status draft">DRAFT</p>
+    @endif
     <div class="document-tables">
     <table class="roster-grid">
         <thead>

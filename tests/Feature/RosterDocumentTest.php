@@ -61,7 +61,8 @@ it('renders the Final planned roster despite an actual-work replacement', functi
     ActualWorkException::create(['roster_shift_id' => $shift->id, 'planned_assignment_id' => $assignment->id, 'exception_type' => ActualWorkExceptionType::Replacement, 'actual_doctor_id' => $replacement->id, 'recorded_by' => $admin->id]);
 
     $this->actingAs($admin)->get(documentUrl('print'))
-        ->assertOk()->assertSee('Final')->assertDontSee('DRAFT')
+        ->assertOk()->assertDontSee('Final')->assertDontSee('DRAFT')
+        ->assertDontSee('<p class="status', false)
         ->assertSee('Doctor Planned')->assertDontSee('Doctor Replacement');
     $data = app(RosterDocumentService::class)->build($roster->fresh());
     expect($data['rows'][30]['cells'][2]['main'])->toBe(['P']);
