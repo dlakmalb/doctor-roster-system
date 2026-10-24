@@ -50,7 +50,7 @@ class RosterDraftValidationService
                     }
                     $other = $state;
                     unset($other[$key]);
-                    foreach ($this->context->hardReasons($state[$key], $shift, $other) as $reason) {
+                    foreach ($this->context->hardReasons($state[$key], $shift, $role, $other) as $reason) {
                         $items[] = $this->item('Error', 'hard_conflict', "{$shift->shift_date->format('M j')} {$shift->shiftType->name}: $reason", $target);
                     }
                 }

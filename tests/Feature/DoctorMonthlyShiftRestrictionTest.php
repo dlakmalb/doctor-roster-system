@@ -131,8 +131,9 @@ it('enforces monthly restrictions through shared roster eligibility for every as
     $eveningShift = $roster->shifts()->where('shift_type_id', $evening->id)->firstOrFail();
     $dayShift = $roster->shifts()->where('shift_type_id', $day->id)->firstOrFail();
 
-    expect($context->hardReasons($doctor->id, $eveningShift, []))->toContain('Dr Nuwan (MOIC) cannot work Weekday Evening shifts in October because of a monthly shift restriction.')
-        ->and($context->hardReasons($doctor->id, $dayShift, []))->toBe([]);
+    expect($context->hardReasons($doctor->id, $eveningShift, RosterAssignmentRole::Main, []))->toContain('Dr Nuwan (MOIC) cannot work Weekday Evening shifts in October because of a monthly shift restriction.')
+        ->and($context->hardReasons($doctor->id, $eveningShift, RosterAssignmentRole::Optional, []))->toBe([])
+        ->and($context->hardReasons($doctor->id, $dayShift, RosterAssignmentRole::Main, []))->toBe([]);
 
     $admin = User::factory()->create();
     $doctorId = $doctor->id;
@@ -202,17 +203,19 @@ it('never generates restricted shift assignments and reports the conflict on exi
     $assignment = $forbiddenShift->assignments()->create(['doctor_id' => $doctor->id, 'role' => 'main', 'slot_number' => 1]);
     $context = app(RosterDraftContext::class);
     $context->load($roster);
-    expect($context->hardReasons($doctor->id, $forbiddenShift, []))->toContain('Dr Nuwan (MOIC) cannot work Weekday Night shifts in October because of a monthly shift restriction.');
+    expect($context->hardReasons($doctor->id, $forbiddenShift, RosterAssignmentRole::Main, []))->toContain('Dr Nuwan (MOIC) cannot work Weekday Night shifts in October because of a monthly shift restriction.')
+        ->and($context->hardReasons($doctor->id, $forbiddenShift, RosterAssignmentRole::Optional, []))->toBe([]);
     expect(collect(app(RosterDraftValidationService::class)->validate($roster))->contains(fn (array $item): bool => $item['code'] === 'hard_conflict' && str_contains($item['message'], 'monthly shift restriction')))->toBeTrue();
     $assignment->delete();
 
     test()->actingAs($admin)->post(route('rosters.generate', ['year' => 2026, 'month' => 10]))->assertRedirect();
     $nuwanForbiddenAssignments = RosterAssignment::query()->where('doctor_id', $doctor->id)
+        ->where('role', RosterAssignmentRole::Main)
         ->whereHas('rosterShift', fn ($query) => $query->where('roster_id', $roster->id)->whereIn('shift_type_id', $restricted->pluck('id')))->count();
     expect($nuwanForbiddenAssignments)->toBe(0);
 
     $november = app(RosterStructureService::class)->create(2026, 11, $admin);
     $novemberDay = $november->shifts()->whereHas('shiftType', fn ($query) => $query->where('code', 'weekday_evening'))->firstOrFail();
     $context->load($november);
-    expect($context->hardReasons($doctor->id, $novemberDay, []))->toBe([]);
+    expect($context->hardReasons($doctor->id, $novemberDay, RosterAssignmentRole::Main, []))->toBe([]);
 });

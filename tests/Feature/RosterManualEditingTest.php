@@ -12,6 +12,7 @@ use App\Models\DoctorRequest;
 use App\Models\Roster;
 use App\Models\RosterAssignment;
 use App\Models\RosterShift;
+use App\Models\ShiftType;
 use App\Models\User;
 use App\Services\RosterDraftValidationService;
 use App\Services\RosterStructureService;
@@ -211,6 +212,26 @@ it('keeps a same-shift doctor eligible when the target slot is occupied', functi
         ->assertOk()->assertJsonFragment(['id' => $doctors[1]->id, 'eligible' => true, 'source_assignment_id' => $optional->id]);
 });
 
+it('marks an automatic exchange ineligible when the displaced Optional doctor cannot move to Main', function () {
+    [$admin, , $shift, , $doctors] = editingFixture();
+    $main = RosterAssignment::create(['roster_shift_id' => $shift->id, 'doctor_id' => $doctors[0]->id, 'role' => RosterAssignmentRole::Main, 'slot_number' => 1]);
+    $optional = RosterAssignment::create(['roster_shift_id' => $shift->id, 'doctor_id' => $doctors[1]->id, 'role' => RosterAssignmentRole::Optional, 'slot_number' => 1]);
+    DoctorRequest::create(['doctor_id' => $doctors[1]->id, 'request_type' => DoctorRequestType::DayOff, 'request_date' => $shift->shift_date]);
+
+    $this->actingAs($admin)->getJson(optionsUrl($shift, 'optional', 1, $optional))->assertOk()
+        ->assertJsonFragment(['id' => $doctors[0]->id, 'eligible' => false, 'source_assignment_id' => $main->id])
+        ->assertJsonFragment(['id' => $doctors[0]->id, 'reasons' => ["The exchange cannot move {$doctors[1]->name} into Main: {$doctors[1]->name} requested time off on Oct 6. This shift overlaps that request."]]);
+
+    $this->postJson(editingUrl('edit'), [
+        'operation' => 'replace', ...editPayload($shift, 'optional', 1, $optional),
+        'doctor_id' => $doctors[0]->id, 'expected_source_assignment_id' => $main->id,
+        'confirm_soft_override' => true,
+    ])->assertUnprocessable()->assertJsonValidationErrors('edit');
+
+    expect($main->fresh()->doctor_id)->toBe($doctors[0]->id)
+        ->and($optional->fresh()->doctor_id)->toBe($doctors[1]->id);
+});
+
 it('promotes an Optional assignment into an empty Main slot', function () {
     [$admin, , $shift, , $doctors] = editingFixture();
     $optional = RosterAssignment::create(['roster_shift_id' => $shift->id, 'doctor_id' => $doctors[0]->id, 'role' => RosterAssignmentRole::Optional, 'slot_number' => 1]);
@@ -318,6 +339,90 @@ it('explains full-day and shift-specific Day-Off requests in picker options', fu
         ->assertJsonFragment(['id' => $doctors[1]->id, 'eligible' => false, 'reasons' => ["{$doctors[1]->name} requested Weekday Day off on Oct 6. This shift overlaps that request."]]);
 });
 
+it('ignores Day-Off requests and monthly shift restrictions for Optional selection and replacement', function () {
+    [$admin, , , , $doctors] = editingFixture();
+    $shift = RosterShift::query()->whereDate('shift_date', '2026-10-06')
+        ->whereHas('shiftType', fn ($query) => $query->where('code', 'weekday_evening'))->firstOrFail();
+    $doctor = $doctors[0];
+    DoctorRequest::create(['doctor_id' => $doctor->id, 'request_type' => DoctorRequestType::DayOff, 'request_date' => $shift->shift_date]);
+    DoctorMonthlyShiftRestriction::create(['doctor_id' => $doctor->id, 'year' => 2026, 'month' => 10, 'shift_type_id' => $shift->shift_type_id]);
+
+    $this->actingAs($admin)->getJson(optionsUrl($shift, 'main', 1))->assertOk()
+        ->assertJsonFragment(['id' => $doctor->id, 'eligible' => false]);
+    $this->getJson(optionsUrl($shift, 'optional', 1))->assertOk()
+        ->assertJsonFragment(['id' => $doctor->id, 'eligible' => true, 'reasons' => []]);
+    $this->postJson(editingUrl('edit'), [
+        'operation' => 'replace', ...editPayload($shift, 'optional', 1),
+        'doctor_id' => $doctor->id, 'confirm_soft_override' => true,
+    ])->assertOk()->assertJsonPath('status', 'saved');
+
+    expect(RosterAssignment::query()->where('roster_shift_id', $shift->id)->where('role', RosterAssignmentRole::Optional)->value('doctor_id'))->toBe($doctor->id);
+});
+
+it('keeps Optional candidates blocked by monthly exclusions and same-date assignments', function () {
+    [$admin, , $dayShift, , $doctors] = editingFixture();
+    $eveningShift = RosterShift::query()->whereDate('shift_date', '2026-10-06')
+        ->whereHas('shiftType', fn ($query) => $query->where('code', 'weekday_evening'))->firstOrFail();
+    DoctorMonthlyExclusion::create(['doctor_id' => $doctors[0]->id, 'year' => 2026, 'month' => 10]);
+    RosterAssignment::create(['roster_shift_id' => $dayShift->id, 'doctor_id' => $doctors[1]->id, 'role' => RosterAssignmentRole::Main, 'slot_number' => 1]);
+
+    $this->actingAs($admin)->getJson(optionsUrl($eveningShift, 'optional', 1))->assertOk()
+        ->assertJsonFragment(['id' => $doctors[0]->id, 'eligible' => false, 'reasons' => ["{$doctors[0]->name} is excluded from the October roster."]])
+        ->assertJsonFragment(['id' => $doctors[1]->id, 'eligible' => false, 'reasons' => ["{$doctors[1]->name} is already assigned to Oct 6 - Weekday Day (Main Slot 1). A doctor can only work one shift per day."]]);
+});
+
+it('does not report Main-only restrictions as Optional draft hard conflicts', function () {
+    [$admin, $roster, , , $doctors] = editingFixture();
+    $shift = RosterShift::query()->whereDate('shift_date', '2026-10-06')
+        ->whereHas('shiftType', fn ($query) => $query->where('code', 'weekday_evening'))->firstOrFail();
+    $doctor = $doctors[0];
+    DoctorRequest::create(['doctor_id' => $doctor->id, 'request_type' => DoctorRequestType::DayOff, 'request_date' => $shift->shift_date]);
+    DoctorMonthlyShiftRestriction::create(['doctor_id' => $doctor->id, 'year' => 2026, 'month' => 10, 'shift_type_id' => $shift->shift_type_id]);
+    RosterAssignment::create(['roster_shift_id' => $shift->id, 'doctor_id' => $doctor->id, 'role' => RosterAssignmentRole::Optional, 'slot_number' => 1]);
+
+    $issues = collect(app(RosterDraftValidationService::class)->validate($roster));
+
+    expect($issues->contains(fn (array $item): bool => $item['code'] === 'hard_conflict' && $item['target'] === "slot-{$shift->id}-optional-1"))->toBeFalse()
+        ->and($issues->contains(fn (array $item): bool => $item['code'] === 'unfilled_main_slot' && $item['severity'] === 'Error'))->toBeTrue()
+        ->and($issues->contains(fn (array $item): bool => $item['code'] === 'unfilled_optional_slot' && $item['severity'] === 'Warning'))->toBeTrue();
+});
+
+it('blocks genuine cross-date overlaps in picker, edits and validation but allows shifts meeting at endpoints', function () {
+    [$admin, $roster, , , $doctors] = editingFixture();
+    $nightType = ShiftType::create([
+        'code' => 'test_cross_midnight', 'name' => 'Test Cross Midnight', 'start_time' => '22:00:00', 'end_time' => '02:00:00',
+        'duration_minutes' => 240, 'main_count' => 1, 'optional_count' => 0, 'is_overnight' => true, 'is_active' => true,
+    ]);
+    $overlapType = ShiftType::create([
+        'code' => 'test_overlap_day', 'name' => 'Test Overlap Day', 'start_time' => '01:00:00', 'end_time' => '03:00:00',
+        'duration_minutes' => 120, 'main_count' => 0, 'optional_count' => 1, 'is_overnight' => false, 'is_active' => true,
+    ]);
+    $adjacentType = ShiftType::create([
+        'code' => 'test_adjacent_day', 'name' => 'Test Adjacent Day', 'start_time' => '02:00:00', 'end_time' => '04:00:00',
+        'duration_minutes' => 120, 'main_count' => 0, 'optional_count' => 1, 'is_overnight' => false, 'is_active' => true,
+    ]);
+    $night = RosterShift::create(['roster_id' => $roster->id, 'shift_date' => '2026-10-08', 'shift_type_id' => $nightType->id]);
+    $overlap = RosterShift::create(['roster_id' => $roster->id, 'shift_date' => '2026-10-09', 'shift_type_id' => $overlapType->id]);
+    $adjacent = RosterShift::create(['roster_id' => $roster->id, 'shift_date' => '2026-10-09', 'shift_type_id' => $adjacentType->id]);
+    RosterAssignment::create(['roster_shift_id' => $overlap->id, 'doctor_id' => $doctors[0]->id, 'role' => RosterAssignmentRole::Optional, 'slot_number' => 1]);
+    RosterAssignment::create(['roster_shift_id' => $adjacent->id, 'doctor_id' => $doctors[1]->id, 'role' => RosterAssignmentRole::Optional, 'slot_number' => 1]);
+
+    $this->actingAs($admin)->getJson(optionsUrl($night, 'main', 1))->assertOk()
+        ->assertJsonFragment(['id' => $doctors[0]->id, 'eligible' => false, 'reasons' => ["{$doctors[0]->name} has an overlapping Test Overlap Day assignment on Oct 9 (Optional Slot 1)."]])
+        ->assertJsonFragment(['id' => $doctors[1]->id, 'eligible' => true, 'reasons' => []]);
+    $this->postJson(editingUrl('edit'), [
+        'operation' => 'replace', ...editPayload($night, 'main', 1), 'doctor_id' => $doctors[0]->id,
+        'confirm_soft_override' => true,
+    ])->assertUnprocessable()->assertJsonValidationErrors('edit')->assertSee('overlapping Test Overlap Day assignment');
+
+    RosterAssignment::create(['roster_shift_id' => $night->id, 'doctor_id' => $doctors[0]->id, 'role' => RosterAssignmentRole::Main, 'slot_number' => 1]);
+    $issues = collect(app(RosterDraftValidationService::class)->validate($roster));
+
+    expect($issues->contains(fn (array $item): bool => $item['code'] === 'hard_conflict'
+        && $item['target'] === "slot-{$night->id}-main-1"
+        && str_contains($item['message'], 'overlapping Test Overlap Day assignment')))->toBeTrue();
+});
+
 it('explains monthly shift restrictions and preserves them alongside Night recovery reasons', function () {
     [$admin, , , , $doctors] = editingFixture();
     $night = RosterShift::query()->whereDate('shift_date', '2026-10-05')->whereHas('shiftType', fn ($query) => $query->where('code', 'weekday_night'))->firstOrFail();
@@ -332,7 +437,7 @@ it('explains monthly shift restrictions and preserves them alongside Night recov
         ]]);
 });
 
-it('identifies a next-day assignment after a proposed Night shift as the recovery conflict', function () {
+it('does not apply Main-only Night recovery to an Optional assignment', function () {
     [$admin, , , , $doctors] = editingFixture();
     $night = RosterShift::query()->whereDate('shift_date', '2026-10-09')
         ->whereHas('shiftType', fn ($query) => $query->where('code', 'weekday_night'))->firstOrFail();
@@ -346,9 +451,7 @@ it('identifies a next-day assignment after a proposed Night shift as the recover
     ]);
 
     $this->actingAs($admin)->getJson(optionsUrl($night, 'main', 1))->assertOk()
-        ->assertJsonFragment(['id' => $doctors[0]->id, 'eligible' => false, 'reasons' => [
-            "{$doctors[0]->name} has a Weekend Day assignment on Oct 10 (Optional Slot 1), immediately after this Night shift. A rest day is required between duties.",
-        ]]);
+        ->assertJsonFragment(['id' => $doctors[0]->id, 'eligible' => true, 'reasons' => []]);
 });
 
 it('explains that a non-participating doctor is unavailable for the monthly roster', function () {
@@ -620,7 +723,7 @@ it('shows exact Preferred Work in both pickers without boosting Optional ranking
     $main = $this->getJson(optionsUrl($shift, 'main', 1))->assertOk()->json('options');
     $optional = $this->getJson(optionsUrl($shift, 'optional', 1))->assertOk()->json('options');
     expect(collect($main)->firstWhere('id', $preferred->id)['preferred_work'])->toBeTrue()
-        ->and(collect($optional)->firstWhere('id', $preferred->id)['preferred_work'])->toBeTrue()
+        ->and(collect($optional)->firstWhere('id', $preferred->id)['preferred_work'])->toBeFalse()
         ->and(array_search($preferred->id, array_column($main, 'id'), true) < array_search($other->id, array_column($main, 'id'), true))->toBeTrue()
         ->and(array_search($other->id, array_column($optional, 'id'), true) < array_search($preferred->id, array_column($optional, 'id'), true))->toBeTrue();
 });

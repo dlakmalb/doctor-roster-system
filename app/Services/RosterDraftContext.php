@@ -142,23 +142,18 @@ class RosterDraftContext
     /** @param array<string, int> $state
      * @return list<string>
      */
-    public function hardReasons(int $doctorId, RosterShift $shift, array $state): array
+    public function hardReasons(int $doctorId, RosterShift $shift, RosterAssignmentRole $role, array $state): array
     {
         $doctor = $this->doctors->get($doctorId);
         if ($doctor === null) {
             return ['The selected doctor does not exist.'];
         }
-        if (! $this->participation->get($doctorId, false)) {
-            return ["$doctor->name is not participating in the {$shift->shift_date->format('F')} roster."];
-        }
-        $assigned = collect();
         $assignments = [];
         foreach ($state as $key => $assignedDoctorId) {
             if ($assignedDoctorId === $doctorId) {
                 [$assignedShiftId, $assignedRole, $assignedSlot] = explode(':', $key);
                 $assignedShift = $this->shifts->get((int) $assignedShiftId);
                 if ($assignedShift !== null) {
-                    $assigned->push($assignedShift);
                     $assignments[] = [
                         'shift' => $assignedShift,
                         'role' => RosterAssignmentRole::from($assignedRole),
@@ -168,29 +163,61 @@ class RosterDraftContext
             }
         }
         $historyNight = $this->history->get($doctorId)?->most_recent_night_shift_at;
-        $codes = $this->eligibility->conflicts($doctor, $shift, $this->excluded->has($doctorId), $this->dayOff->get($doctorId, collect()), $assigned, $historyNight, $this->checkActiveStatus, isset($this->restrictedShiftTypes[$doctorId][$shift->shift_type_id]));
+        $codes = $this->eligibility->roleAwareConflicts(
+            $doctor,
+            $shift,
+            $role,
+            $this->excluded->has($doctorId),
+            (bool) $this->participation->get($doctorId, false),
+            $this->dayOff->get($doctorId, collect()),
+            collect($assignments)->map(fn (array $assignment): array => [
+                'shift' => $assignment['shift'],
+                'role' => $assignment['role'],
+            ]),
+            $historyNight,
+            $this->checkActiveStatus,
+            isset($this->restrictedShiftTypes[$doctorId][$shift->shift_type_id]),
+        );
 
         $dayOffRequest = $this->dayOff->get($doctorId, collect())->first(fn (DoctorRequest $request): bool => $this->requestIntervals->overlaps(
             $this->requestIntervals->forDate($shift->shift_date, $shift->shiftType),
             $this->requestIntervals->forRequest($request),
         ));
         $sameDateAssignment = collect($assignments)->first(fn (array $assignment): bool => $assignment['shift']->shift_date->isSameDay($shift->shift_date));
-        $nextDayNightAssignment = collect($assignments)->first(fn (array $assignment): bool => $this->eligibility->shiftConflict($shift, $assignment['shift']) === 'next_day_night_recovery');
-        $nightToNightAssignment = collect($assignments)->first(fn (array $assignment): bool => $this->eligibility->shiftConflict($shift, $assignment['shift']) === 'night_to_night_recovery');
+        $nextDayNightAssignment = collect($assignments)->first(fn (array $assignment): bool => $this->eligibility->roleAwareShiftConflict($shift, $role, $assignment['shift'], $assignment['role']) === 'next_day_night_recovery');
+        $nightToNightAssignment = collect($assignments)->first(fn (array $assignment): bool => $this->eligibility->roleAwareShiftConflict($shift, $role, $assignment['shift'], $assignment['role']) === 'night_to_night_recovery');
+        $overlappingAssignment = collect($assignments)->first(fn (array $assignment): bool => $this->eligibility->roleAwareShiftConflict($shift, $role, $assignment['shift'], $assignment['role']) === 'shift_time_overlap');
         $monthName = $shift->shift_date->format('F');
 
-        return array_map(function (string $code) use ($doctor, $shift, $dayOffRequest, $sameDateAssignment, $nextDayNightAssignment, $nightToNightAssignment, $historyNight, $monthName): string {
+        return array_map(function (string $code) use ($doctor, $shift, $dayOffRequest, $sameDateAssignment, $nextDayNightAssignment, $nightToNightAssignment, $overlappingAssignment, $historyNight, $monthName): string {
             return match ($code) {
                 'inactive_doctor' => "$doctor->name is inactive and cannot be assigned to the roster.",
+                'not_participating' => "$doctor->name is not participating in the $monthName roster.",
                 'monthly_exclusion' => "$doctor->name is excluded from the $monthName roster.",
                 'monthly_shift_restriction' => "$doctor->name cannot work {$shift->shiftType->name} shifts in $monthName because of a monthly shift restriction.",
                 'day_off_overlap' => $this->dayOffMessage($doctor->name, $shift, $dayOffRequest),
                 'same_start_date' => $this->sameDateAssignmentMessage($doctor->name, $sameDateAssignment),
                 'next_day_night_recovery' => $this->nextDayNightRecoveryMessage($doctor->name, $shift, $nextDayNightAssignment, $historyNight),
                 'night_to_night_recovery' => $this->nightToNightRecoveryMessage($doctor->name, $shift, $nightToNightAssignment, $historyNight),
+                'shift_time_overlap' => $this->shiftTimeOverlapMessage($doctor->name, $overlappingAssignment),
                 default => "$doctor->name has a scheduling conflict ($code).",
             };
         }, $codes);
+    }
+
+    /** @param array{shift: RosterShift, role: RosterAssignmentRole, slot: int}|null $assignment */
+    private function shiftTimeOverlapMessage(string $doctorName, ?array $assignment): string
+    {
+        if ($assignment === null) {
+            return "$doctorName has another assignment that overlaps this shift.";
+        }
+
+        $date = $assignment['shift']->shift_date->format('M j');
+        $shiftName = $assignment['shift']->shiftType->name;
+        $role = ucfirst($assignment['role']->value);
+        $slot = $assignment['slot'];
+
+        return "$doctorName has an overlapping $shiftName assignment on $date ($role Slot $slot).";
     }
 
     private function dayOffMessage(string $doctorName, RosterShift $shift, ?DoctorRequest $request): string
@@ -282,11 +309,11 @@ class RosterDraftContext
         $assigned = $this->rankingAssignedShifts($doctorId, $state);
         $blocked = $this->ranker->blockedPreferredShifts($this->doctors->get($doctorId), $shift, $role, $assigned);
 
-        return array_values(array_filter($blocked, fn (RosterShift $preferredShift): bool => $this->hardReasons($doctorId, $preferredShift, $state) === []));
+        return array_values(array_filter($blocked, fn (RosterShift $preferredShift): bool => $this->hardReasons($doctorId, $preferredShift, RosterAssignmentRole::Main, $state) === []));
     }
 
     /** @param array<string, int> $state
-     * @return Collection<int, RosterShift>
+     * @return Collection<int, array{shift: RosterShift, role: RosterAssignmentRole}>
      */
     private function rankingAssignedShifts(int $doctorId, array $state): Collection
     {
@@ -300,7 +327,7 @@ class RosterDraftContext
             }
             $this->ranker->record($assignedDoctorId, $assignedShift, RosterAssignmentRole::from($parts[1]));
             if ($assignedDoctorId === $doctorId) {
-                $assigned->push($assignedShift);
+                $assigned->push(['shift' => $assignedShift, 'role' => RosterAssignmentRole::from($parts[1])]);
             }
         }
 
@@ -338,9 +365,9 @@ class RosterDraftContext
         return ['effective_workload_minutes' => $minutes, 'night_count' => $nights, 'optional_count' => $optional];
     }
 
-    public function prefers(int $doctorId, RosterShift $shift): bool
+    public function prefers(int $doctorId, RosterShift $shift, RosterAssignmentRole $role = RosterAssignmentRole::Main): bool
     {
-        if (isset($this->restrictedShiftTypes[$doctorId][$shift->shift_type_id])) {
+        if ($role !== RosterAssignmentRole::Main || isset($this->restrictedShiftTypes[$doctorId][$shift->shift_type_id])) {
             return false;
         }
 

@@ -55,12 +55,29 @@ class RosterAssignmentOptionsController extends Controller
                 unset($testing[$context->key($shift->id, $source->role, $source->slot_number)]);
                 $reasons = [
                     'This doctor is already assigned to '.ucfirst($role->value).' Slot '.$source->slot_number.' of this shift.',
-                    ...$context->hardReasons($doctor->id, $shift, $testing),
+                    ...$context->hardReasons($doctor->id, $shift, $role, $testing),
                 ];
             } elseif ($sameShiftEmptyTarget && ! $isOptionalPromotion) {
-                $reasons = ['Already assigned to this shift.', ...$context->hardReasons($doctor->id, $shift, $testing)];
+                $reasons = ['Already assigned to this shift.', ...$context->hardReasons($doctor->id, $shift, $role, $testing)];
+            } elseif ($current !== null && $source !== null && $source->role !== $role) {
+                $exchange = $state;
+                $targetKey = $context->key($shift->id, $role, $input['slot_number']);
+                $sourceKey = $context->key($shift->id, $source->role, $source->slot_number);
+                unset($exchange[$targetKey], $exchange[$sourceKey]);
+                $exchange[$targetKey] = $doctor->id;
+                $exchange[$sourceKey] = $current->doctor_id;
+
+                $selectedDoctorState = $exchange;
+                unset($selectedDoctorState[$targetKey]);
+                $displacedDoctorState = $exchange;
+                unset($displacedDoctorState[$sourceKey]);
+                $reasons = $context->hardReasons($doctor->id, $shift, $role, $selectedDoctorState);
+                $displacedDoctorName = $context->doctors->get($current->doctor_id)->name;
+                foreach ($context->hardReasons($current->doctor_id, $shift, $source->role, $displacedDoctorState) as $reason) {
+                    $reasons[] = "The exchange cannot move $displacedDoctorName into ".ucfirst($source->role->value).": $reason";
+                }
             } else {
-                $reasons = $context->hardReasons($doctor->id, $shift, $testing);
+                $reasons = $context->hardReasons($doctor->id, $shift, $role, $testing);
             }
             $options[] = [
                 'id' => $doctor->id,
@@ -68,7 +85,7 @@ class RosterAssignmentOptionsController extends Controller
                 'short_code' => $doctor->short_code,
                 'eligible' => $reasons === [],
                 'reasons' => $reasons,
-                'preferred_work' => $context->prefers($doctor->id, $shift),
+                'preferred_work' => $context->prefers($doctor->id, $shift, $role),
                 'source_assignment_id' => $source?->role !== $role ? $source?->id : null,
                 ...$context->metrics($doctor->id, $testing),
                 'dimensions' => $reasons === [] ? $context->dimensions($doctor->id, $shift, $role, $testing) : null,

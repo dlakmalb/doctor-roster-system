@@ -99,7 +99,7 @@ it('resets participation validation state when a draft context loads another ros
 
     expect($context->participationPopulationMatches)->toBeTrue()
         ->and($context->participationSnapshotIntegrityMatches)->toBeTrue()
-        ->and($context->hardReasons($doctors[0]->id, $shift, []))->toBe([]);
+        ->and($context->hardReasons($doctors[0]->id, $shift, RosterAssignmentRole::Main, []))->toBe([]);
 });
 
 it('keeps a Final roster valid and unchanged when global active status changes later', function () {

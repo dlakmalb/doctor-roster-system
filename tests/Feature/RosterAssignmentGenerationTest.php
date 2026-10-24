@@ -161,7 +161,8 @@ it('keeps every Main position and fills only the eligible Optional positions up 
     expect($assignments->where('role', RosterAssignmentRole::Main))->toHaveCount(3)
         ->and($assignments->where('role', RosterAssignmentRole::Optional))->toHaveCount($optionalCapacity)
         ->and($issues->where('code', 'unfilled_main_slot'))->toBeEmpty()
-        ->and($issues->where('code', 'unfilled_optional_slot')->where('severity', 'Warning'))->toBeEmpty();
+        ->and($issues->where('code', 'unfilled_optional_slot')->where('severity', 'Warning'))->toBeEmpty()
+        ->and($issues->where('code', 'hard_conflict'))->toBeEmpty();
     expectGeneratedAssignmentsRoleAwareConflictFree();
 });
 

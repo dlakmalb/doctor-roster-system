@@ -1,5 +1,6 @@
 <?php
 
+use App\Enums\RosterAssignmentRole;
 use App\Enums\RosterStatus;
 use App\Models\Doctor;
 use App\Models\DoctorMonthlyShiftRestriction;
@@ -134,7 +135,7 @@ it('keeps weekday preferences soft and does not create unfulfilled Preferred Wor
     $context = app(RosterDraftContext::class);
     $context->load($roster);
 
-    expect($context->hardReasons($doctor->id, $mondayNight, []))->toBe([])
+    expect($context->hardReasons($doctor->id, $mondayNight, RosterAssignmentRole::Main, []))->toBe([])
         ->and(collect(app(RosterDraftValidationService::class)->validate($roster))
             ->contains(fn (array $item): bool => $item['code'] === 'preferred_work_unfulfilled'))->toBeFalse();
 });

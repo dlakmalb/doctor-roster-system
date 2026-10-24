@@ -101,7 +101,7 @@ class RosterManualEditService
             foreach ($incoming as [$slot, $doctorId]) {
                 $testing = $next;
                 unset($testing[$this->key($slot)]);
-                $reasons = $this->context->hardReasons($doctorId, $slot['shift'], $testing);
+                $reasons = $this->context->hardReasons($doctorId, $slot['shift'], $slot['role'], $testing);
                 if ($reasons !== []) {
                     throw ValidationException::withMessages(['edit' => implode(' ', $reasons)]);
                 }
@@ -168,7 +168,7 @@ class RosterManualEditService
                 $slot = $this->parseKey((string) $key);
                 $testing = $state;
                 unset($testing[$key]);
-                $reasons = $this->context->hardReasons($previous['doctor_id'], $slot['shift'], $testing);
+                $reasons = $this->context->hardReasons($previous['doctor_id'], $slot['shift'], $slot['role'], $testing);
                 if ($reasons !== []) {
                     throw ValidationException::withMessages(['edit' => 'Undo would restore an invalid assignment. '.implode(' ', $reasons)]);
                 }
@@ -299,7 +299,7 @@ class RosterManualEditService
             }
             $best = null;
             foreach ($this->context->doctors as $candidate) {
-                if ($this->context->hardReasons($candidate->id, $shift, $base) !== []) {
+                if ($this->context->hardReasons($candidate->id, $shift, $slot['role'], $base) !== []) {
                     continue;
                 }
                 $dimensions = $this->context->dimensions($candidate->id, $shift, $slot['role'], $base);
