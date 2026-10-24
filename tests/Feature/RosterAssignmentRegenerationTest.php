@@ -96,7 +96,7 @@ it('replaces assignment rows atomically and preserves setup and workload history
         foreach ($doctorAssignments as $assignment) {
             foreach ($doctorAssignments as $other) {
                 if ($assignment->id !== $other->id) {
-                    expect($eligibility->shiftConflict($assignment->rosterShift, $other->rosterShift))->toBeNull();
+                    expect($eligibility->roleAwareShiftConflict($assignment->rosterShift, $assignment->role, $other->rosterShift, $other->role))->toBeNull();
                 }
             }
         }

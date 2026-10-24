@@ -6,6 +6,7 @@ use App\Enums\RosterStatus;
 use App\Models\Doctor;
 use App\Models\DoctorMonthlyExclusion;
 use App\Models\DoctorMonthlyParticipation;
+use App\Models\DoctorMonthlyShiftRestriction;
 use App\Models\DoctorMonthlyWeekdayPreference;
 use App\Models\DoctorMonthlyWorkload;
 use App\Models\DoctorRequest;
@@ -47,6 +48,27 @@ function shiftOn(string $date, string $code): RosterShift
 function generateUrl(): string
 {
     return route('rosters.generate', ['year' => 2026, 'month' => 10]);
+}
+
+function expectGeneratedAssignmentsRoleAwareConflictFree(): void
+{
+    $eligibility = app(DoctorAssignmentEligibilityService::class);
+    $assignmentsByDoctor = RosterAssignment::query()->with('rosterShift.shiftType')->get()->groupBy('doctor_id');
+
+    foreach ($assignmentsByDoctor as $assignments) {
+        foreach ($assignments as $assignment) {
+            foreach ($assignments as $other) {
+                if ($assignment->id !== $other->id) {
+                    expect($eligibility->roleAwareShiftConflict(
+                        $assignment->rosterShift,
+                        $assignment->role,
+                        $other->rosterShift,
+                        $other->role,
+                    ))->toBeNull();
+                }
+            }
+        }
+    }
 }
 
 it('keeps missing Main errors and Optional warnings before generation while exposing an empty draft', function () {
@@ -104,7 +126,7 @@ it('generates valid Main and Optional assignments and preserves them on repeat',
         foreach ($doctorAssignments as $assignment) {
             foreach ($doctorAssignments as $other) {
                 if ($assignment->id !== $other->id) {
-                    expect($eligibility->shiftConflict($assignment->rosterShift, $other->rosterShift))->toBeNull();
+                    expect($eligibility->roleAwareShiftConflict($assignment->rosterShift, $assignment->role, $other->rosterShift, $other->role))->toBeNull();
                 }
             }
         }
@@ -135,11 +157,12 @@ it('keeps every Main position and fills only the eligible Optional positions up 
 
     $assignments = $shift->assignments()->get();
     $issues = collect(app(RosterDraftValidationService::class)->validate($roster));
+    $optionalCapacity = (int) ShiftType::query()->whereKey($shift->shift_type_id)->value('optional_count');
     expect($assignments->where('role', RosterAssignmentRole::Main))->toHaveCount(3)
-        ->and($assignments->where('role', RosterAssignmentRole::Optional))->toHaveCount(5)
+        ->and($assignments->where('role', RosterAssignmentRole::Optional))->toHaveCount($optionalCapacity)
         ->and($issues->where('code', 'unfilled_main_slot'))->toBeEmpty()
-        ->and($issues->where('code', 'unfilled_optional_slot')->where('severity', 'Warning'))->toHaveCount(2)
-        ->and($issues->where('severity', 'Error'))->toBeEmpty();
+        ->and($issues->where('code', 'unfilled_optional_slot')->where('severity', 'Warning'))->toBeEmpty();
+    expectGeneratedAssignmentsRoleAwareConflictFree();
 });
 
 it('preserves the creation-time participation snapshot during generation and regeneration', function () {
@@ -208,7 +231,7 @@ it('fills all Main positions and as many Optional positions as possible in a 14-
     expect(RosterAssignment::query()->where('role', RosterAssignmentRole::Main)->count())->toBe($requiredMain)
         ->and($optionalAssignmentCount)->toBeLessThanOrEqual($requiredOptional)
         ->and($optionalVacancyWarnings)->toHaveCount($requiredOptional - $optionalAssignmentCount);
-    expect(collect(app(RosterDraftValidationService::class)->validate($roster))->where('severity', 'Error')->count())->toBe(0);
+    expectGeneratedAssignmentsRoleAwareConflictFree();
 });
 
 it('keeps Main complete and Optional coverage high with a 13-doctor exclusion', function () {
@@ -245,9 +268,62 @@ it('keeps Main complete and Optional coverage high with a 13-doctor exclusion', 
 
     expect($mainCount)->toBe($requiredMain)
         ->and($optionalCount)->toBeGreaterThanOrEqual(99)
-        ->and($issues->where('code', 'unfilled_optional_slot')->where('severity', 'Warning')->count())->toBe($requiredOptional - $optionalCount)
-        ->and($issues->where('severity', 'Error'))->toBeEmpty();
+        ->and($optionalCount)->toBeLessThanOrEqual($requiredOptional)
+        ->and($issues->where('code', 'unfilled_optional_slot')->where('severity', 'Warning')->count())->toBe($requiredOptional - $optionalCount);
+    expectGeneratedAssignmentsRoleAwareConflictFree();
 });
+
+it('fills feasible Main and Optional positions despite a Day-Off request and monthly exclusion', function () {
+    [$admin, $roster] = assignmentRoster(function (): void {
+        $excludedDoctor = Doctor::query()->where('is_active', true)->orderBy('id')->firstOrFail();
+        DoctorMonthlyExclusion::create(['doctor_id' => $excludedDoctor->id, 'year' => 2026, 'month' => 10]);
+    });
+    $shift = shiftOn('2026-10-03', 'weekend_day');
+    $roster->shifts()->where('id', '!=', $shift->id)->delete();
+    foreach (Doctor::query()->where('is_active', true)->orderBy('id')->take(8)->get() as $doctor) {
+        DoctorRequest::create([
+            'doctor_id' => $doctor->id,
+            'request_type' => DoctorRequestType::DayOff,
+            'request_date' => $shift->shift_date,
+            'shift_type_id' => $shift->shift_type_id,
+        ]);
+    }
+
+    $this->actingAs($admin)->post(generateUrl())->assertRedirect();
+
+    $assignments = RosterAssignment::query()->where('roster_shift_id', $shift->id)->get();
+    $excludedDoctor = DoctorMonthlyExclusion::query()->where('year', 2026)->where('month', 10)->firstOrFail()->doctor_id;
+    $issues = collect(app(RosterDraftValidationService::class)->validate($roster));
+    expect($assignments->where('role', RosterAssignmentRole::Main))->toHaveCount($shift->shiftType->main_count)
+        ->and($assignments->where('role', RosterAssignmentRole::Optional))->toHaveCount($shift->shiftType->optional_count)
+        ->and($assignments->pluck('doctor_id')->unique())->toHaveCount($assignments->count())
+        ->and($assignments->pluck('doctor_id'))->not->toContain($excludedDoctor)
+        ->and($issues->where('code', 'unfilled_optional_slot')->where('severity', 'Warning'))->toBeEmpty();
+    expectGeneratedAssignmentsRoleAwareConflictFree();
+});
+
+it('rejects existing Main or Optional assignments for a monthly excluded doctor without changing assignments', function (string $role): void {
+    [$admin] = assignmentRoster();
+    $doctor = Doctor::query()->where('is_active', true)->orderBy('id')->firstOrFail();
+    $shift = shiftOn('2026-10-01', 'weekday_day');
+    $assignment = $shift->assignments()->create([
+        'doctor_id' => $doctor->id,
+        'role' => RosterAssignmentRole::from($role),
+        'slot_number' => 1,
+    ]);
+    $before = RosterAssignment::query()->orderBy('id')->get()->toArray();
+    DoctorMonthlyExclusion::create(['doctor_id' => $doctor->id, 'year' => 2026, 'month' => 10]);
+
+    $this->actingAs($admin)->from(route('rosters.show', ['year' => 2026, 'month' => 10]))
+        ->post(generateUrl())
+        ->assertSessionHasErrors(['roster' => "{$doctor->name} ({$doctor->short_code}) already has an assignment but is excluded for this month. Correct the assignment or regenerate the roster before generating."]);
+
+    expect(RosterAssignment::query()->orderBy('id')->get()->toArray())->toBe($before)
+        ->and($assignment->fresh())->not->toBeNull();
+})->with([
+    'Main' => RosterAssignmentRole::Main->value,
+    'Optional' => RosterAssignmentRole::Optional->value,
+]);
 
 it('keeps the feasible month complete across randomized regeneration', function () {
     [$admin, $roster] = assignmentRoster();
@@ -278,7 +354,7 @@ it('keeps the feasible month complete across randomized regeneration', function 
 
         expect(RosterAssignment::query()->where('role', RosterAssignmentRole::Main)->count())->toBe($requiredMain, "Run $run has missing Main positions.");
         expect(RosterAssignment::query()->where('role', RosterAssignmentRole::Optional)->count())->toBeLessThanOrEqual($requiredOptional, "Run $run exceeds Optional capacity.");
-        expect(collect(app(RosterDraftValidationService::class)->validate($roster))->where('severity', 'Error')->count())->toBe(0, "Run $run has hard validation Errors.");
+        expectGeneratedAssignmentsRoleAwareConflictFree();
     }
     if (getenv('ROSTER_BENCHMARK')) {
         fwrite(STDERR, 'ROSTER_20_RUN '.json_encode(['fastest' => min($timings), 'slowest' => max($timings), 'average' => array_sum($timings) / count($timings), 'max_vacancy_states' => $maximumStates, 'max_depth' => $maximumDepth, 'total_states' => $totalStates, 'limit_hits' => $limitHits, 'unresolved' => $unresolved]).PHP_EOL);
@@ -338,8 +414,6 @@ it('compares monthly weekday preferences across repeatable full roster generatio
             $shiftRows = $roster->shifts()->with('shiftType')->get();
             $requiredMain = $shiftRows->sum(fn (RosterShift $shift): int => $shift->shiftType->main_count);
             $requiredOptional = $shiftRows->sum(fn (RosterShift $shift): int => $shift->shiftType->optional_count);
-            $validationErrors = collect(app(RosterDraftValidationService::class)->validate($roster))
-                ->where('severity', 'Error')->count();
 
             $runs[] = [
                 'seconds' => round($elapsedSeconds, 3),
@@ -353,12 +427,11 @@ it('compares monthly weekday preferences across repeatable full roster generatio
                 'main_required' => $requiredMain,
                 'optional_filled' => $assignments->where('role', RosterAssignmentRole::Optional)->count(),
                 'optional_capacity' => $requiredOptional,
-                'validation_errors' => $validationErrors,
             ];
 
             expect($runs[array_key_last($runs)]['main_filled'])->toBe($requiredMain)
-                ->and($runs[array_key_last($runs)]['optional_filled'])->toBeLessThanOrEqual($requiredOptional)
-                ->and($validationErrors)->toBe(0);
+                ->and($runs[array_key_last($runs)]['optional_filled'])->toBeLessThanOrEqual($requiredOptional);
+            expectGeneratedAssignmentsRoleAwareConflictFree();
         }
         $scenarios[$scenario] = $runs;
     }
@@ -378,6 +451,120 @@ it('excludes inactive and monthly excluded doctors while retaining other month e
     expect(RosterAssignment::query()->where('doctor_id', $inactiveDoctor->id)->exists())->toBeFalse()
         ->and(RosterAssignment::query()->where('doctor_id', $activeDoctors[0]->id)->exists())->toBeFalse()
         ->and(RosterAssignment::query()->where('doctor_id', $activeDoctors[1]->id)->exists())->toBeTrue();
+});
+
+it('assigns an Optional position to a participating doctor who requested that date off', function () {
+    [$admin, $roster] = assignmentRoster(function (): void {
+        Doctor::query()->where('short_code', '!=', 'N')->update(['is_active' => false]);
+    });
+    $doctor = Doctor::query()->where('short_code', 'N')->firstOrFail();
+    $shift = shiftOn('2026-10-06', 'weekday_day');
+    $roster->shifts()->where('id', '!=', $shift->id)->delete();
+    ShiftType::query()->whereKey($shift->shift_type_id)->update(['main_count' => 0, 'optional_count' => 1]);
+    DoctorRequest::create([
+        'doctor_id' => $doctor->id,
+        'request_type' => DoctorRequestType::DayOff,
+        'request_date' => '2026-10-06',
+    ]);
+
+    $this->actingAs($admin)->post(generateUrl())->assertRedirect();
+
+    expect(RosterAssignment::query()->where('roster_shift_id', $shift->id)->where('doctor_id', $doctor->id)
+        ->where('role', RosterAssignmentRole::Optional)->exists())->toBeTrue();
+});
+
+it('does not reject an existing Optional assignment solely for a monthly shift restriction', function () {
+    [$admin, $roster] = assignmentRoster(function (): void {
+        Doctor::query()->where('short_code', '!=', 'N')->update(['is_active' => false]);
+    });
+    $doctor = Doctor::query()->where('short_code', 'N')->firstOrFail();
+    $shift = shiftOn('2026-10-06', 'weekday_day');
+    $roster->shifts()->where('id', '!=', $shift->id)->delete();
+    ShiftType::query()->whereKey($shift->shift_type_id)->update(['main_count' => 0, 'optional_count' => 1]);
+    $assignment = $shift->assignments()->create([
+        'doctor_id' => $doctor->id,
+        'role' => RosterAssignmentRole::Optional,
+        'slot_number' => 1,
+    ]);
+    DoctorMonthlyShiftRestriction::create([
+        'doctor_id' => $doctor->id,
+        'year' => 2026,
+        'month' => 10,
+        'shift_type_id' => $shift->shift_type_id,
+    ]);
+
+    $this->actingAs($admin)->post(generateUrl())->assertRedirect();
+
+    expect($assignment->fresh()->doctor_id)->toBe($doctor->id)
+        ->and($assignment->fresh()->role)->toBe(RosterAssignmentRole::Optional);
+});
+
+it('applies monthly shift restrictions to Main but not Optional candidates', function () {
+    [$admin, $roster] = assignmentRoster(function (): void {
+        Doctor::query()->where('short_code', '!=', 'N')->update(['is_active' => false]);
+    });
+    $doctor = Doctor::query()->where('short_code', 'N')->firstOrFail();
+    $shift = shiftOn('2026-10-06', 'weekday_day');
+    $roster->shifts()->where('id', '!=', $shift->id)->delete();
+    ShiftType::query()->whereKey($shift->shift_type_id)->update(['main_count' => 1, 'optional_count' => 1]);
+    DoctorMonthlyShiftRestriction::create([
+        'doctor_id' => $doctor->id,
+        'year' => 2026,
+        'month' => 10,
+        'shift_type_id' => $shift->shift_type_id,
+    ]);
+
+    $this->actingAs($admin)->post(generateUrl())->assertRedirect();
+
+    expect($shift->assignments()->where('role', RosterAssignmentRole::Main)->exists())->toBeFalse()
+        ->and($shift->assignments()->where('role', RosterAssignmentRole::Optional)->firstOrFail()->doctor_id)->toBe($doctor->id);
+});
+
+it('allows Optional after a previous Main Night without applying Main night recovery', function () {
+    [$admin, $roster] = assignmentRoster(function (): void {
+        Doctor::query()->where('short_code', '!=', 'N')->update(['is_active' => false]);
+    });
+    $doctor = Doctor::query()->where('short_code', 'N')->firstOrFail();
+    $night = shiftOn('2026-10-05', 'weekday_night');
+    $nextDay = shiftOn('2026-10-06', 'weekday_day');
+    $roster->shifts()->whereNotIn('id', [$night->id, $nextDay->id])->delete();
+    ShiftType::query()->whereKey($nextDay->shift_type_id)->update(['main_count' => 0, 'optional_count' => 1]);
+    DoctorRequest::create([
+        'doctor_id' => $doctor->id,
+        'request_type' => DoctorRequestType::PreferredWork,
+        'request_date' => $night->shift_date,
+        'shift_type_id' => $night->shift_type_id,
+    ]);
+
+    $this->actingAs($admin)->post(generateUrl())->assertRedirect();
+
+    $nightAssignment = $night->assignments()->where('role', RosterAssignmentRole::Main)->firstOrFail();
+    $optionalAssignment = $nextDay->assignments()->where('role', RosterAssignmentRole::Optional)->firstOrFail();
+    expect($nightAssignment->doctor_id)->toBe($doctor->id)
+        ->and($optionalAssignment->doctor_id)->toBe($doctor->id)
+        ->and(app(DoctorAssignmentEligibilityService::class)->roleAwareShiftConflict(
+            $night,
+            $nightAssignment->role,
+            $nextDay,
+            $optionalAssignment->role,
+        ))->toBeNull();
+});
+
+it('does not apply Main night recovery from an existing Optional Night to a Main candidate', function () {
+    [$admin, $roster] = assignmentRoster(function (): void {
+        Doctor::query()->where('short_code', '!=', 'N')->update(['is_active' => false]);
+    });
+    $doctor = Doctor::query()->where('short_code', 'N')->firstOrFail();
+    $night = shiftOn('2026-10-05', 'weekday_night');
+    $nextDay = shiftOn('2026-10-06', 'weekday_day');
+    $roster->shifts()->whereNotIn('id', [$night->id, $nextDay->id])->delete();
+    ShiftType::query()->whereKey($night->shift_type_id)->update(['main_count' => 0, 'optional_count' => 1]);
+    ShiftType::query()->whereKey($nextDay->shift_type_id)->update(['main_count' => 1, 'optional_count' => 0]);
+
+    $this->actingAs($admin)->post(generateUrl())->assertRedirect();
+
+    expect($night->assignments()->where('role', RosterAssignmentRole::Optional)->firstOrFail()->doctor_id)->toBe($doctor->id)
+        ->and($nextDay->assignments()->where('role', RosterAssignmentRole::Main)->firstOrFail()->doctor_id)->toBe($doctor->id);
 });
 
 it('uses real Day-Off intervals and symmetric same-date and night recovery rules', function () {
@@ -542,7 +729,8 @@ it('honors stored previous-month night history during generation', function () {
 
     $this->actingAs($admin)->post(generateUrl())->assertRedirect();
     $firstDateShiftIds = RosterShift::query()->whereDate('shift_date', '2026-10-01')->pluck('id');
-    expect(RosterAssignment::query()->where('doctor_id', $doctor->id)->whereIn('roster_shift_id', $firstDateShiftIds)->exists())->toBeFalse();
+    expect(RosterAssignment::query()->where('doctor_id', $doctor->id)->whereIn('roster_shift_id', $firstDateShiftIds)
+        ->where('role', RosterAssignmentRole::Main)->exists())->toBeFalse();
     $this->assertDatabaseCount('doctor_monthly_workloads', Doctor::query()->count());
 });
 

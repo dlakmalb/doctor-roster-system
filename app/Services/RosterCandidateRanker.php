@@ -44,7 +44,7 @@ class RosterCandidateRanker
     /** @var array<int, DoctorMonthlyWorkload> */
     private array $history = [];
 
-    /** @var array<int, array<int, bool>> */
+    /** @var array<string, array<int, array<int, bool>>> */
     private array $shiftConflicts = [];
 
     private CarbonImmutable $firstDate;
@@ -248,7 +248,7 @@ class RosterCandidateRanker
     }
 
     /**
-     * @param  Collection<int, RosterShift>  $assignedShifts
+     * @param  Collection<int, RosterShift|array{shift: RosterShift, role: RosterAssignmentRole}>  $assignedShifts
      * @return list<int>
      */
     public function dimensions(Doctor $doctor, RosterShift $shift, RosterAssignmentRole $role, Collection $assignedShifts): array
@@ -326,7 +326,7 @@ class RosterCandidateRanker
     }
 
     /**
-     * @param  Collection<int, RosterShift>  $assignedShifts
+     * @param  Collection<int, RosterShift|array{shift: RosterShift, role: RosterAssignmentRole}>  $assignedShifts
      * @return list<RosterShift>
      */
     public function blockedPreferredShifts(Doctor $doctor, RosterShift $shift, RosterAssignmentRole $role, Collection $assignedShifts, bool $usePlanningOrder = false): array
@@ -343,10 +343,25 @@ class RosterCandidateRanker
             if ($preferredShift->id === $shift->id && $role === RosterAssignmentRole::Main) {
                 continue;
             }
-            if ($assignedShifts->contains(fn (RosterShift $assigned): bool => $this->shiftsConflict($preferredShift, $assigned))) {
+            $alreadyBlocked = $assignedShifts->contains(function (RosterShift|array $assigned) use ($preferredShift): bool {
+                if ($assigned instanceof RosterShift) {
+                    return $this->eligibility->shiftConflict($preferredShift, $assigned) !== null;
+                }
+
+                return $this->shiftsConflict($preferredShift, RosterAssignmentRole::Main, $assigned['shift'], $assigned['role']);
+            });
+            if ($alreadyBlocked) {
                 continue;
             }
-            if ($this->shiftsConflict($preferredShift, $shift)) {
+            $conflictsWithCandidate = $role === RosterAssignmentRole::Main
+                ? $this->eligibility->shiftConflict($preferredShift, $shift) !== null
+                : $this->eligibility->roleAwareShiftConflict(
+                    $preferredShift,
+                    RosterAssignmentRole::Main,
+                    $shift,
+                    RosterAssignmentRole::Optional,
+                ) !== null;
+            if ($conflictsWithCandidate) {
                 $blocked[] = $preferredShift;
             }
         }
@@ -354,13 +369,14 @@ class RosterCandidateRanker
         return $blocked;
     }
 
-    private function shiftsConflict(RosterShift $shift, RosterShift $otherShift): bool
+    private function shiftsConflict(RosterShift $shift, RosterAssignmentRole $role, RosterShift $otherShift, RosterAssignmentRole $otherRole): bool
     {
-        if (! isset($this->shiftConflicts[$shift->id][$otherShift->id])) {
-            $this->shiftConflicts[$shift->id][$otherShift->id] = $this->eligibility->shiftConflict($shift, $otherShift) !== null;
+        $cacheKey = $role->value.':'.$otherRole->value;
+        if (! isset($this->shiftConflicts[$cacheKey][$shift->id][$otherShift->id])) {
+            $this->shiftConflicts[$cacheKey][$shift->id][$otherShift->id] = $this->eligibility->roleAwareShiftConflict($shift, $role, $otherShift, $otherRole) !== null;
         }
 
-        return $this->shiftConflicts[$shift->id][$otherShift->id];
+        return $this->shiftConflicts[$cacheKey][$shift->id][$otherShift->id];
     }
 
     private function wasPlannedBefore(RosterShift $preferredShift, RosterShift $candidateShift, RosterAssignmentRole $role, bool $usePlanningOrder): bool
@@ -379,7 +395,7 @@ class RosterCandidateRanker
 
     /**
      * @param  Collection<int, Doctor>  $doctors
-     * @param  Collection<int, Collection<int, RosterShift>>  $assignedByDoctor
+     * @param  Collection<int, Collection<int, RosterShift|array{shift: RosterShift, role: RosterAssignmentRole}>>  $assignedByDoctor
      */
     public function select(Collection $doctors, RosterShift $shift, RosterAssignmentRole $role, Collection $assignedByDoctor): ?Doctor
     {
@@ -388,7 +404,7 @@ class RosterCandidateRanker
 
     /**
      * @param  Collection<int, Doctor>  $doctors
-     * @param  Collection<int, Collection<int, RosterShift>>  $assignedByDoctor
+     * @param  Collection<int, Collection<int, RosterShift|array{shift: RosterShift, role: RosterAssignmentRole}>>  $assignedByDoctor
      * @return Collection<int, Doctor>
      */
     public function ordered(Collection $doctors, RosterShift $shift, RosterAssignmentRole $role, Collection $assignedByDoctor): Collection

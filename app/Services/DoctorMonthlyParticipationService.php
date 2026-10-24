@@ -120,8 +120,11 @@ class DoctorMonthlyParticipationService
         }
     }
 
-    /** @param Collection<int, Doctor> $activeDoctors */
-    public function ensureRosterSnapshot(Roster $roster, Collection $activeDoctors): void
+    /**
+     * @param  Collection<int, Doctor>  $activeDoctors
+     * @return Collection<int, bool>
+     */
+    public function ensureRosterSnapshot(Roster $roster, Collection $activeDoctors): Collection
     {
         $hasAnyRecords = DoctorMonthlyParticipation::query()
             ->where('year', $roster->year)
@@ -133,6 +136,16 @@ class DoctorMonthlyParticipationService
         }
 
         $this->assertRosterPopulationMatchesActiveDoctors($roster, $activeDoctors);
+
+        return DoctorMonthlyParticipation::query()
+            ->where('roster_id', $roster->id)
+            ->where('year', $roster->year)
+            ->where('month', $roster->month)
+            ->whereIn('doctor_id', $activeDoctors->modelKeys())
+            ->get(['doctor_id', 'is_participating'])
+            ->mapWithKeys(fn (DoctorMonthlyParticipation $row): array => [
+                (int) $row->doctor_id => $row->is_participating,
+            ]);
     }
 
     /** @param Collection<int, Doctor> $activeDoctors */

@@ -8,6 +8,7 @@ use App\Models\DoctorWeekendGroupMembership;
 use App\Models\RosterAssignment;
 use App\Models\User;
 use App\Models\WeekendRotationConfiguration;
+use App\Services\DoctorMonthlyParticipationService;
 use App\Services\RosterAssignmentGenerator;
 use App\Services\RosterAssignmentRecoveryService;
 use App\Services\RosterCandidateRanker;
@@ -116,13 +117,16 @@ it('uses the opposite group only after the scheduled group cannot fill a mandato
     $rotation = app(WeekendGroupRotationService::class)->forMonth(2026, 10, collect([$groupA, $groupB]), $roster->shifts()->with('shiftType')->get());
     $ranker = app(RosterCandidateRanker::class);
     $ranker->initialize($shifts, collect(), collect(), CarbonImmutable::parse('2026-10-01'), [], null, $rotation);
+    $doctors = collect([$groupA, $groupB]);
     $assignments = app(RosterAssignmentRecoveryService::class)->plan(
         $shifts,
-        collect([$groupA, $groupB]),
+        $doctors,
         collect(),
         collect(),
         collect(),
         $ranker,
+        [],
+        app(DoctorMonthlyParticipationService::class)->forRoster($roster, $doctors->pluck('id')),
     );
 
     expect(collect($assignments)->pluck('doctor_id')->all())->toBe([$groupA->id, $groupB->id]);

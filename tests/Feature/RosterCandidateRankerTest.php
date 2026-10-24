@@ -222,6 +222,34 @@ it('puts exact Main preference before workload and Night fairness but gives Opti
     expect($ranker->dimensions($other, $night, RosterAssignmentRole::Optional, collect()) < $ranker->dimensions($preferred, $night, RosterAssignmentRole::Optional, collect()))->toBeTrue();
 });
 
+it('does not rank Optional below a Main preference solely for Main night recovery', function () {
+    [, , $doctor] = smartRoster();
+    $optionalNight = smartShift('2026-10-06', 'weekday_night');
+    $preferredDay = smartShift('2026-10-07', 'weekday_day');
+    $ranker = smartRanker([smartPreference($doctor, $preferredDay)]);
+
+    expect($ranker->blockedPreferredShifts($doctor, $optionalNight, RosterAssignmentRole::Optional, collect()))->toBe([])
+        ->and(app(DoctorAssignmentEligibilityService::class)->shiftConflict($optionalNight, $preferredDay))
+        ->toBe('next_day_night_recovery');
+});
+
+it('uses assignment roles when deciding whether an existing Optional Night blocks a Main preference', function () {
+    [, , $doctor] = smartRoster();
+    $optionalNight = smartShift('2026-10-06', 'weekday_night');
+    $preferredDay = smartShift('2026-10-07', 'weekday_day');
+    $candidate = $preferredDay;
+    $ranker = smartRanker([smartPreference($doctor, $preferredDay)]);
+
+    $blockedShiftIds = array_map(
+        fn (RosterShift $shift): int => $shift->id,
+        $ranker->blockedPreferredShifts($doctor, $candidate, RosterAssignmentRole::Optional, collect([
+            ['shift' => $optionalNight, 'role' => RosterAssignmentRole::Optional],
+        ])),
+    );
+
+    expect($blockedShiftIds)->toContain($preferredDay->id);
+});
+
 it('protects future preference from Night recovery and keeps that protection soft', function () {
     [, $roster, $preferred, $other] = smartRoster();
     $mondayNight = smartShift('2026-10-05', 'weekday_night');

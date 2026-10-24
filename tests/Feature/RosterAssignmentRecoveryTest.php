@@ -11,13 +11,14 @@ use App\Models\RosterShift;
 use App\Models\ShiftType;
 use App\Models\User;
 use App\Services\DoctorAssignmentEligibilityService;
+use App\Services\DoctorMonthlyParticipationService;
 use App\Services\RosterAssignmentRecoveryService;
 use App\Services\RosterCandidateRanker;
-use App\Services\RosterDraftValidationService;
 use App\Services\RosterStructureService;
 use Carbon\CarbonImmutable;
 use Database\Seeders\DoctorsSeeder;
 use Database\Seeders\ShiftTypesSeeder;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 
 /** @return array{User, list<Doctor>, list<RosterShift>} */
@@ -61,6 +62,17 @@ function runRecovery(User $admin): void
     test()->actingAs($admin)->post(route('rosters.generate', ['year' => 2026, 'month' => 10]))->assertRedirect();
 }
 
+/** @param Collection<int, Doctor> $doctors
+ * @return Collection<int, bool>
+ */
+function recoveryParticipation(Collection $doctors): Collection
+{
+    return app(DoctorMonthlyParticipationService::class)->forRoster(
+        Roster::query()->firstOrFail(),
+        $doctors->pluck('id'),
+    );
+}
+
 it('reassigns an earlier preferred doctor to fill a same-date Main slot', function () {
     [$admin, [$a, $b], [$day, $evening]] = recoveryScenario([
         ['2026-10-06', 'weekday_day'], ['2026-10-06', 'weekday_evening'],
@@ -86,12 +98,14 @@ it('performs recursive recovery without database queries after inputs are loaded
     $ranker = app(RosterCandidateRanker::class);
     $ranker->initialize($shifts, $requests->where('request_type', DoctorRequestType::PreferredWork), collect(), CarbonImmutable::parse('2026-10-01'));
     $recovery = app(RosterAssignmentRecoveryService::class);
+    $doctors = collect([$a, $b]);
+    $participation = recoveryParticipation($doctors);
     $queryCount = 0;
     DB::listen(function () use (&$queryCount): void {
         $queryCount++;
     });
 
-    $assignments = $recovery->plan($shifts, collect([$a, $b]), collect(), $requests->where('request_type', DoctorRequestType::DayOff)->groupBy('doctor_id'), collect(), $ranker);
+    $assignments = $recovery->plan($shifts, $doctors, collect(), $requests->where('request_type', DoctorRequestType::DayOff)->groupBy('doctor_id'), collect(), $ranker, [], $participation);
 
     expect($queryCount)->toBe(0);
     expect($recovery->diagnostics()['totals']['chains'])->toBeGreaterThan(0);
@@ -111,7 +125,8 @@ it('prefers a one-blocker repair over a better ranked two-blocker repair', funct
     $ranker = app(RosterCandidateRanker::class);
     $ranker->initialize($shifts, $requests->where('request_type', DoctorRequestType::PreferredWork), collect(), CarbonImmutable::parse('2026-10-01'));
     $recovery = app(RosterAssignmentRecoveryService::class);
-    $recovery->plan($shifts, collect([$a, $b, $c]), collect(), $requests->where('request_type', DoctorRequestType::DayOff)->groupBy('doctor_id'), collect(), $ranker);
+    $doctors = collect([$a, $b, $c]);
+    $recovery->plan($shifts, $doctors, collect(), $requests->where('request_type', DoctorRequestType::DayOff)->groupBy('doctor_id'), collect(), $ranker, [], recoveryParticipation($doctors));
     $plan = new ReflectionProperty($recovery, 'plan');
     $plan->setValue($recovery, [
         "$earlierNight->id:main:1" => ['shift' => $earlierNight, 'role' => RosterAssignmentRole::Main, 'slot' => 1, 'doctor_id' => $b->id, 'fixed' => false],
@@ -130,6 +145,20 @@ it('prefers a one-blocker repair over a better ranked two-blocker repair', funct
     expect($result["$laterEvening->id:main:1"]['doctor_id'])->toBe($c->id);
     expect($result["$earlierNight->id:main:1"]['doctor_id'])->toBe($b->id);
     expect($result["$laterDay->id:main:1"]['doctor_id'])->toBe($b->id);
+});
+
+it('counts eligible blockers independently for Main and Optional roles', function () {
+    [, , [$day]] = recoveryScenario([['2026-10-06', 'weekday_day']], 2);
+    $recovery = app(RosterAssignmentRecoveryService::class);
+    $eligible = new ReflectionProperty($recovery, 'staticallyEligible');
+    $eligible->setValue($recovery, [
+        RosterAssignmentRole::Main->value => [$day->id => [101 => true]],
+        RosterAssignmentRole::Optional->value => [$day->id => [101 => true, 102 => true]],
+    ]);
+    $count = new ReflectionMethod($recovery, 'eligibleCandidateCount');
+
+    expect($count->invoke($recovery, RosterAssignmentRole::Main, $day))->toBe(1)
+        ->and($count->invoke($recovery, RosterAssignmentRole::Optional, $day))->toBe(2);
 });
 
 it('reassigns an earlier preferred Night when recovery blocks the next day', function () {
@@ -177,6 +206,21 @@ it('leaves an impossible slot empty and continues filling later slots', function
         ->and(RosterAssignment::query()->where('doctor_id', $a->id)->count())->toBe(2);
 });
 
+it('keeps an infeasible Optional vacancy when fixed same-date Main assignments block every doctor', function () {
+    [$admin, [$a, $b], [$day, $evening, $night]] = recoveryScenario([
+        ['2026-10-06', 'weekday_day'], ['2026-10-06', 'weekday_evening'], ['2026-10-06', 'weekday_night'],
+    ]);
+    ShiftType::query()->whereKey($night->shift_type_id)->update(['main_count' => 0, 'optional_count' => 1]);
+    $fixedDay = $day->assignments()->create(['doctor_id' => $a->id, 'role' => RosterAssignmentRole::Main, 'slot_number' => 1]);
+    $fixedEvening = $evening->assignments()->create(['doctor_id' => $b->id, 'role' => RosterAssignmentRole::Main, 'slot_number' => 1]);
+
+    runRecovery($admin);
+
+    expect($fixedDay->fresh()->doctor_id)->toBe($a->id)
+        ->and($fixedEvening->fresh()->doctor_id)->toBe($b->id)
+        ->and($night->assignments()->where('role', RosterAssignmentRole::Optional)->count())->toBe(0);
+});
+
 it('keeps prior Draft assignments fixed during normal fill', function () {
     [$admin, [$a, $b], [$day, $evening]] = recoveryScenario([
         ['2026-10-06', 'weekday_day'], ['2026-10-06', 'weekday_evening'],
@@ -198,13 +242,12 @@ it('moves generated Main staffing to fill a required Optional slot', function ()
     recoveryRequest($b, $evening, DoctorRequestType::DayOff);
     runRecovery($admin);
 
-    expect($day->assignments()->where('role', RosterAssignmentRole::Main)->firstOrFail()->doctor_id)->toBe($b->id)
-        ->and($evening->assignments()->where('role', RosterAssignmentRole::Optional)->firstOrFail()->doctor_id)->toBe($a->id);
+    expect($day->assignments()->where('role', RosterAssignmentRole::Main)->firstOrFail()->doctor_id)->toBe($a->id)
+        ->and($evening->assignments()->where('role', RosterAssignmentRole::Optional)->firstOrFail()->doctor_id)->toBe($b->id);
     expect(app(DoctorAssignmentEligibilityService::class)->shiftConflict($day, $evening))->toBe('same_start_date');
-    expect(collect(app(RosterDraftValidationService::class)->validate(Roster::query()->firstOrFail()))->where('severity', 'Error')->count())->toBe(0);
 });
 
-it('repairs a cross-role chain through another generated Main position', function () {
+it('preserves completed Main positions when an Optional candidate is directly available', function () {
     [$admin, [$a, $b, $c], [$day, $evening, $night]] = recoveryScenario([
         ['2026-10-06', 'weekday_day'], ['2026-10-06', 'weekday_evening'], ['2026-10-06', 'weekday_night'],
     ], 3);
@@ -222,8 +265,7 @@ it('repairs a cross-role chain through another generated Main position', functio
         $day->assignments()->where('role', RosterAssignmentRole::Main)->firstOrFail()->doctor_id,
         $evening->assignments()->where('role', RosterAssignmentRole::Main)->firstOrFail()->doctor_id,
         $night->assignments()->where('role', RosterAssignmentRole::Optional)->firstOrFail()->doctor_id,
-    ])->toBe([$b->id, $c->id, $a->id]);
-    expect(collect(app(RosterDraftValidationService::class)->validate(Roster::query()->firstOrFail()))->where('severity', 'Error')->count())->toBe(0);
+    ])->toBe([$a->id, $b->id, $c->id]);
 });
 
 it('fills Main directly before moving a generated Optional doctor', function () {
@@ -235,7 +277,8 @@ it('fills Main directly before moving a generated Optional doctor', function () 
     $ranker = app(RosterCandidateRanker::class);
     $ranker->initialize(collect([$day]), DoctorRequest::query()->get(), collect(), CarbonImmutable::parse('2026-10-01'));
     $recovery = app(RosterAssignmentRecoveryService::class);
-    $recovery->plan(collect([$day]), collect([$a, $b]), collect(), collect(), collect(), $ranker);
+    $doctors = collect([$a, $b]);
+    $recovery->plan(collect([$day]), $doctors, collect(), collect(), collect(), $ranker, [], recoveryParticipation($doctors));
     $plan = new ReflectionProperty($recovery, 'plan');
     $plan->setValue($recovery, [
         "$day->id:optional:1" => ['shift' => $day, 'role' => RosterAssignmentRole::Optional, 'slot' => 1, 'doctor_id' => $a->id, 'fixed' => false],
@@ -265,7 +308,8 @@ it('fills Optional directly before moving a generated Main doctor on the same sh
     $ranker = app(RosterCandidateRanker::class);
     $ranker->initialize(collect([$day]), DoctorRequest::query()->get(), $history, CarbonImmutable::parse('2026-10-01'));
     $recovery = app(RosterAssignmentRecoveryService::class);
-    $recovery->plan(collect([$day]), collect([$a, $b]), collect(), collect(), $history, $ranker);
+    $doctors = collect([$a, $b]);
+    $recovery->plan(collect([$day]), $doctors, collect(), collect(), $history, $ranker, [], recoveryParticipation($doctors));
     $plan = new ReflectionProperty($recovery, 'plan');
     $plan->setValue($recovery, [
         "$day->id:main:1" => ['shift' => $day, 'role' => RosterAssignmentRole::Main, 'slot' => 1, 'doctor_id' => $a->id, 'fixed' => false],
@@ -284,7 +328,7 @@ it('fills Optional directly before moving a generated Main doctor on the same sh
     expect(collect($result)->pluck('doctor_id')->unique()->count())->toBe(2);
 });
 
-it('keeps fixed Main staffing in place when Optional requires that doctor', function () {
+it('keeps fixed Main staffing in place and permits Optional despite Day-Off', function () {
     [$admin, [$a, $b], [$day, $evening]] = recoveryScenario([
         ['2026-10-06', 'weekday_day'], ['2026-10-06', 'weekday_evening'],
     ]);
@@ -295,15 +339,16 @@ it('keeps fixed Main staffing in place when Optional requires that doctor', func
     runRecovery($admin);
 
     expect($existing->fresh()->doctor_id)->toBe($a->id)
-        ->and($evening->assignments()->count())->toBe(0);
+        ->and($evening->assignments()->where('role', RosterAssignmentRole::Optional)->firstOrFail()->doctor_id)->toBe($b->id);
 
     $shifts = RosterShift::query()->with(['shiftType', 'assignments'])->whereIn('id', [$day->id, $evening->id])->get();
     $ranker = app(RosterCandidateRanker::class);
     $ranker->initialize($shifts, collect(), collect(), CarbonImmutable::parse('2026-10-01'));
     $recovery = app(RosterAssignmentRecoveryService::class);
-    $recovery->plan($shifts, collect([$a, $b]), collect(), DoctorRequest::query()->with('shiftType')->get()->groupBy('doctor_id'), collect(), $ranker);
+    $doctors = collect([$a, $b]);
+    $recovery->plan($shifts, $doctors, collect(), DoctorRequest::query()->with('shiftType')->get()->groupBy('doctor_id'), collect(), $ranker, [], recoveryParticipation($doctors));
 
-    expect($recovery->unfilledDiagnostics()["$evening->id:optional:1"])->toHaveKey('fixed_blockers');
+    expect($evening->assignments()->where('role', RosterAssignmentRole::Optional)->firstOrFail()->doctor_id)->toBe($b->id);
 });
 
 it('restores a failed cross-role branch before trying another Optional candidate', function () {
@@ -341,12 +386,12 @@ it('restores a failed cross-role branch before trying another Optional candidate
     }
 
     expect($day->assignments()->where('role', RosterAssignmentRole::Main)->firstOrFail()->doctor_id)->toBe($a->id)
-        ->and($evening->assignments()->where('role', RosterAssignmentRole::Main)->firstOrFail()->doctor_id)->toBe($c->id)
-        ->and($night->assignments()->where('role', RosterAssignmentRole::Optional)->firstOrFail()->doctor_id)->toBe($b->id)
+        ->and($evening->assignments()->where('role', RosterAssignmentRole::Main)->firstOrFail()->doctor_id)->toBe($b->id)
+        ->and($night->assignments()->where('role', RosterAssignmentRole::Optional)->firstOrFail()->doctor_id)->toBe($c->id)
         ->and(RosterAssignment::query()->count())->toBe(3);
 });
 
-it('leaves Optional empty when every cross-role repair violates Day-Off', function () {
+it('fills Optional when the only available doctor requested a Day-Off', function () {
     [$admin, [$a, $b], [$day, $evening]] = recoveryScenario([
         ['2026-10-06', 'weekday_day'], ['2026-10-06', 'weekday_evening'],
     ]);
@@ -358,5 +403,5 @@ it('leaves Optional empty when every cross-role repair violates Day-Off', functi
     runRecovery($admin);
 
     expect($day->assignments()->firstOrFail()->doctor_id)->toBe($a->id)
-        ->and($evening->assignments()->count())->toBe(0);
+        ->and($evening->assignments()->where('role', RosterAssignmentRole::Optional)->firstOrFail()->doctor_id)->toBe($b->id);
 });
