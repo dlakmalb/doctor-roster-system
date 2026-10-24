@@ -77,7 +77,8 @@ it('connects setup, generation, editing, finalization, actual work, documents, a
     expect($assignments->count())->toBeGreaterThan(0)
         ->and($assignments->contains('doctor_id', $activeDoctors[2]->id))->toBeFalse();
     $dayOffShiftIds = $october->shifts()->whereDate('shift_date', '2026-10-06')->pluck('id');
-    expect($assignments->where('doctor_id', $doctors[0]->id)->whereIn('roster_shift_id', $dayOffShiftIds)->isEmpty())->toBeTrue();
+    expect($assignments->where('doctor_id', $doctors[0]->id)->whereIn('roster_shift_id', $dayOffShiftIds)
+        ->where('role', RosterAssignmentRole::Main)->isEmpty())->toBeTrue();
     $preferredShift = $october->shifts()->whereDate('shift_date', '2026-10-01')->where('shift_type_id', $dayType->id)->firstOrFail();
     expect($assignments->contains(fn (RosterAssignment $assignment): bool => $assignment->roster_shift_id === $preferredShift->id
         && $assignment->doctor_id === $doctors[1]->id && $assignment->role === RosterAssignmentRole::Main))->toBeTrue();
@@ -193,10 +194,18 @@ it('fully staffs and finalizes a normal month with exactly the fourteen seeded d
         foreach ($doctorAssignments as $first) {
             foreach ($doctorAssignments as $second) {
                 if ($first->id !== $second->id) {
-                    expect($eligibility->shiftConflict($first->rosterShift, $second->rosterShift))->toBeNull();
+                    expect($eligibility->roleAwareShiftConflict(
+                        $first->rosterShift,
+                        $first->role,
+                        $second->rosterShift,
+                        $second->role,
+                    ))->toBeNull();
                 }
             }
         }
+    }
+    foreach ($assignments->groupBy(fn (RosterAssignment $assignment): string => $assignment->doctor_id.'|'.$assignment->rosterShift->shift_date->toDateString()) as $sameDateAssignments) {
+        expect($sameDateAssignments)->toHaveCount(1);
     }
     expect(collect(app(RosterDraftValidationService::class)->validate($roster->fresh()))
         ->where('severity', 'Error'))->toBeEmpty();
