@@ -88,9 +88,10 @@ class RosterDraftContext
             ->where('request_type', DoctorRequestType::PreferredWork->value)
             ->whereBetween('request_date', [$first, $last])->get();
         $this->history = $this->planningHistory->forMonth($roster->year, $roster->month, false);
+        $previousParticipation = $this->planningHistory->participationForMonth($roster->year, $roster->month, $this->history);
         $monthlyWeekdayPreferences = DoctorMonthlyWeekdayPreference::query()
             ->where('year', $roster->year)->where('month', $roster->month)->get();
-        $this->ranker->initialize($this->shifts->values(), $this->preferred, $this->history, $first, $this->restrictedShiftTypes, $monthlyWeekdayPreferences);
+        $this->ranker->initialize($this->shifts->values(), $this->preferred, $this->history, $first, $this->restrictedShiftTypes, $monthlyWeekdayPreferences, [], $previousParticipation);
     }
 
     public function assertParticipationPopulationMatches(): void

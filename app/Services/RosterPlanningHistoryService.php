@@ -15,6 +15,7 @@ class RosterPlanningHistoryService
 {
     public function __construct(
         private DoctorMonthlyWorkloadService $workloads,
+        private DoctorMonthlyParticipationService $participation,
     ) {}
 
     /** @return Collection<int, DoctorMonthlyWorkload> */
@@ -65,11 +66,57 @@ class RosterPlanningHistoryService
 
     public function fingerprint(int $year, int $month): string
     {
-        return $this->fingerprintRows($this->forMonth($year, $month, false));
+        $history = $this->forMonth($year, $month, false);
+
+        return $this->fingerprintRows($history, $this->participationForMonth($year, $month, $history));
     }
 
-    /** @param Collection<int, DoctorMonthlyWorkload> $history */
-    public function fingerprintRows(Collection $history): string
+    /**
+     * @param  Collection<int, DoctorMonthlyWorkload>  $history
+     * @param  iterable<int|string>|null  $candidateDoctorIds
+     * @return Collection<int, bool|null>
+     */
+    public function participationForMonth(int $year, int $month, Collection $history, ?iterable $candidateDoctorIds = null): Collection
+    {
+        $source = CarbonImmutable::create($year, $month, 1)->subMonth();
+        $roster = Roster::query()->where('year', $source->year)->where('month', $source->month)->first();
+        if ($roster === null) {
+            $participation = $this->participation->forMonth($source->year, $source->month, $history->keys());
+        } elseif ($roster->status !== RosterStatus::Final) {
+            $participation = collect();
+        } else {
+            $doctorIds = $this->participation->doctorIdsForRoster($roster);
+            $participation = $this->participation->forRoster($roster, $doctorIds);
+        }
+
+        if ($candidateDoctorIds === null) {
+            $candidateRoster = Roster::query()->where('year', $year)->where('month', $month)->first();
+            $candidateDoctorIds = $candidateRoster === null
+                ? $history->keys()
+                : DoctorMonthlyParticipation::query()
+                    ->where('roster_id', $candidateRoster->id)
+                    ->where('year', $year)
+                    ->where('month', $month)
+                    ->where('is_participating', true)
+                    ->orderBy('doctor_id')
+                    ->pluck('doctor_id')
+                    ->map(fn (int|string $doctorId): int => (int) $doctorId);
+        }
+
+        foreach ($candidateDoctorIds as $doctorId) {
+            if (! $participation->has((int) $doctorId)) {
+                $participation->put((int) $doctorId, null);
+            }
+        }
+
+        return $participation->sortKeys();
+    }
+
+    /**
+     * @param  Collection<int, DoctorMonthlyWorkload>  $history
+     * @param  Collection<int, bool|null>|null  $participation
+     */
+    public function fingerprintRows(Collection $history, ?Collection $participation = null): string
     {
         $rows = $history->map(fn (DoctorMonthlyWorkload $row): array => [
             'doctor_id' => $row->doctor_id,
@@ -83,6 +130,8 @@ class RosterPlanningHistoryService
             'closing_balance_minutes' => $row->closing_balance_minutes,
         ])->sortBy('doctor_id')->values()->all();
 
-        return hash('sha256', json_encode($rows, JSON_THROW_ON_ERROR));
+        $participationRows = $participation?->sortKeys()->all();
+
+        return hash('sha256', json_encode(['workloads' => $rows, 'participation' => $participationRows], JSON_THROW_ON_ERROR));
     }
 }

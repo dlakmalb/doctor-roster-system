@@ -94,6 +94,40 @@ it('applies unconfirmed Main Absence and Optional Worked history in memory', fun
     $this->assertDatabaseCount('doctor_monthly_workloads', 3);
 });
 
+it('includes previous-month participation in the planning fingerprint and returns saved status', function () {
+    [, $doctors] = planningFixture();
+    $doctor = $doctors[0];
+    $historyService = app(RosterPlanningHistoryService::class);
+    $fingerprint = $historyService->fingerprint(2026, 10);
+    $history = $historyService->forMonth(2026, 10, false);
+    $participation = $historyService->participationForMonth(2026, 10, $history, $doctors->pluck('id')->all());
+
+    expect($participation->get($doctor->id))->toBeTrue();
+
+    DoctorMonthlyParticipation::query()->where('doctor_id', $doctor->id)->where('year', 2026)->where('month', 9)
+        ->update(['is_participating' => false]);
+    $changedParticipation = $historyService->participationForMonth(2026, 10, $history, $doctors->pluck('id')->all());
+
+    expect($changedParticipation->get($doctor->id))->toBeFalse()
+        ->and($historyService->fingerprint(2026, 10))->not->toBe($fingerprint);
+});
+
+it('reports an invalid current participation snapshot while fingerprinting the roster safely', function () {
+    [, , , $november] = planningFixture();
+    $historyService = app(RosterPlanningHistoryService::class);
+    $november->update([
+        'last_generated_at' => now(),
+        'generated_history_fingerprint' => $historyService->fingerprint(2026, 11),
+    ]);
+
+    expect($historyService->fingerprint(2026, 11))->toMatch('/^[a-f0-9]{64}$/');
+
+    $items = app(RosterDraftValidationService::class)->validate($november->fresh());
+
+    expect(collect($items)->pluck('code'))->toContain('participation_snapshot_integrity')
+        ->and(collect($items)->pluck('code'))->not->toContain('stale_history');
+});
+
 it('credits an unconfirmed Main Replacement and Optional Worked assignment', function () {
     [$admin, $doctors, $october, , $main] = planningFixture();
     ActualWorkException::create([

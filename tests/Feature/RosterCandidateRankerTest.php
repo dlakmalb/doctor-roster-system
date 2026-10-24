@@ -38,7 +38,7 @@ function smartShift(string $date, string $code): RosterShift
         ->with(['shiftType', 'assignments'])->firstOrFail();
 }
 
-function smartRanker(array $requests = [], array $history = []): RosterCandidateRanker
+function smartRanker(array $requests = [], array $history = [], ?array $previousParticipation = null): RosterCandidateRanker
 {
     $ranker = app(RosterCandidateRanker::class);
     $ranker->initialize(
@@ -46,6 +46,10 @@ function smartRanker(array $requests = [], array $history = []): RosterCandidate
         collect($requests),
         collect($history)->keyBy('doctor_id'),
         CarbonImmutable::parse('2026-10-01'),
+        [],
+        null,
+        [],
+        $previousParticipation === null ? null : collect($previousParticipation),
     );
 
     return $ranker;
@@ -218,8 +222,107 @@ it('puts exact Main preference before workload and Night fairness but gives Opti
     $ranker = smartRanker([$request], $history);
 
     expect($ranker->dimensions($preferred, $night, RosterAssignmentRole::Main, collect()) < $ranker->dimensions($other, $night, RosterAssignmentRole::Main, collect()))->toBeTrue();
-    expect($ranker->dimensions($preferred, $night, RosterAssignmentRole::Optional, collect()))->toBe([1, 0, 1500]);
+    expect($ranker->dimensions($preferred, $night, RosterAssignmentRole::Optional, collect()))->toBe([1, 0, 0, 1500]);
     expect($ranker->dimensions($other, $night, RosterAssignmentRole::Optional, collect()) < $ranker->dimensions($preferred, $night, RosterAssignmentRole::Optional, collect()))->toBeTrue();
+});
+
+it('prioritizes current-month Night and Optional counts before historical counts', function () {
+    [, , $first, $second] = smartRoster();
+    $night = smartShift('2026-10-05', 'weekday_night');
+    $day = smartShift('2026-10-06', 'weekday_day');
+    $history = [
+        smartHistory($first, ['actual_night_duty_count' => 5, 'optional_assignment_count' => 9]),
+        smartHistory($second, ['actual_night_duty_count' => 0, 'optional_assignment_count' => 0]),
+    ];
+    $ranker = smartRanker([], $history, [$first->id => true, $second->id => true]);
+
+    $ranker->record($first->id, $night, RosterAssignmentRole::Main);
+    expect($ranker->dimensions($second, $night, RosterAssignmentRole::Main, collect())
+        < $ranker->dimensions($first, $night, RosterAssignmentRole::Main, collect()))->toBeTrue();
+
+    $ranker->record($first->id, $day, RosterAssignmentRole::Optional);
+    expect($ranker->dimensions($second, $day, RosterAssignmentRole::Optional, collect())
+        < $ranker->dimensions($first, $day, RosterAssignmentRole::Optional, collect()))->toBeTrue();
+});
+
+it('uses historical Night and Optional counts to break equal current-month ties', function () {
+    [, , $first, $second] = smartRoster();
+    $night = smartShift('2026-10-05', 'weekday_night');
+    $day = smartShift('2026-10-06', 'weekday_day');
+    $history = [
+        smartHistory($first, ['actual_night_duty_count' => 1, 'optional_assignment_count' => 2]),
+        smartHistory($second, ['actual_night_duty_count' => 3, 'optional_assignment_count' => 5]),
+    ];
+    $ranker = smartRanker([], $history, [$first->id => true, $second->id => true]);
+
+    expect($ranker->dimensions($first, $night, RosterAssignmentRole::Main, collect())
+        < $ranker->dimensions($second, $night, RosterAssignmentRole::Main, collect()))->toBeTrue()
+        ->and($ranker->dimensions($first, $day, RosterAssignmentRole::Optional, collect())
+            < $ranker->dimensions($second, $day, RosterAssignmentRole::Optional, collect()))->toBeTrue();
+});
+
+it('uses rounded participating-cohort medians for returning doctors and missing history', function () {
+    [, , $first, $second] = smartRoster();
+    $third = Doctor::query()->where('is_active', true)->whereNotIn('id', [$first->id, $second->id])->firstOrFail();
+    $night = smartShift('2026-10-05', 'weekday_night');
+    $day = smartShift('2026-10-06', 'weekday_day');
+    $history = [
+        smartHistory($first, ['actual_night_duty_count' => 4, 'optional_assignment_count' => 8]),
+        smartHistory($second, ['actual_night_duty_count' => 5, 'optional_assignment_count' => 9]),
+    ];
+    $ranker = smartRanker([], $history, [$first->id => true, $second->id => true, $third->id => false]);
+
+    expect($ranker->dimensions($third, $night, RosterAssignmentRole::Main, collect()))
+        ->toBe([1, 0, 0, 5, 0])
+        ->and($ranker->dimensions($third, $day, RosterAssignmentRole::Optional, collect()))
+        ->toBe([0, 0, 9, 0]);
+});
+
+it('keeps a participating doctors genuine zero below the neutral nonparticipant baseline', function () {
+    [, , $zeroDoctor, $workedDoctor] = smartRoster();
+    $nonparticipant = Doctor::query()->where('is_active', true)
+        ->whereNotIn('id', [$zeroDoctor->id, $workedDoctor->id])->firstOrFail();
+    $night = smartShift('2026-10-05', 'weekday_night');
+    $history = [
+        smartHistory($zeroDoctor, ['actual_night_duty_count' => 0, 'optional_assignment_count' => 0]),
+        smartHistory($workedDoctor, ['actual_night_duty_count' => 4, 'optional_assignment_count' => 8]),
+    ];
+    $ranker = smartRanker([], $history, [
+        $zeroDoctor->id => true,
+        $workedDoctor->id => true,
+        $nonparticipant->id => false,
+    ]);
+
+    expect($ranker->dimensions($zeroDoctor, $night, RosterAssignmentRole::Main, collect())[3])->toBe(0)
+        ->and($ranker->dimensions($nonparticipant, $night, RosterAssignmentRole::Main, collect())[3])->toBe(2);
+});
+
+it('preserves genuine zero counts and handles an empty participating cohort', function () {
+    [, , $first, $second] = smartRoster();
+    $night = smartShift('2026-10-05', 'weekday_night');
+    $day = smartShift('2026-10-06', 'weekday_day');
+    $ranker = smartRanker([], [
+        smartHistory($first, ['actual_night_duty_count' => 0, 'optional_assignment_count' => 0]),
+        smartHistory($second, ['actual_night_duty_count' => 0, 'optional_assignment_count' => 0]),
+    ], [$first->id => false, $second->id => false]);
+
+    expect($ranker->dimensions($first, $night, RosterAssignmentRole::Main, collect()))
+        ->toBe([1, 0, 0, 0, 0])
+        ->and($ranker->dimensions($first, $day, RosterAssignmentRole::Optional, collect()))
+        ->toBe([0, 0, 0, 0]);
+});
+
+it('does not infer previous nonparticipation when participation data is unavailable', function () {
+    [, , $first, $second] = smartRoster();
+    $night = smartShift('2026-10-05', 'weekday_night');
+    $history = [
+        smartHistory($first, ['actual_night_duty_count' => 0]),
+        smartHistory($second, ['actual_night_duty_count' => 4]),
+    ];
+    $ranker = smartRanker([], $history);
+
+    expect($ranker->dimensions($first, $night, RosterAssignmentRole::Main, collect())[3])->toBe(0)
+        ->and($ranker->dimensions($second, $night, RosterAssignmentRole::Main, collect())[3])->toBe(4);
 });
 
 it('does not rank Optional below a Main preference solely for Main night recovery', function () {
@@ -399,10 +502,11 @@ it('counts previous and current Night and Optional duties before workload', func
     expect($ranker->dimensions($other, $weekdayNight, RosterAssignmentRole::Main, collect()) < $ranker->dimensions($doctor, $weekdayNight, RosterAssignmentRole::Main, collect()))->toBeTrue();
     $ranker->record($doctor->id, $weekdayNight, RosterAssignmentRole::Main);
     $ranker->record($doctor->id, $weekendNight, RosterAssignmentRole::Main);
-    expect($ranker->dimensions($doctor, $weekdayNight, RosterAssignmentRole::Main, collect())[2])->toBe(4);
-    expect($ranker->dimensions($doctor, $day, RosterAssignmentRole::Optional, collect()))->toBe([0, 3, 680]);
+    expect($ranker->dimensions($doctor, $weekdayNight, RosterAssignmentRole::Main, collect())[2])->toBe(2)
+        ->and($ranker->dimensions($doctor, $weekdayNight, RosterAssignmentRole::Main, collect())[3])->toBe(2);
+    expect($ranker->dimensions($doctor, $day, RosterAssignmentRole::Optional, collect()))->toBe([0, 0, 3, 680]);
     $ranker->record($doctor->id, $day, RosterAssignmentRole::Optional);
-    expect($ranker->dimensions($doctor, $day, RosterAssignmentRole::Optional, collect()))->toBe([0, 4, 680]);
+    expect($ranker->dimensions($doctor, $day, RosterAssignmentRole::Optional, collect()))->toBe([0, 1, 3, 680]);
 });
 
 it('resolves multiple preferred candidates with Night count and Optional candidates with their count', function () {
@@ -543,7 +647,7 @@ it('uses existing Draft assignments and preserves historical rows on repeat gene
     $ranker = smartRanker([$request], [$history]);
 
     expect($ranker->dimensions($doctor, $day, RosterAssignmentRole::Main, collect()))->toBe([1, 0, 660]);
-    expect($ranker->dimensions($doctor, $day, RosterAssignmentRole::Optional, collect()))->toBe([0, 1, 660]);
+    expect($ranker->dimensions($doctor, $day, RosterAssignmentRole::Optional, collect()))->toBe([0, 0, 1, 660]);
     $this->actingAs($admin)->post(route('rosters.generate', ['year' => 2026, 'month' => 10]))->assertRedirect();
     expect($existing->fresh()->doctor_id)->toBe($doctor->id);
     expect(DoctorMonthlyWorkload::query()->count())->toBe(Doctor::query()->count());

@@ -763,3 +763,44 @@ it('returns assigned names and short codes in both role groups', function () {
             ->where('summary.filled_main', fn (int $count): bool => $count > 0)
             ->where('summary.filled_optional', fn (int $count): bool => $count > 0));
 });
+
+it('distributes Nights and Optionals within the month when one October doctor did not participate in September', function () {
+    [$admin, $roster] = assignmentRoster(function (): void {
+        Doctor::query()->whereNotIn('short_code', ['N', 'S', 'C'])->update(['is_active' => false]);
+    });
+    $doctors = Doctor::query()->whereIn('short_code', ['N', 'S', 'C'])->get()->keyBy('short_code');
+    $joiningDoctor = $doctors->get('C');
+    DoctorMonthlyWorkload::query()->where('year', 2026)->where('month', 9)->update([
+        'actual_night_duty_count' => 4,
+        'optional_assignment_count' => 8,
+    ]);
+    DoctorMonthlyWorkload::query()->where('doctor_id', $joiningDoctor->id)->where('year', 2026)->where('month', 9)->update([
+        'actual_night_duty_count' => 0,
+        'optional_assignment_count' => 0,
+    ]);
+    DoctorMonthlyParticipation::query()->where('doctor_id', $joiningDoctor->id)->where('year', 2026)->where('month', 9)
+        ->update(['is_participating' => false]);
+
+    $nightType = ShiftType::query()->where('code', 'weekday_night')->firstOrFail();
+    $nightType->update(['main_count' => 1, 'optional_count' => 0]);
+    $optionalType = ShiftType::query()->where('code', 'weekday_day')->firstOrFail();
+    $optionalType->update(['main_count' => 0, 'optional_count' => 1]);
+
+    $nightShifts = collect(['2026-10-05', '2026-10-09', '2026-10-15'])
+        ->map(fn (string $date): RosterShift => shiftOn($date, 'weekday_night'));
+    $optionalShifts = collect(['2026-10-06', '2026-10-12', '2026-10-16'])
+        ->map(fn (string $date): RosterShift => shiftOn($date, 'weekday_day'));
+    $roster->shifts()->whereNotIn('id', $nightShifts->merge($optionalShifts)->pluck('id')->all())->delete();
+
+    $this->actingAs($admin)->post(generateUrl())->assertRedirect();
+
+    $assignments = RosterAssignment::query()->with(['rosterShift.shiftType'])->get();
+    foreach ($doctors as $doctor) {
+        expect($assignments->filter(fn (RosterAssignment $assignment): bool => $assignment->doctor_id === $doctor->id
+            && $assignment->role === RosterAssignmentRole::Main
+            && $assignment->rosterShift->shiftType->is_overnight)->count())->toBe(1)
+            ->and($assignments->where('doctor_id', $doctor->id)->where('role', RosterAssignmentRole::Optional)->count())->toBe(1);
+    }
+    expect($assignments->where('role', RosterAssignmentRole::Main)->count())->toBe(3)
+        ->and($assignments->where('role', RosterAssignmentRole::Optional)->count())->toBe(3);
+});

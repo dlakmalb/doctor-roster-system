@@ -44,6 +44,12 @@ class RosterCandidateRanker
     /** @var array<int, DoctorMonthlyWorkload> */
     private array $history = [];
 
+    /** @var array<int, int> */
+    private array $historicalNightCounts = [];
+
+    /** @var array<int, int> */
+    private array $historicalOptionalCounts = [];
+
     /** @var array<string, array<int, array<int, bool>>> */
     private array $shiftConflicts = [];
 
@@ -63,8 +69,9 @@ class RosterCandidateRanker
      * @param  Collection<int, DoctorMonthlyWorkload>  $history
      * @param  array<int, array<int, true>>  $restrictedShiftTypes
      * @param  Collection<int, DoctorMonthlyWeekdayPreference>  $monthlyWeekdayPreferences
+     * @param  Collection<int, bool|null>|null  $previousParticipation
      */
-    public function initialize(Collection $shifts, Collection $preferredRequests, Collection $history, CarbonImmutable $firstDate, array $restrictedShiftTypes = [], ?Collection $monthlyWeekdayPreferences = null, array $weekendRotation = []): void
+    public function initialize(Collection $shifts, Collection $preferredRequests, Collection $history, CarbonImmutable $firstDate, array $restrictedShiftTypes = [], ?Collection $monthlyWeekdayPreferences = null, array $weekendRotation = [], ?Collection $previousParticipation = null): void
     {
         $this->preferences = [];
         $this->monthlyWeekdayPreferences = [];
@@ -73,6 +80,7 @@ class RosterCandidateRanker
         $this->shiftConflicts = [];
         $this->resetRecordedAssignments();
         $this->history = $history->all();
+        $this->initializeHistoricalDutyCounts($previousParticipation);
         $this->firstDate = $firstDate;
         $this->weekendGroups = $weekendRotation['assignments'] ?? [];
         $this->scheduledWeekendGroups = $weekendRotation['expected'] ?? [];
@@ -281,10 +289,12 @@ class RosterCandidateRanker
         }
 
         if ($role === RosterAssignmentRole::Main && $shift->shiftType->is_overnight) {
-            $dimensions[] = ($history->actual_night_duty_count ?? 0) + ($this->nightCounts[$doctorId] ?? 0);
+            $dimensions[] = $this->nightCounts[$doctorId] ?? 0;
+            $dimensions[] = $this->historicalNightCounts[$doctorId] ?? 0;
         }
         if ($role === RosterAssignmentRole::Optional) {
-            $dimensions[] = ($history->optional_assignment_count ?? 0) + ($this->optionalCounts[$doctorId] ?? 0);
+            $dimensions[] = $this->optionalCounts[$doctorId] ?? 0;
+            $dimensions[] = $this->historicalOptionalCounts[$doctorId] ?? 0;
         }
         $dimensions[] = ($history->closing_balance_minutes ?? 0) + ($this->scheduledMinutes[$doctorId] ?? 0);
         if ($this->hasMonthlyWeekdayPreferences) {
@@ -293,6 +303,83 @@ class RosterCandidateRanker
         }
 
         return $dimensions;
+    }
+
+    /**
+     * Prepare category history once from doctors with both saved participation and workload data.
+     * Known nonparticipants and candidates without workload receive the participating cohort median;
+     * a missing participation key never reclassifies an existing workload row as a nonparticipant.
+     *
+     * @param  Collection<int, bool|null>|null  $previousParticipation
+     */
+    private function initializeHistoricalDutyCounts(?Collection $previousParticipation): void
+    {
+        $participatingNightCounts = [];
+        $participatingOptionalCounts = [];
+        foreach ($this->history as $doctorId => $history) {
+            if ($previousParticipation?->get($doctorId) !== true) {
+                continue;
+            }
+
+            $participatingNightCounts[] = (int) $history->actual_night_duty_count;
+            $participatingOptionalCounts[] = (int) $history->optional_assignment_count;
+        }
+
+        $neutralNightCount = $this->median($participatingNightCounts);
+        $neutralOptionalCount = $this->median($participatingOptionalCounts);
+        $this->historicalNightCounts = [];
+        $this->historicalOptionalCounts = [];
+
+        foreach ($this->history as $doctorId => $history) {
+            $participationKnown = $previousParticipation?->has($doctorId) ?? false;
+            $participated = $previousParticipation?->get($doctorId);
+            if ($previousParticipation === null || ! $participationKnown) {
+                $this->historicalNightCounts[$doctorId] = (int) $history->actual_night_duty_count;
+                $this->historicalOptionalCounts[$doctorId] = (int) $history->optional_assignment_count;
+
+                continue;
+            }
+
+            $this->historicalNightCounts[$doctorId] = $participated
+                ? (int) $history->actual_night_duty_count
+                : $neutralNightCount;
+            $this->historicalOptionalCounts[$doctorId] = $participated
+                ? (int) $history->optional_assignment_count
+                : $neutralOptionalCount;
+        }
+
+        if ($previousParticipation === null) {
+            return;
+        }
+
+        foreach ($previousParticipation->keys() as $doctorId) {
+            if (isset($this->history[$doctorId])) {
+                continue;
+            }
+
+            $this->historicalNightCounts[$doctorId] = $neutralNightCount;
+            $this->historicalOptionalCounts[$doctorId] = $neutralOptionalCount;
+        }
+    }
+
+    /**
+     * For an even-sized cohort, round the mean of the two middle counts to the nearest integer, with halves rounded up.
+     *
+     * @param  list<int>  $counts
+     */
+    private function median(array $counts): int
+    {
+        if ($counts === []) {
+            return 0;
+        }
+
+        sort($counts, SORT_NUMERIC);
+        $middle = intdiv(count($counts), 2);
+        if (count($counts) % 2 === 1) {
+            return $counts[$middle];
+        }
+
+        return intdiv($counts[$middle - 1] + $counts[$middle] + 1, 2);
     }
 
     public function rotationWeekendStart(RosterShift $shift): ?string

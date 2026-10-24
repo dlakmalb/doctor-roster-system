@@ -64,7 +64,8 @@ class RosterAssignmentGenerator
                 ->whereBetween('request_date', [$firstDate->subDay(), $lastDate->addDay()])
                 ->get()->toBase()->groupBy('doctor_id');
             $previousHistory = $this->history->forMonth($roster->year, $roster->month);
-            $historyFingerprint = $this->history->fingerprintRows($previousHistory);
+            $previousParticipation = $this->history->participationForMonth($roster->year, $roster->month, $previousHistory, $participationSnapshot->keys());
+            $historyFingerprint = $this->history->fingerprintRows($previousHistory, $previousParticipation);
             $preferredRequests = DoctorRequest::query()
                 ->where('request_type', DoctorRequestType::PreferredWork->value)
                 ->whereBetween('request_date', [$firstDate, $lastDate])->get();
@@ -97,7 +98,7 @@ class RosterAssignmentGenerator
                 }
             }
 
-            $this->ranker->initialize($shifts, $preferredRequests, $previousHistory, $firstDate, $restrictedShiftTypes, $monthlyWeekdayPreferences, $weekendRotation);
+            $this->ranker->initialize($shifts, $preferredRequests, $previousHistory, $firstDate, $restrictedShiftTypes, $monthlyWeekdayPreferences, $weekendRotation, $previousParticipation);
             $assignments = $this->recovery->plan($shifts, $doctors, $excludedDoctorIds, $dayOffRequests, $previousHistory, $this->ranker, $restrictedShiftTypes, $participationSnapshot);
 
             if ($replace) {

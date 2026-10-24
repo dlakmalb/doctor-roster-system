@@ -371,7 +371,8 @@ it('warns when the previous confirmed history changes after generation', functio
     $generatedAt = $october->fresh()->last_generated_at;
     $generatedFingerprint = $october->fresh()->generated_history_fingerprint;
     $generatedAssignmentIds = RosterAssignment::query()->whereHas('rosterShift', fn ($query) => $query->where('roster_id', $october->id))->orderBy('id')->pluck('id')->all();
-    expect($generatedFingerprint)->toMatch('/^[a-f0-9]{64}$/');
+    expect($generatedFingerprint)->toMatch('/^[a-f0-9]{64}$/')
+        ->and(collect(app(RosterDraftValidationService::class)->validate($october->fresh()))->pluck('code'))->not->toContain('stale_history');
     $this->post(route('initial-workload.save', ['year' => 2026, 'month' => 9]), baselinePayload($doctors, '6'))->assertRedirect();
     $warnings = app(RosterDraftValidationService::class)->validate($october->fresh());
     expect(collect($warnings)->contains(fn (array $item): bool => $item['severity'] === 'Warning' && str_contains($item['message'], 'history changed')))->toBeTrue()

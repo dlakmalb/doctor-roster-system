@@ -294,7 +294,7 @@ it('fills Main directly before moving a generated Optional doctor', function () 
     expect($result["$day->id:main:1"]['doctor_id'])->toBe($b->id)
         ->and($result["$day->id:optional:1"]['doctor_id'])->toBe($a->id)
         ->and($explored)->toBe(1);
-    expect($ranker->dimensions($a, $day, RosterAssignmentRole::Optional, collect()))->toBe([1, 1, 0]);
+    expect($ranker->dimensions($a, $day, RosterAssignmentRole::Optional, collect()))->toBe([1, 1, 0, 0]);
 });
 
 it('fills Optional directly before moving a generated Main doctor on the same shift', function () {
