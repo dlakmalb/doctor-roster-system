@@ -6,7 +6,9 @@ use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Support\Carbon;
+use LogicException;
 
 /**
  * @property int $id
@@ -36,6 +38,25 @@ class RosterShift extends Model
     public function shiftType(): BelongsTo
     {
         return $this->belongsTo(ShiftType::class);
+    }
+
+    /** @return HasOne<RosterShiftCapacitySnapshot, $this> */
+    public function capacitySnapshot(): HasOne
+    {
+        return $this->hasOne(RosterShiftCapacitySnapshot::class);
+    }
+
+    public function savedCapacity(): RosterShiftCapacitySnapshot
+    {
+        $snapshot = $this->relationLoaded('capacitySnapshot')
+            ? $this->getRelation('capacitySnapshot')
+            : $this->capacitySnapshot()->first();
+
+        if (! $snapshot instanceof RosterShiftCapacitySnapshot) {
+            throw new LogicException("Roster shift {$this->id} is missing its capacity snapshot.");
+        }
+
+        return $snapshot;
     }
 
     /** @return HasMany<RosterAssignment, $this> */

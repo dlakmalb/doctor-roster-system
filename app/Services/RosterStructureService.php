@@ -65,9 +65,13 @@ class RosterStructureService
                 foreach ($codes as $code) {
                     /** @var ShiftType $shiftType */
                     $shiftType = $shiftTypes->get($code);
-                    $roster->shifts()->create([
+                    $shift = $roster->shifts()->create([
                         'shift_type_id' => $shiftType->id,
                         'shift_date' => $date->toDateString(),
+                    ]);
+                    $shift->capacitySnapshot()->create([
+                        'main_count' => $shiftType->main_count,
+                        'optional_count' => $shiftType->optional_count,
                     ]);
                 }
 

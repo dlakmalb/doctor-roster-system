@@ -7,6 +7,7 @@ use App\Models\DoctorMonthlyExclusion;
 use App\Models\DoctorRequest;
 use App\Models\Roster;
 use App\Models\RosterShift;
+use App\Models\RosterShiftCapacitySnapshot;
 use App\Models\ShiftType;
 use App\Models\User;
 use App\Services\RosterStructureService;
@@ -101,6 +102,31 @@ it('seeds the confirmed capacities and preserves every shift duration', function
     ]);
 });
 
+it('snapshots global capacities atomically and keeps them on repeated roster creation', function () {
+    $user = prepareRosterStructureTest();
+    $roster = app(RosterStructureService::class)->create(2026, 10, $user);
+
+    expect(RosterShiftCapacitySnapshot::query()->count())->toBe(84);
+    $weekendDay = $roster->shifts()->with(['shiftType', 'capacitySnapshot'])
+        ->whereDate('shift_date', '2026-10-03')
+        ->whereHas('shiftType', fn ($query) => $query->where('code', 'weekend_day'))
+        ->firstOrFail();
+    expect($weekendDay->savedCapacity()->main_count)->toBe(3)
+        ->and($weekendDay->savedCapacity()->optional_count)->toBe(7);
+
+    ShiftType::query()->where('code', 'weekday_day')->update(['main_count' => 9, 'optional_count' => 8]);
+    app(RosterStructureService::class)->create(2026, 10, $user);
+
+    $weekdayDay = $roster->shifts()->with(['shiftType', 'capacitySnapshot'])
+        ->whereDate('shift_date', '2026-10-01')
+        ->whereHas('shiftType', fn ($query) => $query->where('code', 'weekday_day'))
+        ->firstOrFail();
+    expect($weekdayDay->savedCapacity()->main_count)->toBe(4)
+        ->and($weekdayDay->savedCapacity()->optional_count)->toBe(2)
+        ->and($weekdayDay->shiftType->main_count)->toBe(9)
+        ->and(RosterShiftCapacitySnapshot::query()->count())->toBe(84);
+});
+
 it('includes leap day and a month-end weekday night without adding next-month starts', function () {
     $user = prepareRosterStructureTest();
 
@@ -157,6 +183,21 @@ it('rolls back the roster and its shifts when a shift insert fails', function ()
 
     $this->assertDatabaseCount('rosters', 0);
     $this->assertDatabaseCount('roster_shifts', 0);
+    $this->assertDatabaseCount('roster_shift_capacity_snapshots', 0);
+});
+
+it('rolls back roster shifts when snapshot creation fails', function () {
+    $user = prepareRosterStructureTest();
+    RosterShiftCapacitySnapshot::creating(function (): void {
+        throw new RuntimeException('Capacity snapshot insert failed.');
+    });
+
+    expect(fn () => app(RosterStructureService::class)->create(2026, 10, $user))
+        ->toThrow(RuntimeException::class, 'Capacity snapshot insert failed.');
+
+    $this->assertDatabaseCount('rosters', 0);
+    $this->assertDatabaseCount('roster_shifts', 0);
+    $this->assertDatabaseCount('roster_shift_capacity_snapshots', 0);
 });
 
 it('shows chronological shifts, required positions, and the overnight end date', function () {
