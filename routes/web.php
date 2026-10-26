@@ -11,6 +11,7 @@ use App\Http\Controllers\DoctorRequestController;
 use App\Http\Controllers\InitialWorkloadSetupController;
 use App\Http\Controllers\MonthlySetupController;
 use App\Http\Controllers\MonthlySetupRosterGenerationController;
+use App\Http\Controllers\MonthlyShiftCapacityController;
 use App\Http\Controllers\RosterAssignmentGenerationController;
 use App\Http\Controllers\RosterAssignmentOptionsController;
 use App\Http\Controllers\RosterAssignmentRegenerationController;
@@ -80,6 +81,7 @@ Route::middleware('auth')->group(function (): void {
         ->middleware(EnsureMonthlySetupPlanningPeriod::class)
         ->group(function (): void {
             Route::get('/', MonthlySetupController::class)->name('monthly-setup.show');
+            Route::post('/capacities', [MonthlyShiftCapacityController::class, 'store'])->name('monthly-setup.capacities.store');
             Route::post('/generate-roster', MonthlySetupRosterGenerationController::class)->name('monthly-setup.generate-roster');
             Route::post('/requests', [DoctorRequestController::class, 'store'])->middleware(EnsureMonthlySetupEditable::class)->name('doctor-requests.store');
             Route::put('/requests/{doctorRequest}', [DoctorRequestController::class, 'update'])->middleware(EnsureMonthlySetupEditable::class)->name('doctor-requests.update');

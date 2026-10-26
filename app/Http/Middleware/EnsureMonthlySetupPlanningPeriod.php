@@ -2,6 +2,7 @@
 
 namespace App\Http\Middleware;
 
+use App\Models\Roster;
 use App\Services\RosterHistoryReadinessService;
 use App\Services\RosterPlanningPeriodService;
 use Closure;
@@ -28,6 +29,17 @@ class EnsureMonthlySetupPlanningPeriod
             : "managing {$planningMonth->format('F Y')} Monthly Setup";
 
         if (! $this->periods->isPlanningPeriod($year, $month, $operationalMonth)) {
+            $hasRoster = Roster::query()->where('year', $year)->where('month', $month)->exists();
+            $isHistoricalRead = $hasRoster
+                && $request->routeIs('monthly-setup.show')
+                && $request->isMethod('GET');
+            $isHistoricalCapacityWrite = $hasRoster
+                && $request->routeIs('monthly-setup.capacities.store');
+
+            if ($isHistoricalRead || $isHistoricalCapacityWrite) {
+                return $next($request);
+            }
+
             $message = $isRosterCreation
                 ? "Draft roster creation is currently available for {$planningMonth->format('F Y')}."
                 : "Monthly Setup is currently available for {$planningMonth->format('F Y')}.";
