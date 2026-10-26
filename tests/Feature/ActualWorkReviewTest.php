@@ -186,7 +186,19 @@ it('uses Friday, Saturday, and Sunday duties in the final weekend period across 
 
     $july = Roster::create(['year' => 2026, 'month' => 7, 'status' => RosterStatus::Final, 'created_by' => $admin->id]);
     snapshotRosterParticipation($july, $doctors);
-    actualShift($july, '2026-07-31', 'weekday_night', $doctors[0]);
+    $weekdayNight = ShiftType::query()->where('code', 'weekday_night')->firstOrFail();
+    $julyNight = RosterShift::query()->where('roster_id', $july->id)
+        ->whereDate('shift_date', '2026-07-31')
+        ->where('shift_type_id', $weekdayNight->id)
+        ->firstOrFail();
+    if (! $julyNight->assignments()->exists()) {
+        RosterAssignment::create([
+            'roster_shift_id' => $julyNight->id,
+            'doctor_id' => $doctors[0]->id,
+            'role' => RosterAssignmentRole::Main,
+            'slot_number' => 1,
+        ]);
+    }
     $preview = actualPreview($july)['rows'];
     expect(collect($preview)->firstWhere('doctor_id', $doctors[0]->id)['worked_final_weekend'])->toBeTrue();
 });

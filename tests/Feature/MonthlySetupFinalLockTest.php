@@ -28,6 +28,7 @@ function monthlySetupFinalFixture(bool $final = true, bool $actualWorkStarted = 
     $doctors = Doctor::query()->orderByDesc('is_active')->orderBy('short_code')->get();
     $activeDoctors = $doctors->where('is_active', true)->values();
     test()->actingAs($admin)->post(route('initial-workload.save', ['year' => 2026, 'month' => 10]), [
+        'previous_night_doctor_ids' => $doctors->take(2)->pluck('id')->all(),
         'doctors' => $doctors->map(fn (Doctor $doctor): array => [
             'doctor_id' => $doctor->id,
             'participation_status' => $doctor->is_active ? 'participating' : 'not_part_of_team',

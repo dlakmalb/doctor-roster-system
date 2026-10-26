@@ -8,16 +8,25 @@ use App\Models\Doctor;
 use App\Models\DoctorMonthlyWorkload;
 use App\Models\Roster;
 use Carbon\CarbonImmutable;
+use Illuminate\Validation\ValidationException;
 
 class RosterHistoryReadinessService
 {
-    public function __construct(private DoctorMonthlyParticipationService $participation) {}
+    public function __construct(private DoctorMonthlyParticipationService $participation, private PreviousNightBoundaryService $nightBoundary) {}
 
     /** @return array{ready: bool, message: string|null, year: int, month: int, action: string, basis: string|null} */
     public function forMonth(int $year, int $month): array
     {
         $previous = CarbonImmutable::create($year, $month, 1)->subMonth();
         $previousRoster = Roster::query()->where('year', $previous->year)->where('month', $previous->month)->first();
+        $boundaryMessage = null;
+        if ($previousRoster === null || $previousRoster->status === RosterStatus::Final) {
+            try {
+                $this->nightBoundary->doctorIdsForMonth($year, $month);
+            } catch (ValidationException $exception) {
+                $boundaryMessage = $exception->errors()['roster'][0] ?? 'Previous-month Night assignment information is incomplete.';
+            }
+        }
         $doctorIds = Doctor::query()->pluck('id');
         $historicalDoctorIds = $previousRoster === null || $previousRoster->status !== RosterStatus::Final
             ? $doctorIds
@@ -44,6 +53,12 @@ class RosterHistoryReadinessService
             $action = 'initial_setup';
             $message = $ready ? null : "Complete Initial Setup for {$previous->format('F Y')} before generating {$this->label($year, $month)}.";
             $basis = $ready ? 'manual_initial' : null;
+        }
+
+        if ($boundaryMessage !== null) {
+            $ready = false;
+            $message = $boundaryMessage;
+            $basis = null;
         }
 
         return ['ready' => $ready, 'message' => $message, 'year' => $previous->year, 'month' => $previous->month, 'action' => $action, 'basis' => $basis];

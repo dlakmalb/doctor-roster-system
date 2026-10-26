@@ -5,10 +5,12 @@ namespace Database\Seeders;
 use App\Enums\DoctorMonthlyParticipationStatus;
 use App\Enums\DoctorMonthlyWorkloadSource;
 use App\Models\Doctor;
+use App\Models\DoctorMonthlyNightBoundarySnapshot;
 use App\Models\DoctorMonthlyParticipation;
 use App\Models\DoctorMonthlyWorkload;
 use App\Services\DoctorMonthlyWorkloadService;
 use App\Services\InitialWorkloadSetupService;
+use App\Services\PreviousNightBoundaryService;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Seeder;
@@ -74,7 +76,7 @@ class September2026HistoricalBaselineSeeder extends Seeder
         '2026-09-30' => ['kind' => 'weekday', 'groups' => ['day' => 'AHRM', 'optional_day' => 'TG', 'evening' => 'BIL', 'optional_evening' => 'S', 'night' => 'NE']],
     ];
 
-    public function run(InitialWorkloadSetupService $setup, DoctorMonthlyWorkloadService $workloads): void
+    public function run(InitialWorkloadSetupService $setup, DoctorMonthlyWorkloadService $workloads, PreviousNightBoundaryService $nightBoundary): void
     {
         if (! app()->environment(['local', 'testing'])) {
             throw new \RuntimeException('September 2026 historical baseline seeding is limited to local and testing environments.');
@@ -88,12 +90,42 @@ class September2026HistoricalBaselineSeeder extends Seeder
         $existingParticipation = DoctorMonthlyParticipation::query()->where('year', self::YEAR)->where('month', self::MONTH)->get();
         if ($existingWorkloads->isNotEmpty() || $existingParticipation->isNotEmpty()) {
             $this->assertMatchingBaseline($existingWorkloads, $existingParticipation, $facts, $workloads);
+            $this->ensureNightBoundary($setup, $nightBoundary);
 
             return;
         }
 
         $this->assertNoLaterWorkload();
-        $setup->save(self::YEAR, self::MONTH, $entries);
+        $setup->save(self::YEAR, self::MONTH, $entries, $this->previousNightDoctorIds());
+    }
+
+    private function ensureNightBoundary(InitialWorkloadSetupService $setup, PreviousNightBoundaryService $nightBoundary): void
+    {
+        $expectedDoctorIds = $this->previousNightDoctorIds();
+        $expectedCapacity = $nightBoundary->expectedDoctorCountForDate(CarbonImmutable::create(self::YEAR, self::MONTH, 1)->endOfMonth());
+        if (count($expectedDoctorIds) !== $expectedCapacity) {
+            $this->fail('The September reference roster identifies '.count($expectedDoctorIds)." final Night doctors, but the configured shift requires {$expectedCapacity}.");
+        }
+        $snapshot = DoctorMonthlyNightBoundarySnapshot::query()->with('doctors:id')
+            ->where('year', self::YEAR)->where('month', self::MONTH)->first();
+        if ($snapshot !== null) {
+            $savedDoctorIds = $snapshot->doctors->modelKeys();
+            sort($savedDoctorIds);
+            sort($expectedDoctorIds);
+            if ($savedDoctorIds !== $expectedDoctorIds) {
+                $this->fail('The saved September previous-Night boundary differs from the reference roster. Resolve it before using the reference baseline.');
+            }
+
+            return;
+        }
+
+        $setup->recordNightBoundary(self::YEAR, self::MONTH, $expectedDoctorIds);
+    }
+
+    /** @return list<int> */
+    private function previousNightDoctorIds(): array
+    {
+        return Doctor::query()->whereIn('short_code', ['N', 'E'])->orderBy('id')->pluck('id')->map(fn (int|string $id): int => (int) $id)->all();
     }
 
     /** @param array<string, array{kind: string, groups: array<string, string>}> $roster

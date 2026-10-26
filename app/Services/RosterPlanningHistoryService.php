@@ -16,6 +16,7 @@ class RosterPlanningHistoryService
     public function __construct(
         private DoctorMonthlyWorkloadService $workloads,
         private DoctorMonthlyParticipationService $participation,
+        private PreviousNightBoundaryService $nightBoundary,
     ) {}
 
     /** @return Collection<int, DoctorMonthlyWorkload> */
@@ -68,7 +69,13 @@ class RosterPlanningHistoryService
     {
         $history = $this->forMonth($year, $month, false);
 
-        return $this->fingerprintRows($history, $this->participationForMonth($year, $month, $history));
+        $nightDate = CarbonImmutable::create($year, $month, 1)->startOfDay()->subDay();
+
+        return $this->fingerprintRows(
+            $history,
+            $this->participationForMonth($year, $month, $history),
+            $this->nightBoundary->fingerprint($nightDate, $this->nightBoundary->doctorIdsForMonth($year, $month)),
+        );
     }
 
     /**
@@ -116,7 +123,7 @@ class RosterPlanningHistoryService
      * @param  Collection<int, DoctorMonthlyWorkload>  $history
      * @param  Collection<int, bool|null>|null  $participation
      */
-    public function fingerprintRows(Collection $history, ?Collection $participation = null): string
+    public function fingerprintRows(Collection $history, ?Collection $participation = null, ?string $nightBoundaryFingerprint = null): string
     {
         $rows = $history->map(fn (DoctorMonthlyWorkload $row): array => [
             'doctor_id' => $row->doctor_id,
@@ -132,6 +139,10 @@ class RosterPlanningHistoryService
 
         $participationRows = $participation?->sortKeys()->all();
 
-        return hash('sha256', json_encode(['workloads' => $rows, 'participation' => $participationRows], JSON_THROW_ON_ERROR));
+        return hash('sha256', json_encode([
+            'workloads' => $rows,
+            'participation' => $participationRows,
+            'previous_night_boundary' => $nightBoundaryFingerprint,
+        ], JSON_THROW_ON_ERROR));
     }
 }

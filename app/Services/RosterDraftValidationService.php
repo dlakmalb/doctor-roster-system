@@ -26,6 +26,10 @@ class RosterDraftValidationService
         if ($roster->status === RosterStatus::Draft && ! $this->context->participationPopulationMatches) {
             $items[] = $this->item('Error', 'participation_population_mismatch', 'Active doctor statuses no longer match this Draft roster’s saved participation. Restore the active statuses to match the saved population before finalizing.', 'conflicts');
         }
+        $reportedPreviousNightConflicts = [];
+        if ($this->context->previousNightBoundaryError !== null) {
+            $items[] = $this->item('Error', 'previous_night_boundary_unknown', $this->context->previousNightBoundaryError, 'conflicts');
+        }
         foreach ($this->context->shifts as $shift) {
             foreach ($shift->assignments as $assignment) {
                 $capacity = $assignment->role === RosterAssignmentRole::Main ? $shift->shiftType->main_count : $shift->shiftType->optional_count;
@@ -51,6 +55,12 @@ class RosterDraftValidationService
                     $other = $state;
                     unset($other[$key]);
                     foreach ($this->context->hardReasons($state[$key], $shift, $role, $other) as $reason) {
+                        if (str_contains($reason, 'has Night duty on ') && str_contains($reason, 'cannot receive any assignment on ')) {
+                            if (isset($reportedPreviousNightConflicts[$reason])) {
+                                continue;
+                            }
+                            $reportedPreviousNightConflicts[$reason] = true;
+                        }
                         $items[] = $this->item('Error', 'hard_conflict', "{$shift->shift_date->format('M j')} {$shift->shiftType->name}: $reason", $target);
                     }
                 }
@@ -119,7 +129,7 @@ class RosterDraftValidationService
             }
         }
 
-        if ($roster->status === RosterStatus::Draft && $roster->last_generated_at !== null && $roster->generated_history_fingerprint !== null) {
+        if ($roster->status === RosterStatus::Draft && $roster->last_generated_at !== null && $roster->generated_history_fingerprint !== null && $this->context->previousNightBoundaryError === null) {
             $previous = CarbonImmutable::create($roster->year, $roster->month, 1)->subMonth();
             if ($roster->generated_history_fingerprint !== $this->history->fingerprint($roster->year, $roster->month)) {
                 $items[] = $this->item('Warning', 'stale_history', "{$previous->format('F Y')} history changed after this roster was generated. Review or regenerate this roster because fairness calculations may be stale.", 'conflicts');

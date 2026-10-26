@@ -3,9 +3,11 @@
 namespace App\Http\Controllers;
 
 use App\Models\Doctor;
+use App\Models\DoctorMonthlyNightBoundarySnapshot;
 use App\Models\DoctorMonthlyParticipation;
 use App\Models\DoctorMonthlyWorkload;
 use App\Services\InitialWorkloadSetupService;
+use App\Services\PreviousNightBoundaryService;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -14,14 +16,22 @@ use Inertia\Response;
 
 class InitialWorkloadSetupController extends Controller
 {
-    public function show(int $year, int $month, InitialWorkloadSetupService $setup): Response
+    public function show(int $year, int $month, InitialWorkloadSetupService $setup, PreviousNightBoundaryService $nightBoundary): Response
     {
         $setup->assertAllowedPeriod($year, $month);
+        $nightDate = CarbonImmutable::create($year, $month, 1)->endOfMonth();
+        $snapshot = DoctorMonthlyNightBoundarySnapshot::query()->with('doctors:id')->where('year', $year)->where('month', $month)->first();
         $existing = DoctorMonthlyWorkload::query()->where('year', $year)->where('month', $month)->get()->keyBy('doctor_id');
         $participations = DoctorMonthlyParticipation::query()->where('year', $year)->where('month', $month)->get()->keyBy('doctor_id');
 
         return Inertia::render('initial-workload-setup', [
             'month' => ['year' => $year, 'month' => $month, 'label' => CarbonImmutable::create($year, $month, 1)->format('F Y')],
+            'previousNight' => [
+                'date' => $nightDate->toDateString(),
+                'required_doctor_count' => $nightBoundary->expectedDoctorCountForDate($nightDate),
+                'doctor_ids' => $snapshot?->doctors->modelKeys() ?? [],
+                'saved' => $snapshot !== null,
+            ],
             'doctors' => Doctor::query()->orderBy('short_code')->get()->map(fn (Doctor $doctor): array => [
                 'id' => $doctor->id,
                 'name' => $doctor->name,
@@ -48,8 +58,10 @@ class InitialWorkloadSetupController extends Controller
             'doctors.*.optional_assignment_count' => ['required', 'integer', 'min:0'],
             'doctors.*.worked_final_weekend' => ['required', 'boolean'],
             'doctors.*.most_recent_night_shift_at' => ['nullable', 'date'],
+            'previous_night_doctor_ids' => ['present', 'array'],
+            'previous_night_doctor_ids.*' => ['required', 'integer', 'distinct', 'exists:doctors,id'],
         ]);
-        $setup->save($year, $month, $input['doctors']);
+        $setup->save($year, $month, $input['doctors'], $input['previous_night_doctor_ids']);
 
         return to_route('initial-workload.show', ['year' => $year, 'month' => $month]);
     }

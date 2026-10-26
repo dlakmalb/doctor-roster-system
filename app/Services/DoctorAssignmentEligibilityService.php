@@ -19,7 +19,7 @@ class DoctorAssignmentEligibilityService
      * @param  Collection<int, RosterShift>  $assignedShifts
      * @return list<string>
      */
-    public function conflicts(Doctor $doctor, RosterShift $candidate, bool $isExcluded, Collection $dayOffRequests, Collection $assignedShifts, ?CarbonInterface $previousNightStart = null, bool $checkActiveStatus = true, bool $isShiftRestricted = false): array
+    public function conflicts(Doctor $doctor, RosterShift $candidate, bool $isExcluded, Collection $dayOffRequests, Collection $assignedShifts, ?CarbonInterface $previousNightStart = null, bool $checkActiveStatus = true, bool $isShiftRestricted = false, ?Collection $previousNightDoctorIds = null): array
     {
         return $this->roleAwareConflicts(
             $doctor,
@@ -32,6 +32,7 @@ class DoctorAssignmentEligibilityService
             $previousNightStart,
             $checkActiveStatus,
             $isShiftRestricted,
+            $previousNightDoctorIds,
         );
     }
 
@@ -40,7 +41,7 @@ class DoctorAssignmentEligibilityService
      * @param  Collection<int, array{shift: RosterShift, role: RosterAssignmentRole}>  $assignedAssignments
      * @return list<string>
      */
-    public function roleAwareConflicts(Doctor $doctor, RosterShift $candidate, RosterAssignmentRole $candidateRole, bool $isExcluded, bool $isParticipating, Collection $dayOffRequests, Collection $assignedAssignments, ?CarbonInterface $previousNightStart = null, bool $checkActiveStatus = true, bool $isShiftRestricted = false): array
+    public function roleAwareConflicts(Doctor $doctor, RosterShift $candidate, RosterAssignmentRole $candidateRole, bool $isExcluded, bool $isParticipating, Collection $dayOffRequests, Collection $assignedAssignments, ?CarbonInterface $previousNightStart = null, bool $checkActiveStatus = true, bool $isShiftRestricted = false, ?Collection $previousNightDoctorIds = null): array
     {
         $conflicts = [];
 
@@ -81,8 +82,14 @@ class DoctorAssignmentEligibilityService
             }
         }
 
-        if ($isMain && $previousNightStart !== null) {
-            $conflict = $this->nightConflict(CarbonImmutable::instance($candidate->shift_date)->startOfDay(), $candidate->shiftType->is_overnight, CarbonImmutable::instance($previousNightStart)->startOfDay(), true);
+        $candidateDate = CarbonImmutable::instance($candidate->shift_date)->startOfDay();
+        if ($previousNightDoctorIds !== null && $candidateDate->day === 1 && $previousNightDoctorIds->has($doctor->id)) {
+            $conflicts[] = 'previous_night_assignment';
+        }
+
+        if ($isMain && $candidate->shiftType->is_overnight && $previousNightStart !== null) {
+            $previousNightDate = CarbonImmutable::instance($previousNightStart)->startOfDay();
+            $conflict = $candidateDate->subDays(2)->isSameDay($previousNightDate) ? 'night_to_night_recovery' : null;
 
             if ($conflict !== null && ! in_array($conflict, $conflicts, true)) {
                 $conflicts[] = $conflict;
@@ -99,6 +106,14 @@ class DoctorAssignmentEligibilityService
 
         if ($candidateDate->isSameDay($assignedDate)) {
             return 'same_start_date';
+        }
+
+        if ($candidateDate->lessThan($assignedDate)) {
+            if ($candidate->shiftType->is_overnight && $candidateDate->addDay()->isSameDay($assignedDate)) {
+                return 'previous_night_assignment';
+            }
+        } elseif ($assignedShift->shiftType->is_overnight && $assignedDate->addDay()->isSameDay($candidateDate)) {
+            return 'previous_night_assignment';
         }
 
         $intervalsOverlap = $this->intervals->overlaps(
@@ -127,14 +142,7 @@ class DoctorAssignmentEligibilityService
 
     public function shiftConflict(RosterShift $candidate, RosterShift $assignedShift): ?string
     {
-        $candidateDate = CarbonImmutable::instance($candidate->shift_date)->startOfDay();
-        $assignedDate = CarbonImmutable::instance($assignedShift->shift_date)->startOfDay();
-
-        if ($candidateDate->isSameDay($assignedDate)) {
-            return 'same_start_date';
-        }
-
-        return $this->nightConflict($candidateDate, $candidate->shiftType->is_overnight, $assignedDate, $assignedShift->shiftType->is_overnight);
+        return $this->roleAwareShiftConflict($candidate, RosterAssignmentRole::Main, $assignedShift, RosterAssignmentRole::Main);
     }
 
     private function nightConflict(CarbonImmutable $candidateDate, bool $candidateIsNight, CarbonImmutable $assignedDate, bool $assignedIsNight): ?string
@@ -152,7 +160,7 @@ class DoctorAssignmentEligibilityService
         }
 
         if ($earlierIsNight && $earlierDate->addDay()->isSameDay($laterDate)) {
-            return 'next_day_night_recovery';
+            return 'previous_night_assignment';
         }
 
         if ($earlierIsNight && $laterIsNight && $earlierDate->addDays(2)->isSameDay($laterDate)) {

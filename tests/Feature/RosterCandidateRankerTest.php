@@ -11,6 +11,7 @@ use App\Models\RosterShift;
 use App\Models\ShiftType;
 use App\Models\User;
 use App\Services\DoctorAssignmentEligibilityService;
+use App\Services\PreviousNightBoundaryService;
 use App\Services\RosterCandidateRanker;
 use App\Services\RosterStructureService;
 use Carbon\CarbonImmutable;
@@ -325,32 +326,60 @@ it('does not infer previous nonparticipation when participation data is unavaila
         ->and($ranker->dimensions($second, $night, RosterAssignmentRole::Main, collect())[3])->toBe(4);
 });
 
-it('does not rank Optional below a Main preference solely for Main night recovery', function () {
+it('counts a following Main preference as blocked by an Optional Night', function () {
     [, , $doctor] = smartRoster();
     $optionalNight = smartShift('2026-10-06', 'weekday_night');
     $preferredDay = smartShift('2026-10-07', 'weekday_day');
+    $twoDaysLaterNight = smartShift('2026-10-08', 'weekday_night');
     $ranker = smartRanker([smartPreference($doctor, $preferredDay)]);
+    $eligibility = app(DoctorAssignmentEligibilityService::class);
+    $blockedShiftIds = array_map(
+        fn (RosterShift $shift): int => $shift->id,
+        $ranker->blockedPreferredShifts($doctor, $optionalNight, RosterAssignmentRole::Optional, collect()),
+    );
 
-    expect($ranker->blockedPreferredShifts($doctor, $optionalNight, RosterAssignmentRole::Optional, collect()))->toBe([])
-        ->and(app(DoctorAssignmentEligibilityService::class)->shiftConflict($optionalNight, $preferredDay))
-        ->toBe('next_day_night_recovery');
+    expect($blockedShiftIds)->toBe([$preferredDay->id])
+        ->and($eligibility->roleAwareShiftConflict($preferredDay, RosterAssignmentRole::Main, $optionalNight, RosterAssignmentRole::Optional))
+        ->toBe('previous_night_assignment');
+    expect($eligibility->roleAwareShiftConflict($twoDaysLaterNight, RosterAssignmentRole::Main, $optionalNight, RosterAssignmentRole::Optional))
+        ->toBeNull()
+        ->and($eligibility->roleAwareShiftConflict($twoDaysLaterNight, RosterAssignmentRole::Main, $optionalNight, RosterAssignmentRole::Main))
+        ->toBe('night_to_night_recovery');
 });
 
-it('uses assignment roles when deciding whether an existing Optional Night blocks a Main preference', function () {
+it('skips a Main preference already blocked by an existing Optional Night assignment', function () {
     [, , $doctor] = smartRoster();
     $optionalNight = smartShift('2026-10-06', 'weekday_night');
     $preferredDay = smartShift('2026-10-07', 'weekday_day');
     $candidate = $preferredDay;
     $ranker = smartRanker([smartPreference($doctor, $preferredDay)]);
 
-    $blockedShiftIds = array_map(
+    $newlyBlockedShiftIds = array_map(
+        fn (RosterShift $shift): int => $shift->id,
+        $ranker->blockedPreferredShifts($doctor, $candidate, RosterAssignmentRole::Optional, collect()),
+    );
+    $alreadyBlockedShiftIds = array_map(
         fn (RosterShift $shift): int => $shift->id,
         $ranker->blockedPreferredShifts($doctor, $candidate, RosterAssignmentRole::Optional, collect([
             ['shift' => $optionalNight, 'role' => RosterAssignmentRole::Optional],
         ])),
     );
 
-    expect($blockedShiftIds)->toContain($preferredDay->id);
+    $eligibility = app(DoctorAssignmentEligibilityService::class);
+    expect($eligibility->roleAwareShiftConflict(
+        $preferredDay,
+        RosterAssignmentRole::Main,
+        $optionalNight,
+        RosterAssignmentRole::Optional,
+    ))->toBe('previous_night_assignment')
+        ->and($eligibility->roleAwareShiftConflict(
+            $preferredDay,
+            RosterAssignmentRole::Main,
+            $candidate,
+            RosterAssignmentRole::Optional,
+        ))->toBe('same_start_date')
+        ->and($newlyBlockedShiftIds)->toContain($preferredDay->id)
+        ->and($alreadyBlockedShiftIds)->toBe([]);
 });
 
 it('protects future preference from Night recovery and keeps that protection soft', function () {
@@ -582,9 +611,14 @@ it('preserves a Tuesday Main preference when another doctor can take Monday Nigh
     $day = smartShift('2026-10-06', 'weekday_day');
     $roster->shifts()->whereNotIn('id', [$night->id, $day->id])->delete();
     ShiftType::query()->whereIn('id', [$night->shift_type_id, $day->shift_type_id])->update(['main_count' => 1, 'optional_count' => 0]);
+    app(PreviousNightBoundaryService::class)->saveInitialSnapshot(
+        2026,
+        9,
+        [Doctor::query()->where('is_active', false)->orderBy('id')->firstOrFail()->id],
+    );
     smartPreference($preferred, $day);
 
-    $this->actingAs($admin)->post(route('rosters.generate', ['year' => 2026, 'month' => 10]))->assertRedirect();
+    $this->actingAs($admin)->post(route('rosters.generate', ['year' => 2026, 'month' => 10]))->assertRedirect()->assertSessionHasNoErrors();
 
     expect($night->assignments()->where('role', RosterAssignmentRole::Main)->firstOrFail()->doctor_id)->toBe($other->id);
     expect($day->assignments()->where('role', RosterAssignmentRole::Main)->firstOrFail()->doctor_id)->toBe($preferred->id);
@@ -600,6 +634,11 @@ it('preserves a same-date Day Main preference when Night is planned first across
     $day = smartShift('2026-10-01', 'weekday_day');
     $roster->shifts()->whereNotIn('id', [$night->id, $day->id])->delete();
     ShiftType::query()->whereIn('id', [$night->shift_type_id, $day->shift_type_id])->update(['main_count' => 1, 'optional_count' => 0]);
+    app(PreviousNightBoundaryService::class)->saveInitialSnapshot(
+        2026,
+        9,
+        [Doctor::query()->where('is_active', false)->orderBy('id')->firstOrFail()->id],
+    );
     $request = smartPreference($preferred, $day);
     $ranker = smartRanker([$request]);
 
@@ -612,7 +651,7 @@ it('preserves a same-date Day Main preference when Night is planned first across
     $this->actingAs($admin);
     for ($run = 0; $run < 20; $run++) {
         $route = $run === 0 ? 'rosters.generate' : 'rosters.regenerate';
-        $this->post(route($route, ['year' => 2026, 'month' => 10]))->assertRedirect();
+        $this->post(route($route, ['year' => 2026, 'month' => 10]))->assertRedirect()->assertSessionHasNoErrors();
 
         expect($night->assignments()->where('role', RosterAssignmentRole::Main)->firstOrFail()->doctor_id)
             ->toBeIn([$other->id, $anotherNightCandidate->id]);
@@ -628,9 +667,14 @@ it('fills a required Night even when it consumes the only doctors future prefere
     $day = smartShift('2026-10-06', 'weekday_day');
     $roster->shifts()->whereNotIn('id', [$night->id, $day->id])->delete();
     ShiftType::query()->whereIn('id', [$night->shift_type_id, $day->shift_type_id])->update(['main_count' => 1, 'optional_count' => 0]);
+    app(PreviousNightBoundaryService::class)->saveInitialSnapshot(
+        2026,
+        9,
+        [Doctor::query()->where('id', '!=', $preferred->id)->where('is_active', false)->orderBy('id')->firstOrFail()->id],
+    );
     smartPreference($preferred, $day);
 
-    $this->actingAs($admin)->post(route('rosters.generate', ['year' => 2026, 'month' => 10]))->assertRedirect();
+    $this->actingAs($admin)->post(route('rosters.generate', ['year' => 2026, 'month' => 10]))->assertRedirect()->assertSessionHasNoErrors();
 
     expect($night->assignments()->where('role', RosterAssignmentRole::Main)->firstOrFail()->doctor_id)->toBe($preferred->id);
     expect($day->assignments()->where('role', RosterAssignmentRole::Main)->count())->toBe(0);

@@ -10,11 +10,14 @@ use App\Models\DoctorMonthlyShiftRestriction;
 use App\Models\DoctorMonthlyWeekdayPreference;
 use App\Models\DoctorMonthlyWorkload;
 use App\Models\DoctorRequest;
+use App\Models\Roster;
 use App\Models\RosterAssignment;
 use App\Models\RosterShift;
 use App\Models\ShiftType;
 use App\Models\User;
 use App\Services\DoctorAssignmentEligibilityService;
+use App\Services\InitialWorkloadSetupService;
+use App\Services\PreviousNightBoundaryService;
 use App\Services\RequestIntervalService;
 use App\Services\RosterAssignmentGenerator;
 use App\Services\RosterAssignmentRecoveryService;
@@ -24,6 +27,7 @@ use Carbon\CarbonImmutable;
 use Database\Seeders\DoctorsSeeder;
 use Database\Seeders\ShiftTypesSeeder;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\ValidationException;
 use Inertia\Testing\AssertableInertia as Assert;
 
 function assignmentRoster(?callable $prepareDoctors = null): array
@@ -521,7 +525,7 @@ it('applies monthly shift restrictions to Main but not Optional candidates', fun
         ->and($shift->assignments()->where('role', RosterAssignmentRole::Optional)->firstOrFail()->doctor_id)->toBe($doctor->id);
 });
 
-it('allows Optional after a previous Main Night without applying Main night recovery', function () {
+it('leaves a next-day Optional vacancy after a Main Night', function () {
     [$admin, $roster] = assignmentRoster(function (): void {
         Doctor::query()->where('short_code', '!=', 'N')->update(['is_active' => false]);
     });
@@ -540,18 +544,18 @@ it('allows Optional after a previous Main Night without applying Main night reco
     $this->actingAs($admin)->post(generateUrl())->assertRedirect();
 
     $nightAssignment = $night->assignments()->where('role', RosterAssignmentRole::Main)->firstOrFail();
-    $optionalAssignment = $nextDay->assignments()->where('role', RosterAssignmentRole::Optional)->firstOrFail();
+    $optionalAssignment = $nextDay->assignments()->where('role', RosterAssignmentRole::Optional)->first();
     expect($nightAssignment->doctor_id)->toBe($doctor->id)
-        ->and($optionalAssignment->doctor_id)->toBe($doctor->id)
+        ->and($optionalAssignment)->toBeNull()
         ->and(app(DoctorAssignmentEligibilityService::class)->roleAwareShiftConflict(
             $night,
             $nightAssignment->role,
             $nextDay,
-            $optionalAssignment->role,
-        ))->toBeNull();
+            RosterAssignmentRole::Optional,
+        ))->toBe('previous_night_assignment');
 });
 
-it('does not apply Main night recovery from an existing Optional Night to a Main candidate', function () {
+it('fills a next-day Main before an Optional Night when the same doctor is eligible for both', function () {
     [$admin, $roster] = assignmentRoster(function (): void {
         Doctor::query()->where('short_code', '!=', 'N')->update(['is_active' => false]);
     });
@@ -561,11 +565,48 @@ it('does not apply Main night recovery from an existing Optional Night to a Main
     $roster->shifts()->whereNotIn('id', [$night->id, $nextDay->id])->delete();
     ShiftType::query()->whereKey($night->shift_type_id)->update(['main_count' => 0, 'optional_count' => 1]);
     ShiftType::query()->whereKey($nextDay->shift_type_id)->update(['main_count' => 1, 'optional_count' => 0]);
+    app(PreviousNightBoundaryService::class)->saveInitialSnapshot(2026, 9, [$doctor->id]);
 
-    $this->actingAs($admin)->post(generateUrl())->assertRedirect();
+    $this->actingAs($admin)->post(generateUrl())->assertRedirect()->assertSessionHasNoErrors();
 
-    expect($night->assignments()->where('role', RosterAssignmentRole::Optional)->firstOrFail()->doctor_id)->toBe($doctor->id)
-        ->and($nextDay->assignments()->where('role', RosterAssignmentRole::Main)->firstOrFail()->doctor_id)->toBe($doctor->id);
+    $mainAssignment = $nextDay->assignments()->where('role', RosterAssignmentRole::Main)->firstOrFail();
+    expect($mainAssignment->doctor_id)->toBe($doctor->id)
+        ->and($night->assignments()->where('role', RosterAssignmentRole::Optional)->exists())->toBeFalse()
+        ->and(app(DoctorAssignmentEligibilityService::class)->roleAwareShiftConflict(
+            $night,
+            RosterAssignmentRole::Optional,
+            $nextDay,
+            $mainAssignment->role,
+        ))->toBe('previous_night_assignment');
+});
+
+it('preserves a fixed Optional Night and leaves the next-day Main vacant during Fill Unfilled Slots', function () {
+    [$admin, $roster] = assignmentRoster(function (): void {
+        Doctor::query()->where('short_code', '!=', 'N')->update(['is_active' => false]);
+    });
+    $doctor = Doctor::query()->where('short_code', 'N')->firstOrFail();
+    $night = shiftOn('2026-10-05', 'weekday_night');
+    $nextDay = shiftOn('2026-10-06', 'weekday_day');
+    $roster->shifts()->whereNotIn('id', [$night->id, $nextDay->id])->delete();
+    ShiftType::query()->whereKey($night->shift_type_id)->update(['main_count' => 0, 'optional_count' => 1]);
+    ShiftType::query()->whereKey($nextDay->shift_type_id)->update(['main_count' => 1, 'optional_count' => 0]);
+    app(PreviousNightBoundaryService::class)->saveInitialSnapshot(2026, 9, [$doctor->id]);
+    $fixedNightAssignment = $night->assignments()->create([
+        'doctor_id' => $doctor->id,
+        'role' => RosterAssignmentRole::Optional,
+        'slot_number' => 1,
+    ]);
+
+    $this->actingAs($admin)->post(generateUrl())->assertRedirect()->assertSessionHasNoErrors();
+
+    expect($fixedNightAssignment->fresh()->doctor_id)->toBe($doctor->id)
+        ->and($nextDay->assignments()->where('role', RosterAssignmentRole::Main)->exists())->toBeFalse()
+        ->and(app(DoctorAssignmentEligibilityService::class)->roleAwareShiftConflict(
+            $nextDay,
+            RosterAssignmentRole::Main,
+            $night,
+            RosterAssignmentRole::Optional,
+        ))->toBe('previous_night_assignment');
 });
 
 it('uses real Day-Off intervals and symmetric same-date and night recovery rules', function () {
@@ -584,8 +625,8 @@ it('uses real Day-Off intervals and symmetric same-date and night recovery rules
 
     $mondayNight = shiftOn('2026-10-05', 'weekday_night');
     $tuesdayDay = shiftOn('2026-10-06', 'weekday_day');
-    expect($rules->shiftConflict($mondayNight, $tuesdayDay))->toBe('next_day_night_recovery')
-        ->and($rules->shiftConflict($tuesdayDay, $mondayNight))->toBe('next_day_night_recovery')
+    expect($rules->shiftConflict($mondayNight, $tuesdayDay))->toBe('previous_night_assignment')
+        ->and($rules->shiftConflict($tuesdayDay, $mondayNight))->toBe('previous_night_assignment')
         ->and($rules->shiftConflict($mondayNight, shiftOn('2026-10-07', 'weekday_day')))->toBeNull()
         ->and($rules->shiftConflict($mondayNight, shiftOn('2026-10-07', 'weekday_night')))->toBe('night_to_night_recovery')
         ->and($rules->shiftConflict($mondayNight, shiftOn('2026-10-08', 'weekday_night')))->toBeNull()
@@ -597,17 +638,17 @@ it('applies Night recovery after the earlier shift regardless of argument order'
     assignmentRoster();
     $rules = app(DoctorAssignmentEligibilityService::class);
     $cases = [
-        ['2026-10-05', 'weekday_night', '2026-10-06', 'weekday_day', 'next_day_night_recovery'],
-        ['2026-10-05', 'weekday_night', '2026-10-06', 'weekday_evening', 'next_day_night_recovery'],
-        ['2026-10-05', 'weekday_night', '2026-10-06', 'weekday_night', 'next_day_night_recovery'],
+        ['2026-10-05', 'weekday_night', '2026-10-06', 'weekday_day', 'previous_night_assignment'],
+        ['2026-10-05', 'weekday_night', '2026-10-06', 'weekday_evening', 'previous_night_assignment'],
+        ['2026-10-05', 'weekday_night', '2026-10-06', 'weekday_night', 'previous_night_assignment'],
         ['2026-10-05', 'weekday_day', '2026-10-06', 'weekday_night', null],
         ['2026-10-05', 'weekday_evening', '2026-10-06', 'weekday_night', null],
         ['2026-10-05', 'weekday_night', '2026-10-07', 'weekday_day', null],
         ['2026-10-05', 'weekday_night', '2026-10-07', 'weekday_evening', null],
         ['2026-10-05', 'weekday_night', '2026-10-07', 'weekday_night', 'night_to_night_recovery'],
         ['2026-10-05', 'weekday_night', '2026-10-08', 'weekday_night', null],
-        ['2026-10-03', 'weekend_night', '2026-10-04', 'weekend_day', 'next_day_night_recovery'],
-        ['2026-10-03', 'weekend_night', '2026-10-04', 'weekend_night', 'next_day_night_recovery'],
+        ['2026-10-03', 'weekend_night', '2026-10-04', 'weekend_day', 'previous_night_assignment'],
+        ['2026-10-03', 'weekend_night', '2026-10-04', 'weekend_night', 'previous_night_assignment'],
         ['2026-10-03', 'weekend_night', '2026-10-05', 'weekday_day', null],
         ['2026-10-03', 'weekend_night', '2026-10-05', 'weekday_evening', null],
         ['2026-10-03', 'weekend_night', '2026-10-05', 'weekday_night', 'night_to_night_recovery'],
@@ -619,6 +660,22 @@ it('applies Night recovery after the earlier shift regardless of argument order'
         $second = shiftOn($secondDate, $secondCode);
         expect($rules->shiftConflict($first, $second))->toBe($expected)
             ->and($rules->shiftConflict($second, $first))->toBe($expected);
+    }
+});
+
+it('blocks every next-day role pairing symmetrically after a Night shift', function (): void {
+    assignmentRoster();
+    $rules = app(DoctorAssignmentEligibilityService::class);
+    $night = shiftOn('2026-10-05', 'weekday_night');
+    $nextDay = shiftOn('2026-10-06', 'weekday_day');
+
+    foreach (RosterAssignmentRole::cases() as $nightRole) {
+        foreach (RosterAssignmentRole::cases() as $nextRole) {
+            expect($rules->roleAwareShiftConflict($night, $nightRole, $nextDay, $nextRole))
+                ->toBe('previous_night_assignment')
+                ->and($rules->roleAwareShiftConflict($nextDay, $nextRole, $night, $nightRole))
+                ->toBe('previous_night_assignment');
+        }
     }
 });
 
@@ -650,14 +707,29 @@ it('loads the next date Day-Off when evaluating a month-end overnight shift', fu
     'November 1 Weekend Day starts at the Night endpoint' => [false, 1],
 ]);
 
-it('applies only relevant previous-month night history', function () {
+it('does not treat a latest Night timestamp as complete previous-month boundary data', function () {
     assignmentRoster();
     $doctor = Doctor::query()->where('is_active', true)->orderBy('short_code')->firstOrFail();
     $rules = app(DoctorAssignmentEligibilityService::class);
     $firstDay = shiftOn('2026-10-01', 'weekday_day');
-    expect($rules->conflicts($doctor, $firstDay, false, collect(), collect(), CarbonImmutable::parse('2026-09-30 20:00:00')))->toContain('next_day_night_recovery')
+    expect($rules->conflicts($doctor, $firstDay, false, collect(), collect(), CarbonImmutable::parse('2026-09-30 20:00:00')))->toBe([])
         ->and($rules->conflicts($doctor, $firstDay, false, collect(), collect(), CarbonImmutable::parse('2026-09-27 20:00:00')))->toBe([])
         ->and($rules->conflicts($doctor, $firstDay, false, collect(), collect()))->toBe([]);
+});
+
+it('applies explicit previous-month Night identities to Main and Optional symmetrically', function () {
+    assignmentRoster();
+    $doctor = Doctor::query()->where('is_active', true)->orderBy('short_code')->firstOrFail();
+    $rules = app(DoctorAssignmentEligibilityService::class);
+    $night = CarbonImmutable::parse('2026-09-30 20:00:00');
+    $boundaryDoctorIds = collect([$doctor->id => true]);
+    $firstDayMain = shiftOn('2026-10-01', 'weekday_day');
+    $firstDayOptional = shiftOn('2026-10-01', 'weekday_day');
+
+    expect($rules->roleAwareConflicts($doctor, $firstDayMain, RosterAssignmentRole::Main, false, true, collect(), collect(), $night, true, false, $boundaryDoctorIds))
+        ->toContain('previous_night_assignment')
+        ->and($rules->roleAwareConflicts($doctor, $firstDayOptional, RosterAssignmentRole::Optional, false, true, collect(), collect(), $night, true, false, $boundaryDoctorIds))
+        ->toContain('previous_night_assignment');
 });
 
 it('evaluates role-aware eligibility while keeping the legacy API on Main rules', function () {
@@ -670,9 +742,9 @@ it('evaluates role-aware eligibility while keeping the legacy API on Main rules'
 
     expect($rules->roleAwareConflicts($doctor, $firstDay, RosterAssignmentRole::Optional, false, true, collect([$dayOff]), collect(), $previousNight, true, true))->toBe([])
         ->and($rules->roleAwareConflicts($doctor, $firstDay, RosterAssignmentRole::Main, false, true, collect([$dayOff]), collect(), $previousNight, true, true))
-        ->toContain('day_off_overlap', 'monthly_shift_restriction', 'next_day_night_recovery')
+        ->toContain('day_off_overlap', 'monthly_shift_restriction')
         ->and($rules->conflicts($doctor, $firstDay, false, collect([$dayOff]), collect(), $previousNight, true, true))
-        ->toContain('day_off_overlap', 'monthly_shift_restriction', 'next_day_night_recovery');
+        ->toContain('day_off_overlap', 'monthly_shift_restriction');
 
     $night = shiftOn('2026-10-05', 'weekday_night');
     $nextDay = shiftOn('2026-10-06', 'weekday_day');
@@ -681,9 +753,10 @@ it('evaluates role-aware eligibility while keeping the legacy API on Main rules'
     $optionalNight = collect([['shift' => $night, 'role' => RosterAssignmentRole::Optional]]);
     $optionalNightTwoDaysAgo = collect([['shift' => shiftOn('2026-10-05', 'weekday_night'), 'role' => RosterAssignmentRole::Optional]]);
 
-    expect($rules->roleAwareConflicts($doctor, $nextDay, RosterAssignmentRole::Optional, false, true, collect(), $mainNight))->toBe([])
-        ->and($rules->roleAwareConflicts($doctor, $nextDay, RosterAssignmentRole::Main, false, true, collect(), $mainNight))->toContain('next_day_night_recovery')
-        ->and($rules->roleAwareConflicts($doctor, $nextDay, RosterAssignmentRole::Main, false, true, collect(), $optionalNight))->toBe([])
+    expect($rules->roleAwareConflicts($doctor, $nextDay, RosterAssignmentRole::Optional, false, true, collect(), $mainNight))->toContain('previous_night_assignment')
+        ->and($rules->roleAwareConflicts($doctor, $nextDay, RosterAssignmentRole::Main, false, true, collect(), $mainNight))->toContain('previous_night_assignment')
+        ->and($rules->roleAwareConflicts($doctor, $nextDay, RosterAssignmentRole::Main, false, true, collect(), $optionalNight))->toContain('previous_night_assignment')
+        ->and($rules->roleAwareConflicts($doctor, $nextDay, RosterAssignmentRole::Optional, false, true, collect(), $optionalNight))->toContain('previous_night_assignment')
         ->and($rules->roleAwareConflicts($doctor, $twoDaysLaterNight, RosterAssignmentRole::Main, false, true, collect(), collect([['shift' => $night, 'role' => RosterAssignmentRole::Main]])))->toContain('night_to_night_recovery')
         ->and($rules->roleAwareConflicts($doctor, $twoDaysLaterNight, RosterAssignmentRole::Optional, false, true, collect(), $optionalNightTwoDaysAgo))->toBe([])
         ->and($rules->roleAwareConflicts($doctor, $nextDay, RosterAssignmentRole::Optional, false, true, collect(), collect([['shift' => $nextDay, 'role' => RosterAssignmentRole::Main]])))->toContain('same_start_date')
@@ -710,14 +783,19 @@ it('blocks genuine cross-date shift overlaps across assignment roles', function 
     $overlappingDay = clone $day;
     $overlappingDay->setRelation('shiftType', $overlappingDayType);
 
-    expect($rules->roleAwareShiftConflict($day, RosterAssignmentRole::Optional, $night, RosterAssignmentRole::Main))->toBeNull()
-        ->and($rules->roleAwareShiftConflict($overlappingDay, RosterAssignmentRole::Optional, $night, RosterAssignmentRole::Main))->toBe('shift_time_overlap')
-        ->and($rules->roleAwareShiftConflict($overlappingDay, RosterAssignmentRole::Main, $night, RosterAssignmentRole::Optional))->toBe('shift_time_overlap')
-        ->and($rules->roleAwareShiftConflict($overlappingDay, RosterAssignmentRole::Optional, $night, RosterAssignmentRole::Optional))->toBe('shift_time_overlap')
-        ->and($rules->roleAwareShiftConflict($day, RosterAssignmentRole::Main, $night, RosterAssignmentRole::Main))->toBe('next_day_night_recovery');
+    $intervals = app(RequestIntervalService::class);
+    expect($intervals->overlaps(
+        $intervals->forDate($night->shift_date, $night->shiftType),
+        $intervals->forDate($overlappingDay->shift_date, $overlappingDay->shiftType),
+    ))->toBeTrue()
+        ->and($rules->roleAwareShiftConflict($day, RosterAssignmentRole::Optional, $night, RosterAssignmentRole::Main))->toBe('previous_night_assignment')
+        ->and($rules->roleAwareShiftConflict($overlappingDay, RosterAssignmentRole::Optional, $night, RosterAssignmentRole::Main))->toBe('previous_night_assignment')
+        ->and($rules->roleAwareShiftConflict($overlappingDay, RosterAssignmentRole::Main, $night, RosterAssignmentRole::Optional))->toBe('previous_night_assignment')
+        ->and($rules->roleAwareShiftConflict($overlappingDay, RosterAssignmentRole::Optional, $night, RosterAssignmentRole::Optional))->toBe('previous_night_assignment')
+        ->and($rules->roleAwareShiftConflict($day, RosterAssignmentRole::Main, $night, RosterAssignmentRole::Main))->toBe('previous_night_assignment');
 });
 
-it('honors stored previous-month night history during generation', function () {
+it('honors explicit previous-month Night identities during generation', function () {
     [$admin] = assignmentRoster();
     $doctor = Doctor::query()->where('is_active', true)->orderBy('short_code')->firstOrFail();
     DoctorMonthlyWorkload::query()->updateOrCreate(['doctor_id' => $doctor->id, 'year' => 2026, 'month' => 9], [
@@ -727,12 +805,101 @@ it('honors stored previous-month night history during generation', function () {
         'actual_worked_minutes' => 0,
         'most_recent_night_shift_at' => '2026-09-30 20:00:00',
     ]);
+    $boundaryDoctors = Doctor::query()->where('is_active', true)->orderBy('short_code')->limit(2)->get();
+    app(InitialWorkloadSetupService::class)->recordNightBoundary(2026, 9, $boundaryDoctors->modelKeys());
 
     $this->actingAs($admin)->post(generateUrl())->assertRedirect();
     $firstDateShiftIds = RosterShift::query()->whereDate('shift_date', '2026-10-01')->pluck('id');
-    expect(RosterAssignment::query()->where('doctor_id', $doctor->id)->whereIn('roster_shift_id', $firstDateShiftIds)
-        ->where('role', RosterAssignmentRole::Main)->exists())->toBeFalse();
+    expect(RosterAssignment::query()->whereIn('doctor_id', $boundaryDoctors->modelKeys())->whereIn('roster_shift_id', $firstDateShiftIds)->exists())->toBeFalse();
     $this->assertDatabaseCount('doctor_monthly_workloads', Doctor::query()->count());
+});
+
+it('requires exactly the configured number of distinct existing doctors in an initial boundary snapshot', function (): void {
+    assignmentRoster();
+    $doctorIds = Doctor::query()->orderBy('id')->limit(2)->pluck('id')->all();
+    $boundary = app(PreviousNightBoundaryService::class);
+
+    expect(fn () => $boundary->saveInitialSnapshot(2026, 9, []))
+        ->toThrow(ValidationException::class, 'Select exactly 2 doctors');
+    expect(fn () => $boundary->saveInitialSnapshot(2026, 9, [$doctorIds[0]]))
+        ->toThrow(ValidationException::class, 'Select exactly 2 doctors');
+    expect(fn () => $boundary->saveInitialSnapshot(2026, 9, [$doctorIds[0], $doctorIds[0]]))
+        ->toThrow(ValidationException::class, 'Choose distinct existing doctors');
+    expect(fn () => $boundary->saveInitialSnapshot(2026, 9, [$doctorIds[0], 999999]))
+        ->toThrow(ValidationException::class, 'Choose distinct existing doctors');
+});
+
+it('accepts complete boundary doctors without requiring them to remain active', function (): void {
+    assignmentRoster();
+    $doctors = Doctor::query()->orderBy('id')->limit(2)->get();
+    Doctor::query()->whereIn('id', $doctors->modelKeys())->update(['is_active' => false]);
+
+    app(PreviousNightBoundaryService::class)->saveInitialSnapshot(2026, 9, $doctors->modelKeys());
+
+    expect(app(PreviousNightBoundaryService::class)->doctorIdsForMonth(2026, 10)->keys()->sort()->values()->all())
+        ->toBe($doctors->modelKeys());
+});
+
+it('rejects incomplete finalized month-end Night assignments and accepts complete planned assignments', function (): void {
+    [$admin] = assignmentRoster();
+    $september = Roster::create([
+        'year' => 2026,
+        'month' => 9,
+        'status' => RosterStatus::Final,
+        'created_by' => $admin->id,
+        'updated_by' => $admin->id,
+    ]);
+    $nightType = ShiftType::query()->where('code', 'weekday_night')->firstOrFail();
+    $nightShift = RosterShift::create([
+        'roster_id' => $september->id,
+        'shift_date' => '2026-09-30',
+        'shift_type_id' => $nightType->id,
+    ]);
+    $boundary = app(PreviousNightBoundaryService::class);
+
+    expect(fn () => $boundary->doctorIdsForMonth(2026, 10))
+        ->toThrow(ValidationException::class, 'must have all 2 planned assignments filled');
+
+    $doctors = Doctor::query()->orderBy('id')->limit(2)->get();
+    RosterAssignment::create([
+        'roster_shift_id' => $nightShift->id,
+        'doctor_id' => $doctors[0]->id,
+        'role' => RosterAssignmentRole::Main,
+        'slot_number' => 1,
+    ]);
+    expect(fn () => $boundary->doctorIdsForMonth(2026, 10))
+        ->toThrow(ValidationException::class, 'must have all 2 planned assignments filled');
+    RosterAssignment::create([
+        'roster_shift_id' => $nightShift->id,
+        'doctor_id' => $doctors[1]->id,
+        'role' => RosterAssignmentRole::Main,
+        'slot_number' => 2,
+    ]);
+
+    expect($boundary->doctorIdsForMonth(2026, 10)->keys()->sort()->values()->all())
+        ->toBe($doctors->modelKeys());
+});
+
+it('rejects a boundary change that conflicts with a dependent Final roster without replacing the saved snapshot', function (): void {
+    [, $roster] = assignmentRoster();
+    $roster->update(['status' => RosterStatus::Final]);
+    $doctors = Doctor::query()->orderBy('id')->limit(2)->get();
+    $firstDay = shiftOn('2026-10-01', 'weekday_day');
+    foreach ($doctors as $index => $doctor) {
+        RosterAssignment::create([
+            'roster_shift_id' => $firstDay->id,
+            'doctor_id' => $doctor->id,
+            'role' => RosterAssignmentRole::Main,
+            'slot_number' => $index + 1,
+        ]);
+    }
+    $boundary = app(PreviousNightBoundaryService::class);
+    $originalDoctorIds = $boundary->doctorIdsForMonth(2026, 10)->keys()->sort()->values()->all();
+
+    expect(fn () => $boundary->saveInitialSnapshot(2026, 9, $doctors->modelKeys()))
+        ->toThrow(ValidationException::class, 'conflicts with the finalized October 2026 roster')
+        ->and($boundary->doctorIdsForMonth(2026, 10)->keys()->sort()->values()->all())
+        ->toBe($originalDoctorIds);
 });
 
 it('persists partial assignments and distinguishes missing Main and Optional slots', function () {
@@ -783,16 +950,17 @@ it('distributes Nights and Optionals within the month when one October doctor di
 
     $nightType = ShiftType::query()->where('code', 'weekday_night')->firstOrFail();
     $nightType->update(['main_count' => 1, 'optional_count' => 0]);
+    app(PreviousNightBoundaryService::class)->saveInitialSnapshot(2026, 9, [$doctors->get('N')->id]);
     $optionalType = ShiftType::query()->where('code', 'weekday_day')->firstOrFail();
     $optionalType->update(['main_count' => 0, 'optional_count' => 1]);
 
     $nightShifts = collect(['2026-10-05', '2026-10-09', '2026-10-15'])
         ->map(fn (string $date): RosterShift => shiftOn($date, 'weekday_night'));
-    $optionalShifts = collect(['2026-10-06', '2026-10-12', '2026-10-16'])
+    $optionalShifts = collect(['2026-10-06', '2026-10-12', '2026-10-19'])
         ->map(fn (string $date): RosterShift => shiftOn($date, 'weekday_day'));
     $roster->shifts()->whereNotIn('id', $nightShifts->merge($optionalShifts)->pluck('id')->all())->delete();
 
-    $this->actingAs($admin)->post(generateUrl())->assertRedirect();
+    $this->actingAs($admin)->post(generateUrl())->assertRedirect()->assertSessionHasNoErrors();
 
     $assignments = RosterAssignment::query()->with(['rosterShift.shiftType'])->get();
     foreach ($doctors as $doctor) {

@@ -105,7 +105,11 @@ it('shows and preserves a Final roster when the generation action is invoked dir
 it('preserves manual assignments when generating an ungenerated Draft', function () {
     $admin = setupRosterGeneration();
     $roster = app(RosterStructureService::class)->create(2026, 10, $admin);
-    $shift = RosterShift::query()->where('roster_id', $roster->id)->orderBy('shift_date')->firstOrFail();
+    $shift = RosterShift::query()
+        ->where('roster_id', $roster->id)
+        ->whereDate('shift_date', '2026-10-02')
+        ->whereHas('shiftType', fn ($query) => $query->where('code', 'weekday_day'))
+        ->firstOrFail();
     $manualAssignment = RosterAssignment::create([
         'roster_shift_id' => $shift->id,
         'doctor_id' => Doctor::query()->firstOrFail()->id,
@@ -113,7 +117,9 @@ it('preserves manual assignments when generating an ungenerated Draft', function
         'slot_number' => 1,
     ]);
 
-    $this->actingAs($admin)->post(monthlySetupGenerateUrl())->assertRedirect();
+    $this->actingAs($admin)->post(monthlySetupGenerateUrl())
+        ->assertRedirect()
+        ->assertSessionHasNoErrors();
 
     expect($roster->fresh()->last_generated_at)->not->toBeNull()
         ->and(RosterAssignment::query()->count())->toBeGreaterThan(1)

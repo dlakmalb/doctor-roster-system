@@ -16,6 +16,7 @@ class InitialWorkloadSetupService
     public function __construct(
         private DoctorMonthlyWorkloadService $workloads,
         private DoctorMonthlyParticipationService $participation,
+        private PreviousNightBoundaryService $nightBoundary,
     ) {}
 
     public function assertAllowedPeriod(int $year, int $month): void
@@ -29,10 +30,12 @@ class InitialWorkloadSetupService
         }
     }
 
-    /** @param array<int, array{doctor_id: int, participation_status: string, actual_hours: string, actual_night_duty_count: int, optional_assignment_count: int, worked_final_weekend: bool, most_recent_night_shift_at: string|null}> $entries */
-    public function save(int $year, int $month, array $entries): void
+    /** @param array<int, array{doctor_id: int, participation_status: string, actual_hours: string, actual_night_duty_count: int, optional_assignment_count: int, worked_final_weekend: bool, most_recent_night_shift_at: string|null}> $entries
+     * @param  list<int>  $previousNightDoctorIds
+     */
+    public function save(int $year, int $month, array $entries, array $previousNightDoctorIds): void
     {
-        DB::transaction(function () use ($year, $month, $entries): void {
+        DB::transaction(function () use ($year, $month, $entries, $previousNightDoctorIds): void {
             $existing = DoctorMonthlyWorkload::query()->lockForUpdate()->orderBy('year')->orderBy('month')->get();
             $this->assertAllowedPeriod($year, $month);
             $firstRoster = Roster::query()->orderBy('year')->orderBy('month')->first();
@@ -47,6 +50,7 @@ class InitialWorkloadSetupService
             if (count($entries) !== $doctors->count() || count(array_unique(array_column($entries, 'doctor_id'))) !== $doctors->count()) {
                 throw ValidationException::withMessages(['baseline' => 'Enter history for every doctor exactly once.']);
             }
+            $this->nightBoundary->saveInitialSnapshot($year, $month, $previousNightDoctorIds);
             $facts = [];
             foreach ($entries as $entry) {
                 if (! $doctors->has($entry['doctor_id'])) {
@@ -90,6 +94,15 @@ class InitialWorkloadSetupService
                 );
             }
             $this->workloads->recalculateLater($year, $month);
+        });
+    }
+
+    /** @param list<int> $doctorIds */
+    public function recordNightBoundary(int $year, int $month, array $doctorIds): void
+    {
+        DB::transaction(function () use ($year, $month, $doctorIds): void {
+            $this->assertAllowedPeriod($year, $month);
+            $this->nightBoundary->saveInitialSnapshot($year, $month, $doctorIds);
         });
     }
 }

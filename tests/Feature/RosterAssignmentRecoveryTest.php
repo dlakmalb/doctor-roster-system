@@ -12,6 +12,7 @@ use App\Models\ShiftType;
 use App\Models\User;
 use App\Services\DoctorAssignmentEligibilityService;
 use App\Services\DoctorMonthlyParticipationService;
+use App\Services\PreviousNightBoundaryService;
 use App\Services\RosterAssignmentRecoveryService;
 use App\Services\RosterCandidateRanker;
 use App\Services\RosterStructureService;
@@ -40,6 +41,13 @@ function recoveryScenario(array $shifts, int $doctorCount = 2): array
     $roster->shifts()->whereNotIn('id', array_map(fn (RosterShift $shift): int => $shift->id, $selected))->delete();
     ShiftType::query()->whereIn('id', array_unique(array_map(fn (RosterShift $shift): int => $shift->shift_type_id, $selected)))
         ->update(['main_count' => 1, 'optional_count' => 0]);
+    if (collect($selected)->contains(fn (RosterShift $shift): bool => $shift->shiftType->code === 'weekday_night')) {
+        $boundaryDoctor = Doctor::query()
+            ->whereNotIn('id', array_map(fn (Doctor $doctor): int => $doctor->id, $doctors))
+            ->orderBy('id')
+            ->firstOrFail();
+        app(PreviousNightBoundaryService::class)->saveInitialSnapshot(2026, 9, [$boundaryDoctor->id]);
+    }
     foreach ($selected as $shift) {
         $shift->load('shiftType');
     }

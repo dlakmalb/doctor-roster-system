@@ -17,10 +17,12 @@ use App\Models\RosterShift;
 use App\Models\ShiftType;
 use App\Models\User;
 use App\Services\DoctorMonthlyParticipationService;
+use App\Services\InitialWorkloadSetupService;
 use App\Services\RosterDraftContext;
 use App\Services\RosterDraftValidationService;
 use App\Services\RosterManualEditService;
 use App\Services\RosterPlanningHistoryService;
+use Carbon\CarbonImmutable;
 use Illuminate\Validation\ValidationException;
 use Inertia\Testing\AssertableInertia as Assert;
 
@@ -28,6 +30,14 @@ function lifecycleFixture(bool $filled = true): array
 {
     $admin = User::factory()->create();
     $doctors = collect(['A', 'B', 'C', 'D'])->map(fn (string $code): Doctor => Doctor::create(['name' => "Doctor $code", 'short_code' => $code, 'is_active' => true]));
+    ShiftType::query()->firstOrCreate(['code' => 'weekday_night'], ['name' => 'Weekday Night', 'start_time' => '20:00:00', 'end_time' => '08:00:00', 'duration_minutes' => 720, 'main_count' => 2, 'optional_count' => 0, 'is_overnight' => true, 'is_active' => true]);
+    ShiftType::query()->firstOrCreate(['code' => 'weekend_night'], ['name' => 'Weekend Night', 'start_time' => '16:00:00', 'end_time' => '08:00:00', 'duration_minutes' => 960, 'main_count' => 2, 'optional_count' => 0, 'is_overnight' => true, 'is_active' => true]);
+    $nightBoundary = app(InitialWorkloadSetupService::class);
+    $septemberNight = CarbonImmutable::create(2026, 9, 1)->endOfMonth();
+    $nightTypeCode = $septemberNight->isWeekend() ? 'weekend_night' : 'weekday_night';
+    $nightType = ShiftType::query()->where('code', $nightTypeCode)->firstOrFail();
+    $nightCapacity = $nightType->main_count + $nightType->optional_count;
+    $nightBoundary->recordNightBoundary(2026, 9, $doctors->take($nightCapacity)->pluck('id')->all());
     $type = ShiftType::create(['code' => 'test_day', 'name' => 'Test Day', 'start_time' => '08:00:00', 'end_time' => '14:00:00', 'duration_minutes' => 360, 'main_count' => 1, 'optional_count' => 1, 'is_overnight' => false, 'is_active' => true]);
     $roster = Roster::create(['year' => 2026, 'month' => 10, 'status' => RosterStatus::Draft, 'created_by' => $admin->id, 'last_generated_at' => now()->subDay()]);
     app(DoctorMonthlyParticipationService::class)->snapshotRoster($roster, $doctors);
@@ -49,8 +59,8 @@ it('keeps an older Final roster viewable after a new doctor is added', function 
     [$admin, $doctors, $type] = lifecycleFixture();
     $previous = Roster::create(['year' => 2026, 'month' => 8, 'status' => RosterStatus::Final, 'created_by' => $admin->id]);
     $roster = Roster::create(['year' => 2026, 'month' => 9, 'status' => RosterStatus::Final, 'created_by' => $admin->id]);
-    app(DoctorMonthlyParticipationService::class)->snapshotRoster($previous, $doctors);
-    app(DoctorMonthlyParticipationService::class)->snapshotRoster($roster, $doctors);
+    snapshotRosterParticipation($previous, $doctors, true);
+    snapshotRosterParticipation($roster, $doctors, true);
     $previousShift = RosterShift::create(['roster_id' => $previous->id, 'shift_date' => '2026-08-05', 'shift_type_id' => $type->id]);
     $shift = RosterShift::create(['roster_id' => $roster->id, 'shift_date' => '2026-09-05', 'shift_type_id' => $type->id]);
     RosterAssignment::create(['roster_shift_id' => $previousShift->id, 'doctor_id' => $doctors[0]->id, 'role' => RosterAssignmentRole::Main, 'slot_number' => 1]);

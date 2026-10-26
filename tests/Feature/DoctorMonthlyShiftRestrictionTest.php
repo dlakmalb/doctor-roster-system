@@ -41,8 +41,12 @@ it('saves a doctor monthly restriction set without carrying it into another mont
     $night = ShiftType::query()->where('code', 'weekday_night')->firstOrFail();
     $payload = ['doctor_id' => $doctor->id, 'shift_type_ids' => [$evening->id, $night->id]];
 
-    $this->actingAs($admin)->post(monthlyShiftRestrictionUrl('monthly-shift-restrictions.store'), $payload)->assertRedirect();
-    $this->post(monthlyShiftRestrictionUrl('monthly-shift-restrictions.store'), $payload)->assertRedirect();
+    $this->actingAs($admin)->post(monthlyShiftRestrictionUrl('monthly-shift-restrictions.store'), $payload)
+        ->assertRedirect()
+        ->assertSessionHasNoErrors();
+    $this->post(monthlyShiftRestrictionUrl('monthly-shift-restrictions.store'), $payload)
+        ->assertRedirect()
+        ->assertSessionHasNoErrors();
 
     expect(DoctorMonthlyShiftRestriction::query()->where('doctor_id', $doctor->id)->where('year', 2026)->where('month', 10)->count())->toBe(2)
         ->and(DoctorMonthlyShiftRestriction::query()->where('doctor_id', $doctor->id)->where('year', 2026)->where('month', 11)->count())->toBe(0);
@@ -89,13 +93,17 @@ it('allows editing and removing the restriction set and rejects cross-month reso
     $night = ShiftType::query()->where('code', 'weekday_night')->firstOrFail();
     $restriction = DoctorMonthlyShiftRestriction::create(['doctor_id' => $doctor->id, 'year' => 2026, 'month' => 10, 'shift_type_id' => $evening->id]);
 
-    $this->actingAs($admin)->put(monthlyShiftRestrictionUrl('monthly-shift-restrictions.update', ['doctorMonthlyShiftRestriction' => $restriction->id]), ['doctor_id' => $doctor->id, 'shift_type_ids' => [$night->id]])->assertRedirect();
+    $this->actingAs($admin)->put(monthlyShiftRestrictionUrl('monthly-shift-restrictions.update', ['doctorMonthlyShiftRestriction' => $restriction->id]), ['doctor_id' => $doctor->id, 'shift_type_ids' => [$night->id]])
+        ->assertRedirect()
+        ->assertSessionHasNoErrors();
     expect(DoctorMonthlyShiftRestriction::query()->where('doctor_id', $doctor->id)->where('year', 2026)->where('month', 10)->pluck('shift_type_id')->all())->toBe([$night->id]);
     $updatedRestriction = DoctorMonthlyShiftRestriction::query()->where('doctor_id', $doctor->id)->where('year', 2026)->where('month', 10)->where('shift_type_id', $night->id)->firstOrFail();
 
     $this->delete(route('monthly-shift-restrictions.destroy', ['year' => 2026, 'month' => 11, 'doctorMonthlyShiftRestriction' => $updatedRestriction->id]))->assertRedirect(route('dashboard'));
     $this->assertDatabaseHas('doctor_monthly_shift_restrictions', ['id' => $updatedRestriction->id]);
-    $this->delete(monthlyShiftRestrictionUrl('monthly-shift-restrictions.destroy', ['doctorMonthlyShiftRestriction' => $updatedRestriction->id]))->assertRedirect();
+    $this->delete(monthlyShiftRestrictionUrl('monthly-shift-restrictions.destroy', ['doctorMonthlyShiftRestriction' => $updatedRestriction->id]))
+        ->assertRedirect()
+        ->assertSessionHasNoErrors();
     $this->assertDatabaseCount('doctor_monthly_shift_restrictions', 0);
 });
 
@@ -128,8 +136,8 @@ it('enforces monthly restrictions through shared roster eligibility for every as
     app(DoctorMonthlyParticipationService::class)->assertRosterSnapshotIntegrity($roster);
     $context = app(RosterDraftContext::class);
     $context->load($roster);
-    $eveningShift = $roster->shifts()->where('shift_type_id', $evening->id)->firstOrFail();
-    $dayShift = $roster->shifts()->where('shift_type_id', $day->id)->firstOrFail();
+    $eveningShift = $roster->shifts()->whereDate('shift_date', '2026-10-02')->where('shift_type_id', $evening->id)->firstOrFail();
+    $dayShift = $roster->shifts()->whereDate('shift_date', '2026-10-02')->where('shift_type_id', $day->id)->firstOrFail();
 
     expect($context->hardReasons($doctor->id, $eveningShift, RosterAssignmentRole::Main, []))->toContain('Dr Nuwan (MOIC) cannot work Weekday Evening shifts in October because of a monthly shift restriction.')
         ->and($context->hardReasons($doctor->id, $eveningShift, RosterAssignmentRole::Optional, []))->toBe([])
@@ -199,7 +207,10 @@ it('never generates restricted shift assignments and reports the conflict on exi
     foreach ($restricted as $shiftType) {
         DoctorMonthlyShiftRestriction::create(['doctor_id' => $doctor->id, 'year' => 2026, 'month' => 10, 'shift_type_id' => $shiftType->id]);
     }
-    $forbiddenShift = $roster->shifts()->where('shift_type_id', $restricted->firstWhere('code', 'weekday_night')->id)->firstOrFail();
+    $forbiddenShift = $roster->shifts()
+        ->whereDate('shift_date', '2026-10-05')
+        ->where('shift_type_id', $restricted->firstWhere('code', 'weekday_night')->id)
+        ->firstOrFail();
     $assignment = $forbiddenShift->assignments()->create(['doctor_id' => $doctor->id, 'role' => 'main', 'slot_number' => 1]);
     $context = app(RosterDraftContext::class);
     $context->load($roster);
@@ -208,7 +219,9 @@ it('never generates restricted shift assignments and reports the conflict on exi
     expect(collect(app(RosterDraftValidationService::class)->validate($roster))->contains(fn (array $item): bool => $item['code'] === 'hard_conflict' && str_contains($item['message'], 'monthly shift restriction')))->toBeTrue();
     $assignment->delete();
 
-    test()->actingAs($admin)->post(route('rosters.generate', ['year' => 2026, 'month' => 10]))->assertRedirect();
+    test()->actingAs($admin)->post(route('rosters.generate', ['year' => 2026, 'month' => 10]))
+        ->assertRedirect()
+        ->assertSessionHasNoErrors();
     $nuwanForbiddenAssignments = RosterAssignment::query()->where('doctor_id', $doctor->id)
         ->where('role', RosterAssignmentRole::Main)
         ->whereHas('rosterShift', fn ($query) => $query->where('roster_id', $roster->id)->whereIn('shift_type_id', $restricted->pluck('id')))->count();

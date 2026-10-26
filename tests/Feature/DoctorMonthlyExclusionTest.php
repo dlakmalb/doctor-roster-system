@@ -8,10 +8,11 @@ use App\Models\DoctorRequest;
 use App\Models\User;
 use Carbon\CarbonImmutable;
 use Database\Seeders\DoctorsSeeder;
+use Database\Seeders\ShiftTypesSeeder;
 
 function prepareMonthlyExclusionTest(): array
 {
-    test()->seed(DoctorsSeeder::class);
+    test()->seed([DoctorsSeeder::class, ShiftTypesSeeder::class]);
     test()->travelTo(CarbonImmutable::parse('2026-09-01 09:00:00'));
     seedInitialHistoryForGeneration();
 
@@ -29,7 +30,8 @@ it('adds a monthly exclusion with an optional note', function () {
     $this->actingAs($user)->post(monthlyExclusionRoute('monthly-exclusions.store'), [
         'doctor_id' => $doctor->id,
         'note' => 'Study leave',
-    ])->assertRedirectToRoute('monthly-setup.show', ['year' => 2026, 'month' => 10]);
+    ])->assertRedirectToRoute('monthly-setup.show', ['year' => 2026, 'month' => 10])
+        ->assertSessionHasNoErrors();
 
     $this->assertDatabaseHas('doctor_monthly_exclusions', [
         'doctor_id' => $doctor->id,
@@ -110,7 +112,8 @@ it('removes a monthly exclusion', function () {
 
     $this->actingAs($user)->delete(monthlyExclusionRoute('monthly-exclusions.destroy', [
         'doctorMonthlyExclusion' => $exclusion,
-    ]))->assertRedirectToRoute('monthly-setup.show', ['year' => 2026, 'month' => 10]);
+    ]))->assertRedirectToRoute('monthly-setup.show', ['year' => 2026, 'month' => 10])
+        ->assertSessionHasNoErrors();
 
     $this->assertModelMissing($exclusion);
 });

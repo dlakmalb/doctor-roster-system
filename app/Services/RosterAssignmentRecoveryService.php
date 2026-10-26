@@ -8,6 +8,7 @@ use App\Models\DoctorMonthlyWorkload;
 use App\Models\DoctorRequest;
 use App\Models\RosterShift;
 use Illuminate\Support\Collection;
+use Illuminate\Validation\ValidationException;
 
 class RosterAssignmentRecoveryService
 {
@@ -59,7 +60,7 @@ class RosterAssignmentRecoveryService
      * @param  Collection<int, bool>  $participationSnapshot
      * @return list<array{roster_shift_id: int, doctor_id: int, role: RosterAssignmentRole, slot_number: int}>
      */
-    public function plan(Collection $shifts, Collection $doctors, Collection $excludedDoctorIds, Collection $dayOffRequests, Collection $previousHistory, RosterCandidateRanker $ranker, array $restrictedShiftTypes, Collection $participationSnapshot): array
+    public function plan(Collection $shifts, Collection $doctors, Collection $excludedDoctorIds, Collection $dayOffRequests, Collection $previousHistory, RosterCandidateRanker $ranker, array $restrictedShiftTypes, Collection $participationSnapshot, ?Collection $previousNightDoctorIds = null): array
     {
         $this->ranker = $ranker;
         $this->plan = [];
@@ -85,6 +86,7 @@ class RosterAssignmentRecoveryService
                         $history?->most_recent_night_shift_at,
                         true,
                         isset($restrictedShiftTypes[$doctor->id][$shift->shift_type_id]),
+                        $previousNightDoctorIds,
                     );
                     if ($conflicts === []) {
                         $this->staticallyEligible[$role->value][$shift->id][$doctor->id] = true;
@@ -112,6 +114,8 @@ class RosterAssignmentRecoveryService
         }
         $this->fill($shifts, RosterAssignmentRole::Optional);
 
+        $this->assertPreviousNightRule($previousNightDoctorIds ?? collect());
+
         $newAssignments = [];
         foreach ($this->plan as $entry) {
             if (! $entry['fixed']) {
@@ -125,6 +129,37 @@ class RosterAssignmentRecoveryService
         }
 
         return $newAssignments;
+    }
+
+    /** @param Collection<int, true> $previousNightDoctorIds */
+    private function assertPreviousNightRule(Collection $previousNightDoctorIds): void
+    {
+        $entriesByDoctor = [];
+        foreach ($this->plan as $entry) {
+            if ($entry['shift']->shift_date->day === 1 && $previousNightDoctorIds->has($entry['doctor_id'])) {
+                throw ValidationException::withMessages([
+                    'roster' => "{$entry['shift']->shift_date->format('F j')}: a doctor assigned to the previous month's final Night shift cannot be assigned on this date. Correct the fixed assignment before generating.",
+                ]);
+            }
+            $entriesByDoctor[$entry['doctor_id']][] = $entry;
+        }
+
+        foreach ($entriesByDoctor as $entries) {
+            for ($first = 0; $first < count($entries); $first++) {
+                for ($second = $first + 1; $second < count($entries); $second++) {
+                    if ($this->eligibility->roleAwareShiftConflict(
+                        $entries[$first]['shift'],
+                        $entries[$first]['role'],
+                        $entries[$second]['shift'],
+                        $entries[$second]['role'],
+                    ) === 'previous_night_assignment') {
+                        throw ValidationException::withMessages([
+                            'roster' => "{$entries[$first]['shift']->shift_date->format('M j')} Night and {$entries[$second]['shift']->shift_date->format('M j')} assignments conflict. Correct the fixed assignments before generating.",
+                        ]);
+                    }
+                }
+            }
+        }
     }
 
     /** @return array<string, array<string, int>> */

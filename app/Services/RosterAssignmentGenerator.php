@@ -25,6 +25,7 @@ class RosterAssignmentGenerator
         private RosterPlanningHistoryService $history,
         private DoctorMonthlyParticipationService $participation,
         private WeekendGroupRotationService $weekendRotation,
+        private PreviousNightBoundaryService $nightBoundary,
     ) {}
 
     public function generate(Roster $roster, User $admin): void
@@ -46,6 +47,7 @@ class RosterAssignmentGenerator
             }
 
             $shifts = $roster->shifts()->with(['shiftType', 'assignments'])->get();
+            $previousNightDoctorIds = $this->nightBoundary->doctorIdsForMonth($roster->year, $roster->month);
             $doctors = Doctor::query()->where('is_active', true)->get();
             $participationSnapshot = $this->participation->ensureRosterSnapshot($roster, $doctors);
             $excludedDoctorIds = DoctorMonthlyExclusion::query()
@@ -65,7 +67,12 @@ class RosterAssignmentGenerator
                 ->get()->toBase()->groupBy('doctor_id');
             $previousHistory = $this->history->forMonth($roster->year, $roster->month);
             $previousParticipation = $this->history->participationForMonth($roster->year, $roster->month, $previousHistory, $participationSnapshot->keys());
-            $historyFingerprint = $this->history->fingerprintRows($previousHistory, $previousParticipation);
+            $nightDate = $firstDate->subDay();
+            $historyFingerprint = $this->history->fingerprintRows(
+                $previousHistory,
+                $previousParticipation,
+                $this->nightBoundary->fingerprint($nightDate, $previousNightDoctorIds),
+            );
             $preferredRequests = DoctorRequest::query()
                 ->where('request_type', DoctorRequestType::PreferredWork->value)
                 ->whereBetween('request_date', [$firstDate, $lastDate])->get();
@@ -99,7 +106,23 @@ class RosterAssignmentGenerator
             }
 
             $this->ranker->initialize($shifts, $preferredRequests, $previousHistory, $firstDate, $restrictedShiftTypes, $monthlyWeekdayPreferences, $weekendRotation, $previousParticipation);
-            $assignments = $this->recovery->plan($shifts, $doctors, $excludedDoctorIds, $dayOffRequests, $previousHistory, $this->ranker, $restrictedShiftTypes, $participationSnapshot);
+            $assignments = $this->recovery->plan($shifts, $doctors, $excludedDoctorIds, $dayOffRequests, $previousHistory, $this->ranker, $restrictedShiftTypes, $participationSnapshot, $previousNightDoctorIds);
+
+            $lastNightDoctorIds = [];
+            $shiftsById = $shifts->keyBy('id');
+            foreach ($shifts as $shift) {
+                if ($shift->shift_date->isSameDay($lastDate) && $shift->shiftType->is_overnight) {
+                    array_push($lastNightDoctorIds, ...$shift->assignments->pluck('doctor_id')->all());
+                }
+            }
+            foreach ($assignments as $assignment) {
+                $shift = $shiftsById->get($assignment['roster_shift_id']);
+                if ($shift !== null && $shift->shift_date->isSameDay($lastDate) && $shift->shiftType->is_overnight) {
+                    $lastNightDoctorIds[] = $assignment['doctor_id'];
+                }
+            }
+            $lastNightDoctorIds = collect(array_unique(array_map('intval', $lastNightDoctorIds)))->flip();
+            $this->nightBoundary->assertNoFinalDependentConflict($roster->year, $roster->month, $lastNightDoctorIds);
 
             if ($replace) {
                 RosterAssignment::query()->whereIn('roster_shift_id', $shifts->modelKeys())->delete();

@@ -50,15 +50,31 @@ class RosterDraftContext
 
     public bool $participationSnapshotIntegrityMatches = true;
 
+    /** @var Collection<int, true>|null */
+    public ?Collection $previousNightDoctorIds = null;
+
+    public ?string $previousNightBoundaryError = null;
+
+    /** @var Collection<int, true> */
+    private Collection $finalDependentDoctorIds;
+
     private bool $checkActiveStatus = true;
 
-    public function __construct(private DoctorAssignmentEligibilityService $eligibility, private RequestIntervalService $requestIntervals, private RosterCandidateRanker $ranker, private RosterPlanningHistoryService $planningHistory, private DoctorMonthlyParticipationService $monthlyParticipation) {}
+    public function __construct(private DoctorAssignmentEligibilityService $eligibility, private RequestIntervalService $requestIntervals, private RosterCandidateRanker $ranker, private RosterPlanningHistoryService $planningHistory, private DoctorMonthlyParticipationService $monthlyParticipation, private PreviousNightBoundaryService $nightBoundary) {}
 
     public function load(Roster $roster): void
     {
         $this->participationPopulationMatches = true;
         $this->participationSnapshotIntegrityMatches = true;
         $this->checkActiveStatus = $roster->status === RosterStatus::Draft;
+        $this->previousNightDoctorIds = null;
+        $this->previousNightBoundaryError = null;
+        $this->finalDependentDoctorIds = $this->nightBoundary->doctorIdsInFinalDependentRoster($roster->year, $roster->month);
+        try {
+            $this->previousNightDoctorIds = $this->nightBoundary->doctorIdsForMonth($roster->year, $roster->month);
+        } catch (ValidationException $exception) {
+            $this->previousNightBoundaryError = $exception->errors()['roster'][0] ?? 'Previous-month Night assignment information is incomplete.';
+        }
         $this->shifts = $roster->shifts()->with(['shiftType', 'assignments'])->get()->keyBy('id');
         $this->doctors = Doctor::query()->get()->keyBy('id');
         try {
@@ -99,6 +115,30 @@ class RosterDraftContext
         if (! $this->participationPopulationMatches) {
             throw ValidationException::withMessages(['edit' => 'Active doctor statuses no longer match this Draft roster’s saved participation. Restore the active statuses to match the saved population before editing.']);
         }
+    }
+
+    /** @param array<string, int> $state
+     * @param  list<array{shift: RosterShift, role: RosterAssignmentRole, slot: int}>  $affected
+     */
+    public function assertFinalDependentNightBoundaryCompatible(Roster $roster, array $state, array $affected): void
+    {
+        $lastDate = CarbonImmutable::create($roster->year, $roster->month, 1)->endOfMonth();
+        $touchesLastNight = collect($affected)->contains(fn (array $slot): bool => $slot['shift']->shift_date->isSameDay($lastDate)
+            && $slot['shift']->shiftType->is_overnight);
+        if (! $touchesLastNight) {
+            return;
+        }
+
+        $nightDoctorIds = [];
+        foreach ($state as $key => $doctorId) {
+            [$shiftId] = explode(':', $key);
+            $shift = $this->shifts->get((int) $shiftId);
+            if ($shift !== null && $shift->shift_date->isSameDay($lastDate) && $shift->shiftType->is_overnight) {
+                $nightDoctorIds[] = $doctorId;
+            }
+        }
+
+        $this->nightBoundary->assertNoFinalDependentConflict($roster->year, $roster->month, collect(array_unique($nightDoctorIds))->flip(), 'edit');
     }
 
     public function key(int $shiftId, RosterAssignmentRole $role, int $slot): string
@@ -178,19 +218,29 @@ class RosterDraftContext
             $historyNight,
             $this->checkActiveStatus,
             isset($this->restrictedShiftTypes[$doctorId][$shift->shift_type_id]),
+            $this->previousNightDoctorIds,
         );
+
+        if ($shift->shift_date->day === 1 && $this->previousNightDoctorIds === null) {
+            $codes[] = 'previous_night_boundary_unknown';
+        }
+        $isMonthEndNight = $shift->shift_date->isSameDay(CarbonImmutable::create($shift->shift_date->year, $shift->shift_date->month, 1)->endOfMonth())
+            && $shift->shiftType->is_overnight;
+        if ($isMonthEndNight && $this->finalDependentDoctorIds->has($doctorId)) {
+            $codes[] = 'dependent_final_roster_conflict';
+        }
 
         $dayOffRequest = $this->dayOff->get($doctorId, collect())->first(fn (DoctorRequest $request): bool => $this->requestIntervals->overlaps(
             $this->requestIntervals->forDate($shift->shift_date, $shift->shiftType),
             $this->requestIntervals->forRequest($request),
         ));
         $sameDateAssignment = collect($assignments)->first(fn (array $assignment): bool => $assignment['shift']->shift_date->isSameDay($shift->shift_date));
-        $nextDayNightAssignment = collect($assignments)->first(fn (array $assignment): bool => $this->eligibility->roleAwareShiftConflict($shift, $role, $assignment['shift'], $assignment['role']) === 'next_day_night_recovery');
+        $previousNightAssignment = collect($assignments)->first(fn (array $assignment): bool => $this->eligibility->roleAwareShiftConflict($shift, $role, $assignment['shift'], $assignment['role']) === 'previous_night_assignment');
         $nightToNightAssignment = collect($assignments)->first(fn (array $assignment): bool => $this->eligibility->roleAwareShiftConflict($shift, $role, $assignment['shift'], $assignment['role']) === 'night_to_night_recovery');
         $overlappingAssignment = collect($assignments)->first(fn (array $assignment): bool => $this->eligibility->roleAwareShiftConflict($shift, $role, $assignment['shift'], $assignment['role']) === 'shift_time_overlap');
         $monthName = $shift->shift_date->format('F');
 
-        return array_map(function (string $code) use ($doctor, $shift, $dayOffRequest, $sameDateAssignment, $nextDayNightAssignment, $nightToNightAssignment, $overlappingAssignment, $historyNight, $monthName): string {
+        return array_map(function (string $code) use ($doctor, $shift, $dayOffRequest, $sameDateAssignment, $previousNightAssignment, $nightToNightAssignment, $overlappingAssignment, $historyNight, $monthName): string {
             return match ($code) {
                 'inactive_doctor' => "$doctor->name is inactive and cannot be assigned to the roster.",
                 'not_participating' => "$doctor->name is not participating in the $monthName roster.",
@@ -198,7 +248,9 @@ class RosterDraftContext
                 'monthly_shift_restriction' => "$doctor->name cannot work {$shift->shiftType->name} shifts in $monthName because of a monthly shift restriction.",
                 'day_off_overlap' => $this->dayOffMessage($doctor->name, $shift, $dayOffRequest),
                 'same_start_date' => $this->sameDateAssignmentMessage($doctor->name, $sameDateAssignment),
-                'next_day_night_recovery' => $this->nextDayNightRecoveryMessage($doctor->name, $shift, $nextDayNightAssignment, $historyNight),
+                'previous_night_assignment' => $this->previousNightAssignmentMessage($doctor->name, $shift, $previousNightAssignment),
+                'previous_night_boundary_unknown' => $this->previousNightBoundaryError ?? 'Previous-month Night assignment information is incomplete. Complete Initial Setup before assigning this date.',
+                'dependent_final_roster_conflict' => "$doctor->name already has an assignment on the following date in the finalized next-month roster.",
                 'night_to_night_recovery' => $this->nightToNightRecoveryMessage($doctor->name, $shift, $nightToNightAssignment, $historyNight),
                 'shift_time_overlap' => $this->shiftTimeOverlapMessage($doctor->name, $overlappingAssignment),
                 default => "$doctor->name has a scheduling conflict ($code).",
@@ -219,6 +271,23 @@ class RosterDraftContext
         $slot = $assignment['slot'];
 
         return "$doctorName has an overlapping $shiftName assignment on $date ($role Slot $slot).";
+    }
+
+    /** @param array{shift: RosterShift, role: RosterAssignmentRole, slot: int}|null $assignment */
+    private function previousNightAssignmentMessage(string $doctorName, RosterShift $shift, ?array $assignment): string
+    {
+        if ($assignment !== null) {
+            $nightDate = $assignment['shift']->shiftType->is_overnight
+                ? $assignment['shift']->shift_date
+                : $shift->shift_date;
+            $followingDate = $nightDate->copy()->addDay();
+
+            return "$doctorName has Night duty on {$nightDate->format('M j')} and cannot receive any assignment on {$followingDate->format('M j')}, including Optional duties.";
+        }
+
+        $previousDate = $shift->shift_date->copy()->subDay();
+
+        return "$doctorName has Night duty on {$previousDate->format('M j')} and cannot receive any assignment on {$shift->shift_date->format('M j')}, including Optional duties.";
     }
 
     private function dayOffMessage(string $doctorName, RosterShift $shift, ?DoctorRequest $request): string

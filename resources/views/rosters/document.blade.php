@@ -24,7 +24,7 @@
         .roster-grid { width: auto; table-layout: auto; }
         .roster-grid th, .roster-grid td { white-space: nowrap; }
         .calendar { text-align: center; }
-        .weekend td { background: #eef4f8; }
+        .weekend td { background: #c8e7ff; }
         .main { color: #000; font-weight: bold; }
         .optional { color: #c00000; }
         .slot { display: inline-block; min-width: 12pt; white-space: nowrap; margin-right: 10pt; }

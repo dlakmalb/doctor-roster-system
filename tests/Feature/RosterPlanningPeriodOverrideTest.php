@@ -28,7 +28,7 @@ function detectApplicationEnvironment(string $environment): void
 
 function planningOverridePayload($doctors): array
 {
-    return ['doctors' => $doctors->map(fn (Doctor $doctor): array => [
+    return ['previous_night_doctor_ids' => $doctors->take(2)->pluck('id')->all(), 'doctors' => $doctors->map(fn (Doctor $doctor): array => [
         'doctor_id' => $doctor->id,
         'participation_status' => 'participating',
         'actual_hours' => '0',

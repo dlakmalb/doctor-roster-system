@@ -1,7 +1,9 @@
 <?php
 
+use App\Enums\ActualWorkExceptionType;
 use App\Enums\RosterAssignmentRole;
 use App\Enums\RosterStatus;
+use App\Models\ActualWorkException;
 use App\Models\Doctor;
 use App\Models\DoctorMonthlyExclusion;
 use App\Models\DoctorMonthlyWorkload;
@@ -15,7 +17,7 @@ use App\Services\RosterDraftValidationService;
 use Carbon\CarbonImmutable;
 use Database\Seeders\ShiftTypesSeeder;
 
-function confirmedExclusionFixture(): array
+function confirmedExclusionFixture(bool $completeNightBoundary = false): array
 {
     test()->seed(ShiftTypesSeeder::class);
     test()->travelTo(CarbonImmutable::parse('2026-09-01 09:00:00'));
@@ -23,7 +25,18 @@ function confirmedExclusionFixture(): array
     $doctors = collect(['A', 'B', 'C'])->map(fn (string $code): Doctor => Doctor::create(['name' => "Doctor $code", 'short_code' => $code, 'is_active' => true]));
     seedInitialHistoryForGeneration();
     $roster = Roster::create(['year' => 2026, 'month' => 10, 'status' => RosterStatus::Final, 'created_by' => $admin->id]);
-    snapshotRosterParticipation($roster, $doctors);
+    snapshotRosterParticipation($roster, $doctors, $completeNightBoundary);
+    if ($completeNightBoundary) {
+        $monthEndNight = $roster->shifts()->whereDate('shift_date', '2026-10-31')->firstOrFail();
+        foreach ($monthEndNight->assignments as $assignment) {
+            ActualWorkException::create([
+                'roster_shift_id' => $monthEndNight->id,
+                'planned_assignment_id' => $assignment->id,
+                'exception_type' => ActualWorkExceptionType::MainAbsent,
+                'recorded_by' => $admin->id,
+            ]);
+        }
+    }
     $shift = RosterShift::create(['roster_id' => $roster->id, 'shift_date' => '2026-10-01', 'shift_type_id' => ShiftType::query()->where('code', 'weekday_day')->firstOrFail()->id]);
     RosterAssignment::create(['roster_shift_id' => $shift->id, 'doctor_id' => $doctors[0]->id, 'role' => RosterAssignmentRole::Main, 'slot_number' => 1]);
 
@@ -41,16 +54,29 @@ function changeConfirmedExclusion(int $year, int $month, User $admin, Closure $c
 }
 
 it('recalculates confirmed and later balances through the historical exclusion service', function () {
-    [$admin, $doctors, $october] = confirmedExclusionFixture();
+    [$admin, $doctors, $october] = confirmedExclusionFixture(true);
     $this->actingAs($admin)->post(exclusionHistoryUrl('rosters.actual-work.confirm'))->assertRedirect();
     $november = Roster::create(['year' => 2026, 'month' => 11, 'status' => RosterStatus::Final, 'created_by' => $admin->id]);
-    snapshotRosterParticipation($november, $doctors);
-    $this->post(route('rosters.actual-work.confirm', ['year' => 2026, 'month' => 11]))->assertRedirect();
+    snapshotRosterParticipation($november, $doctors, true);
+    $novemberNight = $november->shifts()->whereDate('shift_date', '2026-11-30')->firstOrFail();
+    foreach ($novemberNight->assignments()->where('role', RosterAssignmentRole::Main)->get() as $assignment) {
+        ActualWorkException::create([
+            'roster_shift_id' => $novemberNight->id,
+            'planned_assignment_id' => $assignment->id,
+            'exception_type' => ActualWorkExceptionType::MainAbsent,
+            'recorded_by' => $admin->id,
+        ]);
+    }
+    $this->post(route('rosters.actual-work.confirm', ['year' => 2026, 'month' => 11]))->assertRedirect()->assertSessionHasNoErrors();
     $december = Roster::create(['year' => 2026, 'month' => 12, 'status' => RosterStatus::Draft, 'created_by' => $admin->id]);
     RosterShift::create(['roster_id' => $december->id, 'shift_date' => '2026-12-01', 'shift_type_id' => ShiftType::query()->where('code', 'weekday_day')->firstOrFail()->id]);
-    $this->post(route('rosters.generate', ['year' => 2026, 'month' => 12]))->assertRedirect();
+    $this->post(route('rosters.generate', ['year' => 2026, 'month' => 12]))->assertRedirect()->assertSessionHasNoErrors();
     $plannedAssignments = RosterAssignment::query()->whereHas('rosterShift', fn ($query) => $query->where('roster_id', $december->id))->orderBy('id')->get()->toArray();
     $generatedAt = $december->fresh()->last_generated_at;
+    $generatedFingerprint = $december->fresh()->generated_history_fingerprint;
+    expect($generatedAt)->not->toBeNull()
+        ->and($generatedFingerprint)->not->toBeNull()
+        ->and($plannedAssignments)->not->toBeEmpty();
     $confirmedAt = $october->fresh()->actual_work_confirmed_at;
     $newAdmin = User::factory()->create();
     $this->actingAs($newAdmin);
@@ -110,11 +136,11 @@ it('leaves workload history untouched when the historical exclusion service has 
 });
 
 it('warns when an exclusion is added after generating from an unconfirmed Final plan', function () {
-    [$admin, $doctors, $october] = confirmedExclusionFixture();
+    [$admin, $doctors, $october] = confirmedExclusionFixture(true);
     $november = Roster::create(['year' => 2026, 'month' => 11, 'status' => RosterStatus::Draft, 'created_by' => $admin->id]);
     snapshotRosterParticipation($november, $doctors);
     RosterShift::create(['roster_id' => $november->id, 'shift_date' => '2026-11-02', 'shift_type_id' => ShiftType::query()->where('code', 'weekday_day')->firstOrFail()->id]);
-    $this->actingAs($admin)->post(route('rosters.generate', ['year' => 2026, 'month' => 11]))->assertRedirect();
+    $this->actingAs($admin)->post(route('rosters.generate', ['year' => 2026, 'month' => 11]))->assertRedirect()->assertSessionHasNoErrors();
     $assignments = RosterAssignment::query()->whereHas('rosterShift', fn ($query) => $query->where('roster_id', $november->id))->orderBy('id')->get()->toArray();
     $generatedAt = $november->fresh()->last_generated_at;
     expect($assignments)->not->toBeEmpty();
@@ -132,7 +158,7 @@ it('warns when an exclusion is added after generating from an unconfirmed Final 
 });
 
 it('warns when an exclusion is removed after generating from an unconfirmed Final plan', function () {
-    [$admin, $doctors, $october] = confirmedExclusionFixture();
+    [$admin, $doctors, $october] = confirmedExclusionFixture(true);
     changeConfirmedExclusion(2026, 10, $admin, function () use ($doctors): void {
         DoctorMonthlyExclusion::create(['doctor_id' => $doctors[1]->id, 'year' => 2026, 'month' => 10]);
     });
@@ -140,7 +166,7 @@ it('warns when an exclusion is removed after generating from an unconfirmed Fina
     $november = Roster::create(['year' => 2026, 'month' => 11, 'status' => RosterStatus::Draft, 'created_by' => $admin->id]);
     RosterShift::create(['roster_id' => $november->id, 'shift_date' => '2026-11-02', 'shift_type_id' => ShiftType::query()->where('code', 'weekday_day')->firstOrFail()->id]);
     $this->actingAs($admin);
-    $this->post(route('rosters.generate', ['year' => 2026, 'month' => 11]))->assertRedirect();
+    $this->post(route('rosters.generate', ['year' => 2026, 'month' => 11]))->assertRedirect()->assertSessionHasNoErrors();
     $assignments = RosterAssignment::query()->whereHas('rosterShift', fn ($query) => $query->where('roster_id', $november->id))->orderBy('id')->get()->toArray();
     $generatedAt = $november->fresh()->last_generated_at;
     expect($assignments)->not->toBeEmpty();

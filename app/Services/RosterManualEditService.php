@@ -107,6 +107,8 @@ class RosterManualEditService
                 }
             }
 
+            $this->context->assertFinalDependentNightBoundaryCompatible($roster, $next, $affected);
+
             $warnings = $this->softWarnings($state, $next, $base, $incoming);
             if ($warnings !== [] && ! $confirmed) {
                 return ['status' => 'confirmation_required', 'warnings' => $warnings];
@@ -173,6 +175,7 @@ class RosterManualEditService
                     throw ValidationException::withMessages(['edit' => 'Undo would restore an invalid assignment. '.implode(' ', $reasons)]);
                 }
             }
+            $this->context->assertFinalDependentNightBoundaryCompatible($roster, $state, $slots);
             $this->write($slots, $state);
             $roster->update(['updated_by' => $admin->id]);
             session()->forget(self::UNDO_KEY);

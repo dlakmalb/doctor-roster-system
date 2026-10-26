@@ -32,11 +32,13 @@ type Entry = {
 };
 type Props = {
     month: { year: number; month: number; label: string };
+    previousNight: { date: string; required_doctor_count: number; doctor_ids: number[]; saved: boolean };
     doctors: Doctor[];
 };
 
-export default function InitialWorkloadSetup({ month, doctors }: Props) {
-    const form = useForm<{ doctors: Entry[] }>({
+export default function InitialWorkloadSetup({ month, previousNight, doctors }: Props) {
+    const form = useForm<{ doctors: Entry[]; previous_night_doctor_ids: number[] }>({
+        previous_night_doctor_ids: previousNight.doctor_ids,
         doctors: doctors.map((doctor) => ({
             doctor_id: doctor.id,
             participation_status: doctor.participation_status,
@@ -85,6 +87,38 @@ export default function InitialWorkloadSetup({ month, doctors }: Props) {
                         {Object.values(form.errors).join(' ')}
                     </div>
                 )}
+                <section className="rounded-2xl border border-slate-200 bg-white p-5">
+                    <h2 className="font-semibold">Previous month’s final Night assignments</h2>
+                    <p className="mt-2 text-sm text-slate-600">
+                        Select exactly {previousNight.required_doctor_count} distinct doctors assigned to Night on {previousNight.date}. This record controls eligibility on the first day of the next roster month. {previousNight.saved ? 'Update it only when correcting the source history.' : 'The selection must match the configured Night staffing capacity.'}
+                    </p>
+                    <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                        {doctors.map((doctor) => (
+                            <label key={doctor.id} className="flex items-center gap-2 text-sm">
+                                <input
+                                    type="checkbox"
+                                    checked={form.data.previous_night_doctor_ids.includes(doctor.id)}
+                                    onChange={(event) => {
+                                        const ids = new Set(form.data.previous_night_doctor_ids);
+                                        if (event.target.checked) {
+                                            ids.add(doctor.id);
+                                        } else {
+                                            ids.delete(doctor.id);
+                                        }
+                                        form.setData('previous_night_doctor_ids', [...ids].sort((left, right) => left - right));
+                                    }}
+                                    className="size-4 rounded border-slate-300"
+                                />
+                                {doctor.short_code} - {doctor.name}
+                            </label>
+                        ))}
+                    </div>
+                    {form.errors.previous_night_doctor_ids && (
+                        <p role="alert" className="mt-3 text-sm text-red-700">
+                            {form.errors.previous_night_doctor_ids}
+                        </p>
+                    )}
+                </section>
                 <div className="grid gap-4 md:grid-cols-2">
                     {doctors.map((doctor, index) => {
                         const entry = form.data.doctors[index];

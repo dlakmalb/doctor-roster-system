@@ -31,7 +31,7 @@ function setupAccessUrl(string $name, int $year, int $month, array $extra = []):
 
 function setupAccessBaselinePayload($doctors): array
 {
-    return ['doctors' => $doctors->map(fn (Doctor $doctor): array => [
+    return ['previous_night_doctor_ids' => $doctors->take(2)->pluck('id')->all(), 'doctors' => $doctors->map(fn (Doctor $doctor): array => [
         'doctor_id' => $doctor->id,
         'participation_status' => $doctor->is_active ? 'participating' : 'not_part_of_team',
         'actual_hours' => '0',
@@ -139,12 +139,12 @@ it('keeps Monthly Setup available when the current roster is Draft without allow
 it('keeps November valid after it becomes Final and leaves historical roster and Actual Work routes open', function () {
     [$admin, $doctors] = setupAccessFixture('2026-10-04 09:00:00');
     $october = Roster::create(['year' => 2026, 'month' => 10, 'status' => RosterStatus::Final, 'created_by' => $admin->id]);
-    snapshotRosterParticipation($october, $doctors);
+    snapshotRosterParticipation($october, $doctors, true);
 
     $this->actingAs($admin)->get(setupAccessUrl('monthly-setup.show', 2026, 11))
         ->assertInertia(fn (Assert $page) => $page->component('monthly-setup')->where('month.label', 'November 2026'));
     $november = Roster::create(['year' => 2026, 'month' => 11, 'status' => RosterStatus::Final, 'created_by' => $admin->id]);
-    snapshotRosterParticipation($november, $doctors);
+    snapshotRosterParticipation($november, $doctors, true);
     $this->get(setupAccessUrl('monthly-setup.show', 2026, 11))
         ->assertInertia(fn (Assert $page) => $page->component('monthly-setup')->where('rosterStatus', 'final'));
     $this->get(setupAccessUrl('monthly-setup.show', 2026, 12))

@@ -11,6 +11,7 @@ use App\Models\Roster;
 use App\Models\ShiftType;
 use App\Models\User;
 use App\Services\DoctorMonthlyParticipationService;
+use App\Services\InitialWorkloadSetupService;
 use Carbon\CarbonImmutable;
 use Database\Seeders\DoctorsSeeder;
 use Database\Seeders\ShiftTypesSeeder;
@@ -244,6 +245,13 @@ it('makes next month primary after the current baseline exists', function () {
     $this->seed([DoctorsSeeder::class, ShiftTypesSeeder::class]);
     $this->travelTo(CarbonImmutable::parse('2026-10-03 09:00:00'));
     seedMonthlySetupBaselineHistory(2026, 10);
+    $weekendNight = ShiftType::query()->where('code', 'weekend_night')->firstOrFail();
+    $nightDoctorCount = $weekendNight->main_count + $weekendNight->optional_count;
+    app(InitialWorkloadSetupService::class)->recordNightBoundary(
+        2026,
+        10,
+        Doctor::query()->limit($nightDoctorCount)->pluck('id')->all(),
+    );
 
     $this->actingAs(User::factory()->create())
         ->get(route('dashboard'))
@@ -251,6 +259,8 @@ it('makes next month primary after the current baseline exists', function () {
             ->where('initialSetup.required', false)
             ->where('primaryMonth.label', 'November 2026')
             ->where('primaryMonth.status', 'not_started')
+            ->where('primaryMonth.history_readiness.ready', true)
+            ->where('primaryMonth.history_readiness.basis', 'manual_initial')
             ->where('secondaryMonth', null));
 });
 
@@ -259,7 +269,7 @@ it('keeps next month primary after finalizing the current month', function () {
     $this->travelTo(CarbonImmutable::parse('2026-10-03 09:00:00'));
     seedMonthlySetupBaselineHistory(2026, 9);
     $october = Roster::create(['year' => 2026, 'month' => 10, 'status' => RosterStatus::Final]);
-    snapshotRosterParticipation($october, Doctor::query()->get());
+    snapshotRosterParticipation($october, Doctor::query()->get(), true);
 
     $this->actingAs(User::factory()->create())
         ->get(route('dashboard'))
@@ -276,7 +286,7 @@ it('surfaces unconfirmed previous actual work without marking it confirmed', fun
     $this->travelTo(CarbonImmutable::parse('2026-10-03 09:00:00'));
     seedMonthlySetupBaselineHistory(2026, 9);
     $october = Roster::create(['year' => 2026, 'month' => 10, 'status' => RosterStatus::Final]);
-    snapshotRosterParticipation($october, Doctor::query()->get());
+    snapshotRosterParticipation($october, Doctor::query()->get(), true);
 
     $this->actingAs(User::factory()->create())
         ->get(route('dashboard'))

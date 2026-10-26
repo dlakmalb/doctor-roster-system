@@ -28,7 +28,7 @@ function workflowUrl(string $name, int $year, int $month, array $extra = []): st
 
 function workflowBaseline($doctors): array
 {
-    return ['doctors' => $doctors->map(fn (Doctor $doctor): array => [
+    return ['previous_night_doctor_ids' => $doctors->take(2)->pluck('id')->all(), 'doctors' => $doctors->map(fn (Doctor $doctor): array => [
         'doctor_id' => $doctor->id,
         'participation_status' => $doctor->is_active ? 'participating' : 'not_part_of_team',
         'actual_hours' => '0',
@@ -47,6 +47,12 @@ it('connects setup, generation, editing, finalization, actual work, documents, a
     $admin = User::factory()->create();
     $doctors = Doctor::query()->orderByDesc('is_active')->orderBy('short_code')->get();
     $activeDoctors = $doctors->where('is_active', true)->values();
+    $previousNightDoctors = $doctors->take(2);
+    $previousNightDoctorIds = $previousNightDoctors->pluck('id');
+    $excludedDoctor = $activeDoctors->get(2);
+    $preferredDoctor = $activeDoctors->first(fn (Doctor $doctor): bool => ! $previousNightDoctorIds->contains($doctor->id)
+        && $doctor->id !== $excludedDoctor->id);
+    expect($preferredDoctor)->not->toBeNull();
     $this->travelTo(CarbonImmutable::parse('2026-09-01 09:00:00'));
     $this->actingAs($admin);
 
@@ -67,21 +73,24 @@ it('connects setup, generation, editing, finalization, actual work, documents, a
         'doctor_id' => $doctors[0]->id, 'request_type' => 'day_off', 'request_date' => '2026-10-06',
     ])->assertRedirect();
     $this->post(workflowUrl('doctor-requests.store', 2026, 10), [
-        'doctor_id' => $doctors[1]->id, 'request_type' => 'preferred_work',
+        'doctor_id' => $preferredDoctor->id, 'request_type' => 'preferred_work',
         'request_date' => '2026-10-01', 'shift_type_id' => $dayType->id,
     ])->assertRedirect();
-    $this->post(workflowUrl('monthly-exclusions.store', 2026, 10), ['doctor_id' => $activeDoctors[2]->id])->assertRedirect();
+    $this->post(workflowUrl('monthly-exclusions.store', 2026, 10), ['doctor_id' => $excludedDoctor->id])->assertRedirect();
 
-    $this->post(workflowUrl('rosters.generate', 2026, 10))->assertRedirect();
+    $this->post(workflowUrl('rosters.generate', 2026, 10))->assertRedirect()->assertSessionHasNoErrors();
     $assignments = RosterAssignment::query()->whereHas('rosterShift', fn ($query) => $query->where('roster_id', $october->id))->get();
     expect($assignments->count())->toBeGreaterThan(0)
-        ->and($assignments->contains('doctor_id', $activeDoctors[2]->id))->toBeFalse();
+        ->and($assignments->contains('doctor_id', $excludedDoctor->id))->toBeFalse();
     $dayOffShiftIds = $october->shifts()->whereDate('shift_date', '2026-10-06')->pluck('id');
     expect($assignments->where('doctor_id', $doctors[0]->id)->whereIn('roster_shift_id', $dayOffShiftIds)
         ->where('role', RosterAssignmentRole::Main)->isEmpty())->toBeTrue();
     $preferredShift = $october->shifts()->whereDate('shift_date', '2026-10-01')->where('shift_type_id', $dayType->id)->firstOrFail();
-    expect($assignments->contains(fn (RosterAssignment $assignment): bool => $assignment->roster_shift_id === $preferredShift->id
-        && $assignment->doctor_id === $doctors[1]->id && $assignment->role === RosterAssignmentRole::Main))->toBeTrue();
+    $octoberFirstShiftIds = $october->shifts()->whereDate('shift_date', '2026-10-01')->pluck('id');
+    expect($assignments->whereIn('roster_shift_id', $octoberFirstShiftIds)
+        ->whereIn('doctor_id', $previousNightDoctorIds)->isEmpty())->toBeTrue()
+        ->and($assignments->contains(fn (RosterAssignment $assignment): bool => $assignment->roster_shift_id === $preferredShift->id
+            && $assignment->doctor_id === $preferredDoctor->id && $assignment->role === RosterAssignmentRole::Main))->toBeTrue();
 
     $editable = $assignments->first(fn (RosterAssignment $assignment): bool => $assignment->roster_shift_id === $preferredShift->id
         && $assignment->role === RosterAssignmentRole::Optional);
@@ -268,7 +277,7 @@ it('carries a confirmed historical correction forward without changing a later d
     $this->actingAs($admin)->post(workflowUrl('initial-workload.save', 2026, 9), workflowBaseline($doctors))->assertRedirect();
 
     $october = Roster::create(['year' => 2026, 'month' => 10, 'status' => RosterStatus::Final, 'created_by' => $admin->id]);
-    snapshotRosterParticipation($october, $doctors);
+    snapshotRosterParticipation($october, $doctors, true);
     $octoberShift = RosterShift::create(['roster_id' => $october->id, 'shift_date' => '2026-10-01', 'shift_type_id' => $dayType->id]);
     $octoberAssignment = RosterAssignment::create([
         'roster_shift_id' => $octoberShift->id, 'doctor_id' => $doctors[0]->id,
@@ -276,7 +285,7 @@ it('carries a confirmed historical correction forward without changing a later d
     ]);
     $this->post(workflowUrl('rosters.actual-work.confirm', 2026, 10))->assertRedirect();
     $november = Roster::create(['year' => 2026, 'month' => 11, 'status' => RosterStatus::Final, 'created_by' => $admin->id]);
-    snapshotRosterParticipation($november, $doctors);
+    snapshotRosterParticipation($november, $doctors, true);
     $novemberShift = RosterShift::create(['roster_id' => $november->id, 'shift_date' => '2026-11-02', 'shift_type_id' => $dayType->id]);
     $novemberAssignment = RosterAssignment::create([
         'roster_shift_id' => $novemberShift->id, 'doctor_id' => $doctors[1]->id,

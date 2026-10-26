@@ -15,6 +15,7 @@ use App\Models\RosterShift;
 use App\Models\ShiftType;
 use App\Models\User;
 use App\Services\DoctorMonthlyParticipationService;
+use App\Services\InitialWorkloadSetupService;
 use App\Services\RosterDraftValidationService;
 use App\Services\RosterHistoryReadinessService;
 use App\Services\RosterPlanningHistoryService;
@@ -37,8 +38,24 @@ function planningFixture(): array
         ]);
         app(DoctorMonthlyParticipationService::class)->saveBaseline($doctor->id, 2026, 9, true);
     }
+    $septemberNight = ShiftType::query()->where('code', 'weekday_night')->firstOrFail();
+    $nightDoctorCount = $septemberNight->main_count + $septemberNight->optional_count;
+    app(InitialWorkloadSetupService::class)->recordNightBoundary(
+        2026,
+        9,
+        $doctors->take($nightDoctorCount)->pluck('id')->all(),
+    );
     $october = Roster::create(['year' => 2026, 'month' => 10, 'status' => RosterStatus::Final, 'created_by' => $admin->id, 'finalized_at' => now()]);
-    snapshotRosterParticipation($october, $doctors);
+    snapshotRosterParticipation($october, $doctors, true);
+    $monthEndNight = $october->shifts()->whereDate('shift_date', '2026-10-31')->firstOrFail();
+    foreach ($monthEndNight->assignments as $assignment) {
+        ActualWorkException::create([
+            'roster_shift_id' => $monthEndNight->id,
+            'planned_assignment_id' => $assignment->id,
+            'exception_type' => ActualWorkExceptionType::MainAbsent,
+            'recorded_by' => $admin->id,
+        ]);
+    }
     $nightType = ShiftType::query()->where('code', 'weekday_night')->firstOrFail();
     $shift = RosterShift::create(['roster_id' => $october->id, 'shift_date' => '2026-10-30', 'shift_type_id' => $nightType->id]);
     $main = RosterAssignment::create(['roster_shift_id' => $shift->id, 'doctor_id' => $doctors[0]->id, 'role' => RosterAssignmentRole::Main, 'slot_number' => 1]);

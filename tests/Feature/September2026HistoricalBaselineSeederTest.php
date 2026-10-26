@@ -2,14 +2,17 @@
 
 use App\Enums\DoctorMonthlyWorkloadSource;
 use App\Models\Doctor;
+use App\Models\DoctorMonthlyNightBoundarySnapshot;
 use App\Models\DoctorMonthlyParticipation;
 use App\Models\DoctorMonthlyWorkload;
 use Database\Seeders\DoctorsSeeder;
 use Database\Seeders\September2026HistoricalBaselineSeeder;
+use Database\Seeders\ShiftTypesSeeder;
 use Illuminate\Validation\ValidationException;
 
 beforeEach(function (): void {
     app()->instance('september_baseline.original_environment', app()->environment());
+    $this->seed(ShiftTypesSeeder::class);
 });
 
 afterEach(function (): void {
@@ -65,6 +68,11 @@ it('saves all doctors through Initial Setup and leaves a matching second run unc
     $this->seed(DoctorsSeeder::class);
     Doctor::query()->where('short_code', 'H')->update(['is_active' => false]);
     $this->seed(September2026HistoricalBaselineSeeder::class);
+    $boundary = DoctorMonthlyNightBoundarySnapshot::query()->with('doctors:id,short_code')->where('year', 2026)->where('month', 9)->firstOrFail();
+    $boundaryCodes = $boundary->doctors->pluck('short_code')->sort()->values()->all();
+    expect($boundary->night_date->toDateString())->toBe('2026-09-30')
+        ->and($boundaryCodes)->toBe(['E', 'N']);
+
     $before = DoctorMonthlyWorkload::query()->where('year', 2026)->where('month', 9)->orderBy('doctor_id')->get()->toArray();
 
     expect($before)->toHaveCount(15);
