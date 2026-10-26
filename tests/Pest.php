@@ -1,6 +1,19 @@
 <?php
 
+use App\Enums\DoctorMonthlyWorkloadSource;
+use App\Enums\RosterAssignmentRole;
+use App\Enums\RosterStatus;
+use App\Models\Doctor;
+use App\Models\DoctorMonthlyWorkload;
+use App\Models\Roster;
+use App\Models\RosterAssignment;
+use App\Models\RosterShift;
+use App\Models\ShiftType;
+use App\Services\DoctorMonthlyParticipationService;
+use App\Services\InitialWorkloadSetupService;
+use Carbon\CarbonImmutable;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Collection;
 use Tests\TestCase;
 
 /*
@@ -47,4 +60,71 @@ expect()->extend('toBeOne', function () {
 function something()
 {
     // ..
+}
+
+function seedInitialHistoryForGeneration(): void
+{
+    $participation = app(DoctorMonthlyParticipationService::class);
+    foreach (Doctor::query()->get() as $doctor) {
+        DoctorMonthlyWorkload::query()->firstOrCreate(
+            ['doctor_id' => $doctor->id, 'year' => 2026, 'month' => 9],
+            ['source' => DoctorMonthlyWorkloadSource::ManualInitial, 'actual_worked_minutes' => 0],
+        );
+        $participation->saveBaseline($doctor->id, 2026, 9, $doctor->is_active);
+    }
+    $nightDate = CarbonImmutable::create(2026, 9, 1)->endOfMonth();
+    $nightType = ShiftType::query()
+        ->where('code', $nightDate->isWeekend() ? 'weekend_night' : 'weekday_night')
+        ->firstOrFail();
+    $requiredDoctorCount = $nightType->main_count + $nightType->optional_count;
+    $previousNightDoctorIds = Doctor::query()
+        ->where('is_active', true)
+        ->orderBy('id')
+        ->limit($requiredDoctorCount)
+        ->pluck('id')
+        ->all();
+
+    app(InitialWorkloadSetupService::class)->recordNightBoundary(2026, 9, $previousNightDoctorIds);
+}
+
+/** @param Collection<int, Doctor>|null $participatingDoctors */
+function snapshotRosterParticipation(Roster $roster, ?Collection $participatingDoctors = null, bool $completeMonthEndNight = false): void
+{
+    app(DoctorMonthlyParticipationService::class)->snapshotRoster(
+        $roster,
+        $participatingDoctors ?? Doctor::query()->where('is_active', true)->get(),
+    );
+    if ($roster->status === RosterStatus::Final) {
+        $lastDate = CarbonImmutable::create($roster->year, $roster->month, 1)->endOfMonth();
+        $nightType = ShiftType::query()->where('code', $lastDate->isWeekend() ? 'weekend_night' : 'weekday_night')->firstOrFail();
+        $nightShift = RosterShift::query()->firstOrCreate([
+            'roster_id' => $roster->id,
+            'shift_date' => $lastDate->toDateString(),
+            'shift_type_id' => $nightType->id,
+        ]);
+        if ($completeMonthEndNight) {
+            $assignedDoctorIds = $nightShift->assignments()->pluck('doctor_id')->all();
+            $eligibleDoctors = ($participatingDoctors ?? Doctor::query()->where('is_active', true)->get())
+                ->reject(fn (Doctor $doctor): bool => in_array($doctor->id, $assignedDoctorIds, true))
+                ->values();
+            foreach ([
+                [RosterAssignmentRole::Main, $nightType->main_count],
+                [RosterAssignmentRole::Optional, $nightType->optional_count],
+            ] as [$role, $capacity]) {
+                for ($slot = 1; $slot <= $capacity; $slot++) {
+                    if ($nightShift->assignments()->where('role', $role)->where('slot_number', $slot)->exists()) {
+                        continue;
+                    }
+                    $doctor = $eligibleDoctors->shift();
+                    if ($doctor === null) {
+                        break;
+                    }
+                    RosterAssignment::query()->firstOrCreate(
+                        ['roster_shift_id' => $nightShift->id, 'role' => $role, 'slot_number' => $slot],
+                        ['doctor_id' => $doctor->id],
+                    );
+                }
+            }
+        }
+    }
 }
