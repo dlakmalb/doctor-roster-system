@@ -11,6 +11,7 @@ use App\Models\RosterShift;
 use App\Models\ShiftType;
 use App\Services\DoctorMonthlyParticipationService;
 use App\Services\InitialWorkloadSetupService;
+use App\Services\MonthlyShiftCapacityService;
 use Carbon\CarbonImmutable;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Collection;
@@ -102,14 +103,19 @@ function snapshotRosterParticipation(Roster $roster, ?Collection $participatingD
             'shift_date' => $lastDate->toDateString(),
             'shift_type_id' => $nightType->id,
         ]);
+        $capacity = $nightShift->capacitySnapshot()->first();
+        if ($capacity === null) {
+            $resolvedCapacity = app(MonthlyShiftCapacityService::class)->resolve($roster->year, $roster->month, $nightType);
+            $capacity = $nightShift->capacitySnapshot()->create($resolvedCapacity);
+        }
         if ($completeMonthEndNight) {
             $assignedDoctorIds = $nightShift->assignments()->pluck('doctor_id')->all();
             $eligibleDoctors = ($participatingDoctors ?? Doctor::query()->where('is_active', true)->get())
                 ->reject(fn (Doctor $doctor): bool => in_array($doctor->id, $assignedDoctorIds, true))
                 ->values();
             foreach ([
-                [RosterAssignmentRole::Main, $nightType->main_count],
-                [RosterAssignmentRole::Optional, $nightType->optional_count],
+                [RosterAssignmentRole::Main, $capacity->main_count],
+                [RosterAssignmentRole::Optional, $capacity->optional_count],
             ] as [$role, $capacity]) {
                 for ($slot = 1; $slot <= $capacity; $slot++) {
                     if ($nightShift->assignments()->where('role', $role)->where('slot_number', $slot)->exists()) {

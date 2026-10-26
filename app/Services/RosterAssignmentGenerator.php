@@ -46,7 +46,20 @@ class RosterAssignmentGenerator
                 throw ValidationException::withMessages(['roster' => 'Assignments can only be generated for a Draft roster.']);
             }
 
-            $shifts = $roster->shifts()->with(['shiftType', 'assignments'])->get();
+            $shifts = $roster->shifts()->with(['shiftType', 'assignments', 'capacitySnapshot'])->get();
+            foreach ($shifts as $shift) {
+                try {
+                    $capacity = $shift->savedCapacity();
+                } catch (\LogicException $exception) {
+                    throw ValidationException::withMessages(['roster' => $exception->getMessage()]);
+                }
+                foreach ($shift->assignments as $assignment) {
+                    $limit = $assignment->role === RosterAssignmentRole::Main ? $capacity->main_count : $capacity->optional_count;
+                    if ($assignment->slot_number < 1 || $assignment->slot_number > $limit) {
+                        throw ValidationException::withMessages(['roster' => "Roster shift {$shift->id} has an assignment outside its saved {$assignment->role->value} capacity."]);
+                    }
+                }
+            }
             $previousNightDoctorIds = $this->nightBoundary->doctorIdsForMonth($roster->year, $roster->month);
             $doctors = Doctor::query()->where('is_active', true)->get();
             $participationSnapshot = $this->participation->ensureRosterSnapshot($roster, $doctors);

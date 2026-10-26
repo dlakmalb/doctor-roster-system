@@ -9,6 +9,7 @@ use App\Models\DoctorRequest;
 use App\Models\RosterShift;
 use Illuminate\Support\Collection;
 use Illuminate\Validation\ValidationException;
+use LogicException;
 
 class RosterAssignmentRecoveryService
 {
@@ -72,6 +73,17 @@ class RosterAssignmentRecoveryService
         $this->shiftsById = $shifts->keyBy('id')->all();
         $this->doctors = $doctors;
         foreach ($shifts as $shift) {
+            try {
+                $capacity = $shift->savedCapacity();
+            } catch (LogicException $exception) {
+                throw ValidationException::withMessages(['roster' => $exception->getMessage()]);
+            }
+            foreach ($shift->assignments as $assignment) {
+                $limit = $assignment->role === RosterAssignmentRole::Main ? $capacity->main_count : $capacity->optional_count;
+                if ($assignment->slot_number < 1 || $assignment->slot_number > $limit) {
+                    throw ValidationException::withMessages(['roster' => "Roster shift {$shift->id} has an assignment outside its saved {$assignment->role->value} capacity."]);
+                }
+            }
             foreach ($doctors as $doctor) {
                 $history = $previousHistory->get($doctor->id);
                 foreach (RosterAssignmentRole::cases() as $role) {
@@ -179,7 +191,7 @@ class RosterAssignmentRecoveryService
     {
         $orderedShifts = $shifts->sortBy(fn (RosterShift $shift): string => $shift->shift_date->toDateString().' '.$shift->shiftType->start_time);
         foreach ($orderedShifts as $shift) {
-            $required = $role === RosterAssignmentRole::Main ? $shift->shiftType->main_count : $shift->shiftType->optional_count;
+            $required = $shift->savedCapacityForRole($role);
             for ($slot = 1; $slot <= $required; $slot++) {
                 $key = $this->key($shift, $role, $slot);
                 if (isset($this->plan[$key])) {

@@ -58,8 +58,11 @@ function planningFixture(): array
     }
     $nightType = ShiftType::query()->where('code', 'weekday_night')->firstOrFail();
     $shift = RosterShift::create(['roster_id' => $october->id, 'shift_date' => '2026-10-30', 'shift_type_id' => $nightType->id]);
+    $shift->capacitySnapshot()->create(['main_count' => $nightType->main_count, 'optional_count' => $nightType->optional_count]);
     $main = RosterAssignment::create(['roster_shift_id' => $shift->id, 'doctor_id' => $doctors[0]->id, 'role' => RosterAssignmentRole::Main, 'slot_number' => 1]);
-    $excludedShift = RosterShift::create(['roster_id' => $october->id, 'shift_date' => '2026-10-31', 'shift_type_id' => ShiftType::query()->where('code', 'weekend_day')->firstOrFail()->id]);
+    $weekendDayType = ShiftType::query()->where('code', 'weekend_day')->firstOrFail();
+    $excludedShift = RosterShift::create(['roster_id' => $october->id, 'shift_date' => '2026-10-31', 'shift_type_id' => $weekendDayType->id]);
+    $excludedShift->capacitySnapshot()->create(['main_count' => $weekendDayType->main_count, 'optional_count' => $weekendDayType->optional_count]);
     RosterAssignment::create(['roster_shift_id' => $excludedShift->id, 'doctor_id' => $doctors[2]->id, 'role' => RosterAssignmentRole::Main, 'slot_number' => 1]);
     RosterAssignment::create(['roster_shift_id' => $excludedShift->id, 'doctor_id' => $doctors[1]->id, 'role' => RosterAssignmentRole::Optional, 'slot_number' => 1]);
     DoctorMonthlyExclusion::create(['doctor_id' => $doctors[2]->id, 'year' => 2026, 'month' => 10]);
@@ -182,9 +185,11 @@ it('credits an unconfirmed Main Replacement and Optional Worked assignment', fun
 
 it('generates from planned history without persisting it and switches to confirmed actual history', function () {
     [$admin, $doctors, $october, $november, $main] = planningFixture();
-    $novemberShift = RosterShift::create(['roster_id' => $november->id, 'shift_date' => '2026-11-02', 'shift_type_id' => ShiftType::query()->where('code', 'weekday_day')->firstOrFail()->id]);
+    $weekdayDayType = ShiftType::query()->where('code', 'weekday_day')->firstOrFail();
+    $novemberShift = RosterShift::create(['roster_id' => $november->id, 'shift_date' => '2026-11-02', 'shift_type_id' => $weekdayDayType->id]);
+    $novemberShift->capacitySnapshot()->create(['main_count' => $weekdayDayType->main_count, 'optional_count' => $weekdayDayType->optional_count]);
     RosterAssignment::create(['roster_shift_id' => $novemberShift->id, 'doctor_id' => $doctors[1]->id, 'role' => RosterAssignmentRole::Main, 'slot_number' => 1]);
-    $this->actingAs($admin)->post(route('rosters.generate', ['year' => 2026, 'month' => 11]))->assertRedirect();
+    $this->actingAs($admin)->post(route('rosters.generate', ['year' => 2026, 'month' => 11]))->assertRedirect()->assertSessionHasNoErrors();
     expect($november->fresh()->last_generated_at)->not->toBeNull();
     $this->assertDatabaseCount('doctor_monthly_workloads', 3);
     $generatedAt = $november->fresh()->last_generated_at;
@@ -203,7 +208,7 @@ it('generates from planned history without persisting it and switches to confirm
         ->and($novemberShift->assignments()->pluck('id')->all())->toBe($assignmentIds)
         ->and(collect(app(RosterDraftValidationService::class)->validate($november->fresh()))->contains(fn (array $item): bool => str_contains($item['message'], 'history changed')))->toBeTrue();
     $this->travel(2)->seconds();
-    $this->post(route('rosters.regenerate', ['year' => 2026, 'month' => 11]))->assertRedirect();
+    $this->post(route('rosters.regenerate', ['year' => 2026, 'month' => 11]))->assertRedirect()->assertSessionHasNoErrors();
     expect(collect(app(RosterDraftValidationService::class)->validate($november->fresh()))->contains(fn (array $item): bool => str_contains($item['message'], 'history changed')))->toBeFalse();
     $november->update(['status' => RosterStatus::Final]);
     $regeneratedAt = $november->fresh()->last_generated_at;

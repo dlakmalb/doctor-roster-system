@@ -37,7 +37,9 @@ function confirmedExclusionFixture(bool $completeNightBoundary = false): array
             ]);
         }
     }
-    $shift = RosterShift::create(['roster_id' => $roster->id, 'shift_date' => '2026-10-01', 'shift_type_id' => ShiftType::query()->where('code', 'weekday_day')->firstOrFail()->id]);
+    $weekdayDay = ShiftType::query()->where('code', 'weekday_day')->firstOrFail();
+    $shift = RosterShift::create(['roster_id' => $roster->id, 'shift_date' => '2026-10-01', 'shift_type_id' => $weekdayDay->id]);
+    $shift->capacitySnapshot()->create(['main_count' => $weekdayDay->main_count, 'optional_count' => $weekdayDay->optional_count]);
     RosterAssignment::create(['roster_shift_id' => $shift->id, 'doctor_id' => $doctors[0]->id, 'role' => RosterAssignmentRole::Main, 'slot_number' => 1]);
 
     return [$admin, $doctors, $roster];
@@ -69,7 +71,9 @@ it('recalculates confirmed and later balances through the historical exclusion s
     }
     $this->post(route('rosters.actual-work.confirm', ['year' => 2026, 'month' => 11]))->assertRedirect()->assertSessionHasNoErrors();
     $december = Roster::create(['year' => 2026, 'month' => 12, 'status' => RosterStatus::Draft, 'created_by' => $admin->id]);
-    RosterShift::create(['roster_id' => $december->id, 'shift_date' => '2026-12-01', 'shift_type_id' => ShiftType::query()->where('code', 'weekday_day')->firstOrFail()->id]);
+    $weekdayDay = ShiftType::query()->where('code', 'weekday_day')->firstOrFail();
+    $decemberShift = RosterShift::create(['roster_id' => $december->id, 'shift_date' => '2026-12-01', 'shift_type_id' => $weekdayDay->id]);
+    $decemberShift->capacitySnapshot()->create(['main_count' => $weekdayDay->main_count, 'optional_count' => $weekdayDay->optional_count]);
     $this->post(route('rosters.generate', ['year' => 2026, 'month' => 12]))->assertRedirect()->assertSessionHasNoErrors();
     $plannedAssignments = RosterAssignment::query()->whereHas('rosterShift', fn ($query) => $query->where('roster_id', $december->id))->orderBy('id')->get()->toArray();
     $generatedAt = $december->fresh()->last_generated_at;
@@ -139,7 +143,9 @@ it('warns when an exclusion is added after generating from an unconfirmed Final 
     [$admin, $doctors, $october] = confirmedExclusionFixture(true);
     $november = Roster::create(['year' => 2026, 'month' => 11, 'status' => RosterStatus::Draft, 'created_by' => $admin->id]);
     snapshotRosterParticipation($november, $doctors);
-    RosterShift::create(['roster_id' => $november->id, 'shift_date' => '2026-11-02', 'shift_type_id' => ShiftType::query()->where('code', 'weekday_day')->firstOrFail()->id]);
+    $weekdayDay = ShiftType::query()->where('code', 'weekday_day')->firstOrFail();
+    $novemberShift = RosterShift::create(['roster_id' => $november->id, 'shift_date' => '2026-11-02', 'shift_type_id' => $weekdayDay->id]);
+    $novemberShift->capacitySnapshot()->create(['main_count' => $weekdayDay->main_count, 'optional_count' => $weekdayDay->optional_count]);
     $this->actingAs($admin)->post(route('rosters.generate', ['year' => 2026, 'month' => 11]))->assertRedirect()->assertSessionHasNoErrors();
     $assignments = RosterAssignment::query()->whereHas('rosterShift', fn ($query) => $query->where('roster_id', $november->id))->orderBy('id')->get()->toArray();
     $generatedAt = $november->fresh()->last_generated_at;
@@ -164,7 +170,9 @@ it('warns when an exclusion is removed after generating from an unconfirmed Fina
     });
     $exclusion = DoctorMonthlyExclusion::query()->where('doctor_id', $doctors[1]->id)->firstOrFail();
     $november = Roster::create(['year' => 2026, 'month' => 11, 'status' => RosterStatus::Draft, 'created_by' => $admin->id]);
-    RosterShift::create(['roster_id' => $november->id, 'shift_date' => '2026-11-02', 'shift_type_id' => ShiftType::query()->where('code', 'weekday_day')->firstOrFail()->id]);
+    $weekdayDay = ShiftType::query()->where('code', 'weekday_day')->firstOrFail();
+    $novemberShift = RosterShift::create(['roster_id' => $november->id, 'shift_date' => '2026-11-02', 'shift_type_id' => $weekdayDay->id]);
+    $novemberShift->capacitySnapshot()->create(['main_count' => $weekdayDay->main_count, 'optional_count' => $weekdayDay->optional_count]);
     $this->actingAs($admin);
     $this->post(route('rosters.generate', ['year' => 2026, 'month' => 11]))->assertRedirect()->assertSessionHasNoErrors();
     $assignments = RosterAssignment::query()->whereHas('rosterShift', fn ($query) => $query->where('roster_id', $november->id))->orderBy('id')->get()->toArray();

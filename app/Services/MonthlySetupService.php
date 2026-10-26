@@ -15,7 +15,7 @@ use Illuminate\Support\Collection;
 
 class MonthlySetupService
 {
-    public function __construct(private RequestIntervalService $intervals) {}
+    public function __construct(private RequestIntervalService $intervals, private MonthlyShiftCapacityService $capacities) {}
 
     /** @return array<string, mixed> */
     public function build(int $year, int $monthNumber): array
@@ -271,7 +271,8 @@ class MonthlySetupService
                     ->all();
                 $unavailableDoctorIds = array_unique([...$unavailableDoctorIds, ...array_intersect($eligibleDoctorIds, $restrictedByDoctor->get($shiftType->id, []))]);
                 $availableCount = count($eligibleDoctorIds) - count($unavailableDoctorIds);
-                $requiredCount = $shiftType->main_count + $shiftType->optional_count;
+                $capacity = $this->capacities->resolve($month->year, $month->month, $shiftType);
+                $requiredCount = $capacity['main_count'] + $capacity['optional_count'];
 
                 if ($availableCount < $requiredCount) {
                     $warnings->push([

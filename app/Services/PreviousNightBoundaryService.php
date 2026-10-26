@@ -13,9 +13,12 @@ use App\Models\ShiftType;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Collection;
 use Illuminate\Validation\ValidationException;
+use LogicException;
 
 class PreviousNightBoundaryService
 {
+    public function __construct(private MonthlyShiftCapacityService $capacities) {}
+
     /** @return Collection<int, true> Doctor IDs indexed for constant-time membership checks. */
     public function doctorIdsForMonth(int $year, int $month): Collection
     {
@@ -30,7 +33,7 @@ class PreviousNightBoundaryService
             }
 
             $nightShifts = RosterShift::query()
-                ->with(['shiftType', 'assignments'])
+                ->with(['shiftType', 'assignments', 'capacitySnapshot'])
                 ->where('roster_id', $previousRoster->id)
                 ->whereDate('shift_date', $nightDate)
                 ->whereHas('shiftType', fn ($query) => $query->where('is_overnight', true))
@@ -44,26 +47,31 @@ class PreviousNightBoundaryService
 
             /** @var RosterShift $nightShift */
             $nightShift = $nightShifts->first();
-            $expectedDoctorCount = $nightShift->shiftType->main_count + $nightShift->shiftType->optional_count;
+            try {
+                $capacity = $nightShift->savedCapacity();
+            } catch (LogicException $exception) {
+                throw ValidationException::withMessages(['roster' => $exception->getMessage()]);
+            }
             $assignments = $nightShift->assignments;
-            $doctorIds = $assignments->pluck('doctor_id')->map(fn (int|string $doctorId): int => (int) $doctorId)->unique();
-            $mainSlots = $assignments->where('role', RosterAssignmentRole::Main)->pluck('slot_number')->sort()->values()->all();
-            $optionalSlots = $assignments->where('role', RosterAssignmentRole::Optional)->pluck('slot_number')->sort()->values()->all();
-            $expectedMainSlots = $nightShift->shiftType->main_count > 0 ? range(1, $nightShift->shiftType->main_count) : [];
-            $expectedOptionalSlots = $nightShift->shiftType->optional_count > 0 ? range(1, $nightShift->shiftType->optional_count) : [];
-            if ($assignments->where('role', RosterAssignmentRole::Main)->count() !== $nightShift->shiftType->main_count
-                || $assignments->where('role', RosterAssignmentRole::Optional)->count() !== $nightShift->shiftType->optional_count
+            $mainAssignments = $assignments->where('role', RosterAssignmentRole::Main);
+            $optionalAssignments = $assignments->where('role', RosterAssignmentRole::Optional);
+            $doctorIds = $assignments->pluck('doctor_id')->map(fn (int|string $doctorId): int => (int) $doctorId);
+            $mainSlots = $mainAssignments->pluck('slot_number')->sort()->values()->all();
+            $optionalSlots = $optionalAssignments->pluck('slot_number')->sort()->values()->all();
+            $expectedMainSlots = $capacity->main_count > 0 ? range(1, $capacity->main_count) : [];
+            $optionalSlotsAreValid = count($optionalSlots) === count(array_unique($optionalSlots))
+                && collect($optionalSlots)->every(fn (int $slot): bool => $slot >= 1 && $slot <= $capacity->optional_count);
+            if ($mainAssignments->count() !== $capacity->main_count
                 || $mainSlots !== $expectedMainSlots
-                || $optionalSlots !== $expectedOptionalSlots
-                || $doctorIds->count() !== $expectedDoctorCount) {
+                || ! $optionalSlotsAreValid
+                || $doctorIds->count() !== $doctorIds->unique()->count()) {
                 throw ValidationException::withMessages([
-                    'roster' => "The finalized {$nightDate->format('F j, Y')} Night shift must have all {$expectedDoctorCount} planned assignments filled before the next month's roster can be used.",
+                    'roster' => "The finalized {$nightDate->format('F j, Y')} Night shift must have all saved Main positions filled, valid Optional assignments, and distinct doctors before the next month's roster can be used.",
                 ]);
             }
 
             return $doctorIds
                 ->map(fn (int|string $doctorId): int => (int) $doctorId)
-                ->unique()
                 ->flip();
         }
 
@@ -80,10 +88,9 @@ class PreviousNightBoundaryService
         }
 
         $doctorIds = collect($snapshot->doctors->modelKeys())->map(fn (int|string $doctorId): int => (int) $doctorId);
-        $expectedDoctorCount = $this->expectedDoctorCountForDate($nightDate);
-        if ($doctorIds->count() !== $expectedDoctorCount || $doctorIds->unique()->count() !== $expectedDoctorCount) {
+        if ($doctorIds->isEmpty() || $doctorIds->unique()->count() !== $doctorIds->count()) {
             throw ValidationException::withMessages([
-                'roster' => "Initial Setup for {$nightDate->format('F Y')} must record exactly {$expectedDoctorCount} doctors assigned to the final Night shift before generating or validating ".CarbonImmutable::create($year, $month, 1)->format('F Y').'.',
+                'roster' => "Initial Setup for {$nightDate->format('F Y')} must record distinct doctors assigned to the final Night shift before generating or validating ".CarbonImmutable::create($year, $month, 1)->format('F Y').'.',
             ]);
         }
 
@@ -100,7 +107,8 @@ class PreviousNightBoundaryService
             ]);
         }
 
-        $expectedDoctorCount = $shiftType->main_count + $shiftType->optional_count;
+        $capacity = $this->capacities->resolve($nightDate->year, $nightDate->month, $shiftType);
+        $expectedDoctorCount = $capacity['main_count'] + $capacity['optional_count'];
         if ($expectedDoctorCount < 1) {
             throw ValidationException::withMessages([
                 'previous_night_doctor_ids' => "The configured overnight shift type for {$nightDate->format('F j, Y')} has no assignment slots.",

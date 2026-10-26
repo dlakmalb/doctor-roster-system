@@ -31,8 +31,8 @@ type Shift = {
     start_time: string;
     end_time: string;
     end_date_label: string | null;
-    main_count: number;
-    optional_count: number;
+    main_count: number | null;
+    optional_count: number | null;
     main: Slot[];
     optional: Slot[];
 };
@@ -67,12 +67,12 @@ type RosterProps = {
     }[];
     summary: {
         shifts: number;
-        main_positions: number;
-        optional_positions: number;
+        main_positions: number | null;
+        optional_positions: number | null;
         filled_main: number;
         filled_optional: number;
-        missing_main: number;
-        missing_optional: number;
+        missing_main: number | null;
+        missing_optional: number | null;
     };
     days: Day[];
 };
@@ -384,11 +384,15 @@ export default function Roster({
         ['Total shifts', summary.shifts],
         [
             'Main positions',
-            `${summary.filled_main} / ${summary.main_positions} filled`,
+            summary.main_positions === null
+                ? 'Capacity unavailable'
+                : `${summary.filled_main} / ${summary.main_positions} filled`,
         ],
         [
             'Optional positions',
-            `${summary.filled_optional} / ${summary.optional_positions} filled`,
+            summary.optional_positions === null
+                ? 'Capacity unavailable'
+                : `${summary.filled_optional} / ${summary.optional_positions} filled`,
         ],
     ];
     const validationItems = (
@@ -631,8 +635,10 @@ export default function Roster({
                             Optional positions.
                         </p>
                         <p className="mt-1 text-sm text-slate-600">
-                            {summary.missing_main + summary.missing_optional}{' '}
-                            positions remaining.
+                            {summary.missing_main === null ||
+                            summary.missing_optional === null
+                                ? 'Position totals unavailable because a saved capacity snapshot is invalid.'
+                                : `${summary.missing_main + summary.missing_optional} positions remaining.`}
                         </p>
                         {visibleConflicts.length > 0 && (
                             <>
@@ -661,7 +667,7 @@ export default function Roster({
                 )}
             </section>
 
-            {has_generated && summary.missing_main > 0 && (
+            {has_generated && summary.missing_main !== null && summary.missing_main > 0 && (
                 <div
                     role="alert"
                     className="mb-3 rounded-lg border border-red-200 bg-red-50 p-4 text-sm font-semibold text-red-800"
@@ -672,7 +678,7 @@ export default function Roster({
                     Finalization.
                 </div>
             )}
-            {has_generated && summary.missing_optional > 0 && (
+            {has_generated && summary.missing_optional !== null && summary.missing_optional > 0 && (
                 <div
                     role="alert"
                     className="mb-6 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm font-semibold text-amber-800"

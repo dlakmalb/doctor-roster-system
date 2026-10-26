@@ -19,6 +19,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
 use Inertia\Inertia;
 use Inertia\Response;
+use LogicException;
 
 class RosterController extends Controller
 {
@@ -43,7 +44,7 @@ class RosterController extends Controller
         $roster = Roster::query()
             ->where('year', $year)
             ->where('month', $month)
-            ->with(['shifts' => fn ($query) => $query->orderBy('shift_date'), 'shifts.shiftType', 'shifts.assignments.doctor'])
+            ->with(['shifts' => fn ($query) => $query->orderBy('shift_date'), 'shifts.shiftType', 'shifts.assignments.doctor', 'shifts.capacitySnapshot'])
             ->firstOrFail();
 
         $conflicts = $validation->validate($roster);
@@ -70,8 +71,8 @@ class RosterController extends Controller
                             'start_time' => substr($shift->shiftType->start_time, 0, 5),
                             'end_time' => substr($shift->shiftType->end_time, 0, 5),
                             'end_date_label' => $shift->shiftType->is_overnight ? $startDate->addDay()->format('M j') : null,
-                            'main_count' => $shift->shiftType->main_count,
-                            'optional_count' => $shift->shiftType->optional_count,
+                            'main_count' => $this->capacity($shift, RosterAssignmentRole::Main),
+                            'optional_count' => $this->capacity($shift, RosterAssignmentRole::Optional),
                             'main' => $this->slots($shift, RosterAssignmentRole::Main, $missingSlotSeverities),
                             'optional' => $this->slots($shift, RosterAssignmentRole::Optional, $missingSlotSeverities),
                         ])->values(),
@@ -91,12 +92,12 @@ class RosterController extends Controller
             'conflicts' => $conflicts,
             'summary' => [
                 'shifts' => $roster->shifts->count(),
-                'main_positions' => $roster->shifts->sum(fn (RosterShift $shift): int => $shift->shiftType->main_count),
-                'optional_positions' => $roster->shifts->sum(fn (RosterShift $shift): int => $shift->shiftType->optional_count),
+                'main_positions' => $this->capacityTotal($roster->shifts, RosterAssignmentRole::Main),
+                'optional_positions' => $this->capacityTotal($roster->shifts, RosterAssignmentRole::Optional),
                 'filled_main' => $roster->shifts->sum(fn (RosterShift $shift): int => $shift->assignments->where('role', RosterAssignmentRole::Main)->count()),
                 'filled_optional' => $roster->shifts->sum(fn (RosterShift $shift): int => $shift->assignments->where('role', RosterAssignmentRole::Optional)->count()),
-                'missing_main' => $roster->shifts->sum(fn (RosterShift $shift): int => $shift->shiftType->main_count - $shift->assignments->where('role', RosterAssignmentRole::Main)->count()),
-                'missing_optional' => $roster->shifts->sum(fn (RosterShift $shift): int => $shift->shiftType->optional_count - $shift->assignments->where('role', RosterAssignmentRole::Optional)->count()),
+                'missing_main' => $this->missingSlotsTotal($roster->shifts, RosterAssignmentRole::Main),
+                'missing_optional' => $this->missingSlotsTotal($roster->shifts, RosterAssignmentRole::Optional),
             ],
             'days' => $days,
         ]);
@@ -108,11 +109,25 @@ class RosterController extends Controller
      */
     private function slots(RosterShift $shift, RosterAssignmentRole $role, array $missingSlotSeverities): array
     {
-        $required = $role === RosterAssignmentRole::Main ? $shift->shiftType->main_count : $shift->shiftType->optional_count;
         $assignments = $shift->assignments->where('role', $role)->keyBy('slot_number');
+        $required = $this->capacity($shift, $role);
+        if ($required === null) {
+            return $assignments->sortKeys()->map(fn (RosterAssignment $assignment): array => [
+                'slot_number' => $assignment->slot_number,
+                'assignment_id' => $assignment->id,
+                'doctor_id' => $assignment->doctor_id,
+                'doctor' => ['name' => $assignment->doctor->name, 'short_code' => $assignment->doctor->short_code],
+                'severity' => 'Error',
+            ])->values()->all();
+        }
+        $slotNumbers = $required === 0 ? [] : range(1, $required);
+        $slotNumbers = [...$slotNumbers, ...$assignments->keys()
+            ->filter(fn (int|string $slot): bool => (int) $slot < 1 || (int) $slot > $required)
+            ->map(fn (int|string $slot): int => (int) $slot)->all()];
+        sort($slotNumbers);
         $slots = [];
 
-        for ($slot = 1; $slot <= $required; $slot++) {
+        foreach (array_unique($slotNumbers) as $slot) {
             /** @var RosterAssignment|null $assignment */
             $assignment = $assignments->get($slot);
             $slots[] = [
@@ -120,10 +135,53 @@ class RosterController extends Controller
                 'assignment_id' => $assignment?->id,
                 'doctor_id' => $assignment?->doctor_id,
                 'doctor' => $assignment === null ? null : ['name' => $assignment->doctor->name, 'short_code' => $assignment->doctor->short_code],
-                'severity' => $missingSlotSeverities["slot-{$shift->id}-{$role->value}-$slot"] ?? null,
+                'severity' => $slot < 1 || $slot > $required ? 'Error' : ($missingSlotSeverities["slot-{$shift->id}-{$role->value}-$slot"] ?? null),
             ];
         }
 
         return $slots;
+    }
+
+    private function capacity(RosterShift $shift, RosterAssignmentRole $role): ?int
+    {
+        try {
+            return $shift->savedCapacityForRole($role);
+        } catch (LogicException) {
+            return null;
+        }
+    }
+
+    /** @param Collection<int, RosterShift> $shifts */
+    private function capacityTotal(Collection $shifts, RosterAssignmentRole $role): ?int
+    {
+        $total = 0;
+        foreach ($shifts as $shift) {
+            $capacity = $this->capacity($shift, $role);
+            if ($capacity === null) {
+                return null;
+            }
+            $total += $capacity;
+        }
+
+        return $total;
+    }
+
+    /** @param Collection<int, RosterShift> $shifts */
+    private function missingSlotsTotal(Collection $shifts, RosterAssignmentRole $role): ?int
+    {
+        $missing = 0;
+        foreach ($shifts as $shift) {
+            $capacity = $this->capacity($shift, $role);
+            if ($capacity === null) {
+                return null;
+            }
+            $occupied = $shift->assignments
+                ->where('role', $role)
+                ->filter(fn (RosterAssignment $assignment): bool => $assignment->slot_number >= 1 && $assignment->slot_number <= $capacity)
+                ->count();
+            $missing += max(0, $capacity - $occupied);
+        }
+
+        return $missing;
     }
 }

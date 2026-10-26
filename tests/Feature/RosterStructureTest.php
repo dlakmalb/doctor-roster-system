@@ -204,12 +204,19 @@ it('shows chronological shifts, required positions, and the overnight end date',
     $user = prepareRosterStructureTest();
     $roster = app(RosterStructureService::class)->create(2026, 10, $user);
     $roster->shifts()->whereDate('shift_date', '2026-10-01')->delete();
+    expect(RosterShiftCapacitySnapshot::query()->count())->toBe(81);
     foreach (['weekday_night', 'weekday_evening', 'weekday_day'] as $code) {
-        $roster->shifts()->create([
-            'shift_type_id' => ShiftType::query()->where('code', $code)->firstOrFail()->id,
+        $shiftType = ShiftType::query()->where('code', $code)->firstOrFail();
+        $shift = $roster->shifts()->create([
+            'shift_type_id' => $shiftType->id,
             'shift_date' => '2026-10-01',
         ]);
+        $shift->capacitySnapshot()->create([
+            'main_count' => $shiftType->main_count,
+            'optional_count' => $shiftType->optional_count,
+        ]);
     }
+    expect(RosterShiftCapacitySnapshot::query()->count())->toBe(84);
 
     $this->actingAs($user)->get(rosterRoute('rosters.show'))
         ->assertInertia(fn (Assert $page) => $page
