@@ -17,19 +17,21 @@ class RosterStructureService
 
     private const WEEKEND_CODES = ['weekend_day', 'weekend_night'];
 
-    public function __construct(private DoctorMonthlyParticipationService $participation) {}
+    public function __construct(
+        private DoctorMonthlyParticipationService $participation,
+        private MonthlyShiftCapacityService $capacities,
+    ) {}
 
     public function create(int $year, int $month, User $creator): Roster
     {
         return DB::transaction(function () use ($year, $month, $creator): Roster {
+            $requiredCodes = [...self::WEEKDAY_CODES, ...self::WEEKEND_CODES];
+            $shiftTypes = ShiftType::query()->whereIn('code', $requiredCodes)->orderBy('id')->lockForUpdate()->get()->keyBy('code');
             $existing = Roster::query()->where('year', $year)->where('month', $month)->first();
 
             if ($existing !== null) {
                 return $existing;
             }
-
-            $requiredCodes = [...self::WEEKDAY_CODES, ...self::WEEKEND_CODES];
-            $shiftTypes = ShiftType::query()->whereIn('code', $requiredCodes)->get()->keyBy('code');
             $unavailableCodes = collect($requiredCodes)
                 ->filter(function (string $code) use ($shiftTypes): bool {
                     $shiftType = $shiftTypes->get($code);
@@ -69,9 +71,10 @@ class RosterStructureService
                         'shift_type_id' => $shiftType->id,
                         'shift_date' => $date->toDateString(),
                     ]);
+                    $capacity = $this->capacities->resolve($year, $month, $shiftType);
                     $shift->capacitySnapshot()->create([
-                        'main_count' => $shiftType->main_count,
-                        'optional_count' => $shiftType->optional_count,
+                        'main_count' => $capacity['main_count'],
+                        'optional_count' => $capacity['optional_count'],
                     ]);
                 }
 
