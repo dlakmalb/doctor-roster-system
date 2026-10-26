@@ -79,10 +79,10 @@ Generate the October Draft only in the isolated UAT environment. Review the save
 Repeat this record for each scenario or issue. Attach a roster reference that does not expose patient information.
 
 | Scenario | Expected result | Actual result | Pass/Fail | Comments |
-|---|---|---|---|---|
-|  |  |  |  |  |
-|  |  |  |  |  |
-|  |  |  |  |  |
+| -------- | --------------- | ------------- | --------- | -------- |
+|          |                 |               |           |          |
+|          |                 |               |           |          |
+|          |                 |               |           |          |
 
 **Hospital reviewer confirmation (Dr Nuwan):** ______________________________  
 **Date:** __________________  

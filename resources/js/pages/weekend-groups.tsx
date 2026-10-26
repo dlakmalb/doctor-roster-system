@@ -303,7 +303,9 @@ export default function WeekendGroups(props: Props) {
                                                 </span>
                                                 <span className="shrink-0 text-slate-500">
                                                     From{' '}
-                                                    {item.effective_from_saturday}
+                                                    {
+                                                        item.effective_from_saturday
+                                                    }
                                                 </span>
                                             </li>
                                         ))}

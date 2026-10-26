@@ -32,12 +32,24 @@ type Entry = {
 };
 type Props = {
     month: { year: number; month: number; label: string };
-    previousNight: { date: string; required_doctor_count: number; doctor_ids: number[]; saved: boolean };
+    previousNight: {
+        date: string;
+        required_doctor_count: number;
+        doctor_ids: number[];
+        saved: boolean;
+    };
     doctors: Doctor[];
 };
 
-export default function InitialWorkloadSetup({ month, previousNight, doctors }: Props) {
-    const form = useForm<{ doctors: Entry[]; previous_night_doctor_ids: number[] }>({
+export default function InitialWorkloadSetup({
+    month,
+    previousNight,
+    doctors,
+}: Props) {
+    const form = useForm<{
+        doctors: Entry[];
+        previous_night_doctor_ids: number[];
+    }>({
         previous_night_doctor_ids: previousNight.doctor_ids,
         doctors: doctors.map((doctor) => ({
             doctor_id: doctor.id,
@@ -88,24 +100,44 @@ export default function InitialWorkloadSetup({ month, previousNight, doctors }: 
                     </div>
                 )}
                 <section className="rounded-2xl border border-slate-200 bg-white p-5">
-                    <h2 className="font-semibold">Previous month’s final Night assignments</h2>
+                    <h2 className="font-semibold">
+                        Previous month’s final Night assignments
+                    </h2>
                     <p className="mt-2 text-sm text-slate-600">
-                        Select exactly {previousNight.required_doctor_count} distinct doctors assigned to Night on {previousNight.date}. This record controls eligibility on the first day of the next roster month. {previousNight.saved ? 'Update it only when correcting the source history.' : 'The selection must match the configured Night staffing capacity.'}
+                        Select exactly {previousNight.required_doctor_count}{' '}
+                        distinct doctors assigned to Night on{' '}
+                        {previousNight.date}. This record controls eligibility
+                        on the first day of the next roster month.{' '}
+                        {previousNight.saved
+                            ? 'Update it only when correcting the source history.'
+                            : 'The selection must match the configured Night staffing capacity.'}
                     </p>
                     <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                         {doctors.map((doctor) => (
-                            <label key={doctor.id} className="flex items-center gap-2 text-sm">
+                            <label
+                                key={doctor.id}
+                                className="flex items-center gap-2 text-sm"
+                            >
                                 <input
                                     type="checkbox"
-                                    checked={form.data.previous_night_doctor_ids.includes(doctor.id)}
+                                    checked={form.data.previous_night_doctor_ids.includes(
+                                        doctor.id,
+                                    )}
                                     onChange={(event) => {
-                                        const ids = new Set(form.data.previous_night_doctor_ids);
+                                        const ids = new Set(
+                                            form.data.previous_night_doctor_ids,
+                                        );
                                         if (event.target.checked) {
                                             ids.add(doctor.id);
                                         } else {
                                             ids.delete(doctor.id);
                                         }
-                                        form.setData('previous_night_doctor_ids', [...ids].sort((left, right) => left - right));
+                                        form.setData(
+                                            'previous_night_doctor_ids',
+                                            [...ids].sort(
+                                                (left, right) => left - right,
+                                            ),
+                                        );
                                     }}
                                     className="size-4 rounded border-slate-300"
                                 />
