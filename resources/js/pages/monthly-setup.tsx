@@ -246,20 +246,34 @@ export default function MonthlySetup(props: PageProps) {
             .filter((request) => request.kind === 'monthly_exclusion')
             .map((request) => request.doctor.id),
     );
+    const shiftTypesInDisplayOrder = useMemo(() => {
+        const displayOrder = new Map(
+            props.capacityConfiguration.map((capacity, index) => [
+                capacity.shift_type.code,
+                index,
+            ] as const),
+        );
+
+        return [...props.shiftTypes].sort(
+            (left, right) =>
+                (displayOrder.get(left.code) ?? Number.MAX_SAFE_INTEGER) -
+                (displayOrder.get(right.code) ?? Number.MAX_SAFE_INTEGER),
+        );
+    }, [props.capacityConfiguration, props.shiftTypes]);
     const validShiftTypes = useMemo(() => {
         if (!form.data.request_date) {
-            return props.shiftTypes;
+            return [];
         }
 
         const day = new Date(`${form.data.request_date}T00:00:00`).getDay();
         const weekend = day === 0 || day === 6;
 
-        return props.shiftTypes.filter((shiftType) =>
+        return shiftTypesInDisplayOrder.filter((shiftType) =>
             weekend
                 ? shiftType.code.startsWith('weekend_')
                 : shiftType.code.startsWith('weekday_'),
         );
-    }, [form.data.request_date, props.shiftTypes]);
+    }, [form.data.request_date, shiftTypesInDisplayOrder]);
 
     function toggleSection(section: keyof typeof expandedSections): void {
         setExpandedSections((current) => ({
@@ -822,7 +836,7 @@ export default function MonthlySetup(props: PageProps) {
                                         Prohibited shift types
                                     </legend>
                                     <div className="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                                        {props.shiftTypes.map((shiftType) => (
+                                        {shiftTypesInDisplayOrder.map((shiftType) => (
                                             <label
                                                 key={shiftType.id}
                                                 className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white p-3 text-sm"
@@ -1095,7 +1109,7 @@ export default function MonthlySetup(props: PageProps) {
                                         <option value="">
                                             Select shift type
                                         </option>
-                                        {props.shiftTypes.map((shiftType) => (
+                                        {shiftTypesInDisplayOrder.map((shiftType) => (
                                             <option
                                                 key={shiftType.id}
                                                 value={shiftType.id}
@@ -1442,6 +1456,39 @@ export default function MonthlySetup(props: PageProps) {
                                     )}
                                 </label>
 
+                                <label className="block">
+                                    <span className="text-sm font-medium text-slate-800">
+                                        Request Type
+                                    </span>
+                                    <select
+                                        value={requestKind}
+                                        onChange={(event) =>
+                                            changeRequestKind(
+                                                event.target
+                                                    .value as RequestKind,
+                                            )
+                                        }
+                                        className={fieldClassName}
+                                    >
+                                        {(
+                                            Object.keys(
+                                                requestTypeLabels,
+                                            ) as RequestKind[]
+                                        ).map((kind) => (
+                                            <option
+                                                key={kind}
+                                                value={kind}
+                                                disabled={
+                                                    editingId !== null &&
+                                                    kind === 'monthly_exclusion'
+                                                }
+                                            >
+                                                {requestTypeLabels[kind]}
+                                            </option>
+                                        ))}
+                                    </select>
+                                </label>
+
                                 {requestKind !== 'monthly_exclusion' && (
                                     <>
                                         <label className="block">
@@ -1476,6 +1523,7 @@ export default function MonthlySetup(props: PageProps) {
                                             </span>
                                             <select
                                                 value={form.data.shift_type_id}
+                                                disabled={!form.data.request_date}
                                                 onChange={(event) =>
                                                     form.setData(
                                                         'shift_type_id',
@@ -1494,10 +1542,12 @@ export default function MonthlySetup(props: PageProps) {
                                                 }
                                             >
                                                 <option value="">
-                                                    {requestKind ===
-                                                    'off_request'
-                                                        ? 'Full Day'
-                                                        : 'Select shift'}
+                                                    {!form.data.request_date
+                                                        ? 'Select date first'
+                                                        : requestKind ===
+                                                            'off_request'
+                                                          ? 'Full Day'
+                                                          : 'Select shift'}
                                                 </option>
                                                 {validShiftTypes.map(
                                                     (shiftType) => (
@@ -1520,39 +1570,6 @@ export default function MonthlySetup(props: PageProps) {
                                         </label>
                                     </>
                                 )}
-
-                                <label className="block">
-                                    <span className="text-sm font-medium text-slate-800">
-                                        Request Type
-                                    </span>
-                                    <select
-                                        value={requestKind}
-                                        onChange={(event) =>
-                                            changeRequestKind(
-                                                event.target
-                                                    .value as RequestKind,
-                                            )
-                                        }
-                                        className={fieldClassName}
-                                    >
-                                        {(
-                                            Object.keys(
-                                                requestTypeLabels,
-                                            ) as RequestKind[]
-                                        ).map((kind) => (
-                                            <option
-                                                key={kind}
-                                                value={kind}
-                                                disabled={
-                                                    editingId !== null &&
-                                                    kind === 'monthly_exclusion'
-                                                }
-                                            >
-                                                {requestTypeLabels[kind]}
-                                            </option>
-                                        ))}
-                                    </select>
-                                </label>
 
                                 <label className="block xl:col-span-2">
                                     <span className="text-sm font-medium text-slate-800">
