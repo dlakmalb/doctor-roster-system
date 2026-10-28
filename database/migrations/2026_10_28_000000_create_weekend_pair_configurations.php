@@ -25,7 +25,7 @@ return new class extends Migration
 
         Schema::create('weekend_pair_configuration_doctors', function (Blueprint $table): void {
             $table->id();
-            $table->foreignId('weekend_pair_configuration_id')->constrained()->restrictOnDelete();
+            $table->foreignId('weekend_pair_configuration_id')->constrained(indexName: 'wpc_doctors_config_fk')->restrictOnDelete();
             $table->foreignId('doctor_id')->constrained()->restrictOnDelete();
             $table->unsignedTinyInteger('position');
             $table->unique(['weekend_pair_configuration_id', 'position'], 'weekend_pair_position_unique');
