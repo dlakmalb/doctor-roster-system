@@ -2,6 +2,7 @@ import AppLayout from '@/components/app-layout';
 import WeekendPairGroup from '@/components/weekend-pair-group';
 import type {
     MonthlyWeekendPairState,
+    WeekendDayMainCount,
     WeekendPairGroupCode,
     WeekendPairPageProps,
     WeekendPairPayload,
@@ -24,15 +25,12 @@ function initialPayload(state: MonthlyWeekendPairState): WeekendPairPayload {
     function groupValues(code: WeekendPairGroupCode): WeekendPairPayload['groups']['A'] {
         const group = state.groups[code];
         const saved = group?.configuration?.doctor_ids ?? [];
-        const eligible = group?.doctors ?? [];
-        const positions = state.read_only && saved.length > 0
-            ? [...saved]
-            : Array.from({ length: eligible.length }, (_, index): number | '' => {
-                const doctorId = saved[index];
-                return eligible.some((doctor) => doctor.id === doctorId) ? doctorId : '';
-            });
+        const capacity: WeekendDayMainCount = group?.configuration
+            ? group.configuration.mode === 7 ? 3 : 2
+            : group?.weekend_day_main_count ?? 2;
+        const positions = Array.from({ length: capacity === 3 ? 7 : 6 }, (_, index): number | '' => saved[index] ?? '');
 
-        return { effective_saturday: group?.effective_saturday ?? '', doctor_ids: positions };
+        return { effective_saturday: group?.effective_saturday ?? '', doctor_ids: positions, weekend_day_main_count: capacity };
     }
 
     return { revision: state.revision, groups: { A: groupValues('A'), B: groupValues('B') } };
@@ -51,15 +49,37 @@ function WeekendPairEditor({ month, configuration, savedDoctors, links }: Weeken
     const disabled = readOnly || form.processing || reloading || needsReload;
     const setupIncomplete = displayedState.issues.length > 0 || groupCodes.some((code) => {
         const group = displayedState.groups[code];
-        return !group || ![6, 7].includes(group.doctors.length);
+        return !group || group.doctors.length < 6;
     });
     const complete = groupCodes.every((code) => {
-        const ids = form.data.groups[code].doctor_ids;
-        return ids.length === snapshot.groups[code]?.doctors.length
-            && ids.every((id) => id !== '') && new Set(ids).size === ids.length;
+        const values = form.data.groups[code];
+        const group = snapshot.groups[code];
+        const ids = values.doctor_ids;
+        return ids.length === (values.weekend_day_main_count === 3 ? 7 : 6)
+            && ids.every((id) => id !== '' && group?.doctors.some((doctor) => doctor.id === id))
+            && new Set(ids).size === ids.length
+            && values.effective_saturday === group?.effective_saturday
+            && new Date(`${values.effective_saturday}T00:00:00Z`).getUTCDay() === 6;
     });
     const status = statuses[displayedState.status];
     const boundary = displayedState.boundary;
+
+    function selectCapacity(code: WeekendPairGroupCode, capacity: WeekendDayMainCount): void {
+        const values = form.data.groups[code];
+        if (disabled || capacity === values.weekend_day_main_count
+            || (snapshot.groups[code]?.doctors.length ?? 0) < (capacity === 3 ? 7 : 6)) {
+            return;
+        }
+        if (capacity === 2 && values.doctor_ids[6] !== '' && values.doctor_ids[6] !== undefined
+            && !window.confirm('Switch to 2 Main and remove the doctor in the 7th Rotation Position from weekend rotation? This doctor remains eligible for ordinary Main and Optional duties, subject to existing scheduling rules.')) {
+            return;
+        }
+        const positions: Array<number | ''> = capacity === 3 ? [...values.doctor_ids.slice(0, 6), ''] : values.doctor_ids.slice(0, 6);
+        form.setData('groups', {
+            ...form.data.groups,
+            [code]: { ...values, weekend_day_main_count: capacity, doctor_ids: positions },
+        });
+    }
 
     function selectDoctor(code: WeekendPairGroupCode, position: number, doctorId: number | ''): void {
         if (disabled) {
@@ -179,11 +199,13 @@ function WeekendPairEditor({ month, configuration, savedDoctors, links }: Weeken
                             code={code}
                             group={displayedState.groups[code]}
                             positions={displayedPayload.groups[code].doctor_ids}
+                            capacity={displayedPayload.groups[code].weekend_day_main_count}
                             errors={errors}
                             disabled={disabled || setupIncomplete}
                             readOnly={readOnly}
                             savedDoctors={savedDoctors}
                             onSelect={(position, doctorId) => selectDoctor(code, position, doctorId)}
+                            onCapacityChange={(capacity) => selectCapacity(code, capacity)}
                         />
                     ))}
                 </div>
@@ -191,7 +213,7 @@ function WeekendPairEditor({ month, configuration, savedDoctors, links }: Weeken
                     <div className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-slate-200 bg-white p-5">
                         <div className="text-sm text-slate-600">
                             <p>Both groups are confirmed together for {month.label}.</p>
-                            {!complete && <p className="mt-1">Select every eligible doctor exactly once in each group.</p>}
+                            {!complete && <p className="mt-1">Select six or seven eligible rotation doctors for each group, according to the selected Weekend Day Main capacity.</p>}
                         </div>
                         <div className="flex flex-wrap gap-2">
                             <button type="button" disabled={disabled || !form.isDirty} className={secondaryButton} onClick={() => { form.reset(); form.clearErrors(); }}>Discard local changes</button>

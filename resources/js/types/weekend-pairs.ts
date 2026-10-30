@@ -1,4 +1,5 @@
 export type WeekendPairGroupCode = 'A' | 'B';
+export type WeekendDayMainCount = 2 | 3;
 
 export type WeekendPairDoctor = {
     id: number;
@@ -18,6 +19,7 @@ export type MonthlyWeekendPairGroup = {
     effective_saturday: string;
     doctors: WeekendPairDoctor[];
     configuration: WeekendPairConfiguration | null;
+    weekend_day_main_count: WeekendDayMainCount | null;
     latest_version_id: number | null;
 };
 
@@ -56,6 +58,7 @@ export type WeekendPairPayload = {
         {
             effective_saturday: string;
             doctor_ids: Array<number | ''>;
+            weekend_day_main_count: WeekendDayMainCount;
         }
     >;
 };

@@ -44,8 +44,8 @@ function weekendPairUiPayload(array $groups, int $year = 2026, int $month = 12):
     return [
         'revision' => $state['revision'],
         'groups' => [
-            'A' => ['effective_saturday' => $state['groups']['A']['effective_saturday'], 'doctor_ids' => $groups['A']],
-            'B' => ['effective_saturday' => $state['groups']['B']['effective_saturday'], 'doctor_ids' => $groups['B']],
+            'A' => ['effective_saturday' => $state['groups']['A']['effective_saturday'], 'doctor_ids' => $groups['A'], 'weekend_day_main_count' => count($groups['A']) === 7 ? 3 : 2],
+            'B' => ['effective_saturday' => $state['groups']['B']['effective_saturday'], 'doctor_ids' => $groups['B'], 'weekend_day_main_count' => count($groups['B']) === 7 ? 3 : 2],
         ],
     ];
 }
@@ -56,7 +56,7 @@ it('requires authentication for the pair configuration page and browser submissi
     $this->assertDatabaseCount('monthly_weekend_pair_confirmations', 0);
 });
 
-it('provides the selected month eligible doctors and six or seven ordered positions without writes', function (int $count) {
+it('provides the selected month and full eligible pool without choosing a rotation capacity or writing records', function (int $count) {
     $groups = weekendPairUiFixture($count, $count);
 
     $this->actingAs(User::factory()->create())->get(weekendPairUiUrl())->assertInertia(fn (Assert $page) => $page
@@ -69,6 +69,9 @@ it('provides the selected month eligible doctors and six or seven ordered positi
         ->where('configuration.groups.A.effective_saturday', '2026-12-12')
         ->where('configuration.groups.B.effective_saturday', '2026-12-05')
         ->where('configuration.groups.A.configuration', null)
+        ->where('configuration.groups.A.weekend_day_main_count', null)
+        ->where('configuration.groups.B.weekend_day_main_count', null)
+        ->where('configuration.issues', [])
         ->where('links.show', weekendPairUiUrl())
         ->where('links.confirm', weekendPairUiUrl('weekend-pairs.confirm'))
         ->where('links.monthlySetup', weekendPairUiUrl('monthly-setup.show'))
@@ -77,7 +80,7 @@ it('provides the selected month eligible doctors and six or seven ordered positi
     $this->assertDatabaseCount('weekend_pair_configurations', 0);
     $this->assertDatabaseCount('monthly_weekend_pair_confirmations', 0);
     $this->assertDatabaseCount('doctor_monthly_participations', 0);
-})->with([6, 7]);
+})->with([6, 7, 8]);
 
 it('renders missing anchor guidance without creating configuration or participation', function () {
     $this->actingAs(User::factory()->create())->get(weekendPairUiUrl())->assertInertia(fn (Assert $page) => $page
@@ -91,7 +94,116 @@ it('renders missing anchor guidance without creating configuration or participat
     $this->assertDatabaseCount('doctor_monthly_participations', 0);
 });
 
-it('renders issues for missing memberships and unsupported group populations', function (string $case) {
+it('confirms ordered rotation subsets with independent capacities and retains the full eligible pools', function (int $eligibleCount, int $aCount, int $bCount, int $aCapacity, int $bCapacity) {
+    $eligible = weekendPairUiFixture($eligibleCount, $eligibleCount);
+    $selected = ['A' => array_slice($eligible['A'], 0, $aCount), 'B' => array_slice($eligible['B'], 0, $bCount)];
+    [$selected['A'][0], $selected['A'][3]] = [$selected['A'][3], $selected['A'][0]];
+    $this->actingAs(User::factory()->create());
+    $payload = weekendPairUiPayload($selected);
+    $payload['groups']['A']['weekend_day_main_count'] = $aCapacity;
+    $payload['groups']['B']['weekend_day_main_count'] = $bCapacity;
+
+    $this->post(weekendPairUiUrl('weekend-pairs.confirm'), $payload)
+        ->assertRedirect(weekendPairUiUrl())->assertSessionHasNoErrors();
+
+    $this->get(weekendPairUiUrl())->assertInertia(fn (Assert $page) => $page
+        ->component('weekend-pairs')->where('configuration.status', 'confirmed')
+        ->where('configuration.issues', [])
+        ->has('configuration.groups.A.doctors', $eligibleCount)
+        ->has('configuration.groups.B.doctors', $eligibleCount)
+        ->where('configuration.groups.A.configuration.doctor_ids', $selected['A'])
+        ->where('configuration.groups.B.configuration.doctor_ids', $selected['B'])
+        ->where('configuration.groups.A.configuration.mode', $aCount)
+        ->where('configuration.groups.B.configuration.mode', $bCount)
+        ->where('configuration.groups.A.weekend_day_main_count', $aCapacity)
+        ->where('configuration.groups.B.weekend_day_main_count', $bCapacity));
+    $this->assertDatabaseCount('weekend_pair_configurations', 2);
+    $this->assertDatabaseCount('weekend_pair_configuration_doctors', $aCount + $bCount);
+    $this->assertDatabaseCount('monthly_weekend_pair_confirmations', 1);
+    $this->assertDatabaseCount('doctor_monthly_exclusions', 0);
+    $this->assertDatabaseCount('doctor_monthly_participations', 0);
+})->with([
+    'six selected from seven eligible' => [7, 6, 6, 2, 2],
+    'seven selected in B' => [7, 6, 7, 2, 3],
+    'seven selected in A' => [7, 7, 6, 3, 2],
+    'eight eligible with A six and B seven' => [8, 6, 7, 2, 3],
+    'eight eligible with A seven and B six' => [8, 7, 6, 3, 2],
+]);
+
+it('returns capacity and selection validation errors without creating partial configurations', function (array $positions, int $capacity, array $keys) {
+    $groups = weekendPairUiFixture(7, 6);
+    $this->actingAs(User::factory()->create());
+    $payload = weekendPairUiPayload($groups);
+    $payload['groups']['A']['doctor_ids'] = array_map(fn (?int $index): int|string => $index === null ? '' : $groups['A'][$index], $positions);
+    $payload['groups']['A']['weekend_day_main_count'] = $capacity;
+
+    $this->from(weekendPairUiUrl())->post(weekendPairUiUrl('weekend-pairs.confirm'), $payload)
+        ->assertRedirect(weekendPairUiUrl())->assertSessionHasErrors($keys);
+
+    $this->assertDatabaseCount('monthly_weekend_pair_confirmations', 0);
+    $this->assertDatabaseCount('weekend_pair_configurations', 0);
+    $this->assertDatabaseCount('weekend_pair_configuration_doctors', 0);
+})->with([
+    'two Main with seven doctors' => [[0, 1, 2, 3, 4, 5, 6], 2, ['groups.A.weekend_day_main_count' => 'Weekend Day Main capacity must be 2 for six selected rotation doctors or 3 for seven selected rotation doctors.']],
+    'three Main with six doctors' => [[0, 1, 2, 3, 4, 5], 3, ['groups.A.weekend_day_main_count' => 'Weekend Day Main capacity must be 2 for six selected rotation doctors or 3 for seven selected rotation doctors.']],
+    'unsupported capacity' => [[0, 1, 2, 3, 4, 5], 4, ['groups.A.weekend_day_main_count']],
+    'duplicate selection' => [[0, 0, 2, 3, 4, 5], 2, ['groups.A.doctor_ids.0', 'groups.A.doctor_ids.1']],
+    'missing position' => [[0, 1, 2, 3, 4], 2, ['groups.A.doctor_ids']],
+    'empty seventh position' => [[0, 1, 2, 3, 4, 5, null], 3, ['groups.A.doctor_ids.6']],
+]);
+
+it('rejects a currently ineligible rotation doctor with a fresh revision', function () {
+    $groups = weekendPairUiFixture(7, 6);
+    DoctorMonthlyExclusion::query()->create(['doctor_id' => $groups['A'][0], 'year' => 2026, 'month' => 12]);
+    $selected = ['A' => array_slice($groups['A'], 0, 6), 'B' => $groups['B']];
+    $this->actingAs(User::factory()->create());
+    $payload = weekendPairUiPayload($selected);
+
+    $this->from(weekendPairUiUrl())->post(weekendPairUiUrl('weekend-pairs.confirm'), $payload)
+        ->assertRedirect(weekendPairUiUrl())->assertSessionHasErrors('groups.A.doctor_ids');
+
+    $this->assertDatabaseCount('monthly_weekend_pair_confirmations', 0);
+    $this->assertDatabaseCount('weekend_pair_configurations', 0);
+    $this->assertDatabaseCount('weekend_pair_configuration_doctors', 0);
+    $this->assertDatabaseCount('doctor_monthly_exclusions', 1);
+});
+
+it('reconfirms the same six selected doctors after the eligible pool grows without replacing configuration history', function () {
+    $groups = weekendPairUiFixture();
+    $this->actingAs(User::factory()->create());
+    $submit = weekendPairUiUrl('weekend-pairs.confirm');
+    $this->post($submit, weekendPairUiPayload($groups))->assertSessionHasNoErrors();
+    $original = MonthlyWeekendPairConfirmation::query()->firstOrFail();
+    $originalAttributes = $original->getAttributes();
+    $originalConfigurations = WeekendPairConfiguration::query()->with('doctors')->orderBy('id')->get()->toArray();
+    $doctor = Doctor::query()->create(['name' => 'Additional eligible doctor', 'short_code' => 'B7', 'is_active' => true]);
+    DoctorWeekendGroupMembership::query()->create(['doctor_id' => $doctor->id, 'group_code' => 'B', 'effective_from_saturday' => '2026-11-07']);
+    $this->get(weekendPairUiUrl())->assertInertia(fn (Assert $page) => $page
+        ->where('configuration.status', 'requires_attention')
+        ->has('configuration.groups.B.doctors', 7)
+        ->where('configuration.groups.B.configuration.doctor_ids', $groups['B'])
+        ->where('configuration.groups.B.weekend_day_main_count', 2));
+
+    $this->post($submit, weekendPairUiPayload($groups))->assertRedirect(weekendPairUiUrl())->assertSessionHasNoErrors();
+
+    $latest = MonthlyWeekendPairConfirmation::query()->latest('id')->firstOrFail();
+    expect((int) $latest->supersedes_confirmation_id)->toBe($original->id);
+    expect((int) $latest->group_a_configuration_id)->toBe((int) $original->group_a_configuration_id);
+    expect((int) $latest->group_b_configuration_id)->toBe((int) $original->group_b_configuration_id);
+    expect($original->fresh()->getAttributes())->toBe($originalAttributes);
+    expect(WeekendPairConfiguration::query()->with('doctors')->orderBy('id')->get()->toArray())->toBe($originalConfigurations);
+    $this->get(weekendPairUiUrl())->assertInertia(fn (Assert $page) => $page
+        ->where('configuration.status', 'confirmed')
+        ->where('configuration.groups.B.configuration.doctor_ids', $groups['B'])
+        ->where('configuration.groups.B.configuration.version', 1)
+        ->where('configuration.groups.B.weekend_day_main_count', 2));
+    $this->assertDatabaseCount('weekend_pair_configurations', 2);
+    $this->assertDatabaseCount('monthly_weekend_pair_confirmations', 2);
+    $this->assertDatabaseCount('doctor_monthly_participations', 0);
+    $this->assertDatabaseCount('doctor_monthly_exclusions', 0);
+});
+
+it('renders issues for missing memberships and fewer than six eligible group doctors', function (string $case) {
     $groups = weekendPairUiFixture($case === 'size' ? 5 : 6);
     if ($case === 'membership') {
         DoctorWeekendGroupMembership::query()->where('doctor_id', $groups['A'][0])->delete();
@@ -209,24 +321,35 @@ it('uses backend exclusion eligibility for seven to six and six to seven correct
 });
 
 it('shows saved pairs read only and rejects browser confirmation after draft or final creation', function (string $status) {
-    $groups = weekendPairUiFixture();
+    $groups = weekendPairUiFixture(7, 7);
+    $groups['B'] = array_slice($groups['B'], 0, 6);
     $this->actingAs(User::factory()->create());
     $this->post(weekendPairUiUrl('weekend-pairs.confirm'), weekendPairUiPayload($groups))->assertSessionHasNoErrors();
     $original = MonthlyWeekendPairConfirmation::query()->firstOrFail()->getAttributes();
+    $originalConfigurations = WeekendPairConfiguration::query()->with('doctors')->orderBy('id')->get()->toArray();
     $roster = Roster::query()->create(['year' => 2026, 'month' => 12, 'status' => 'draft']);
     snapshotRosterParticipation($roster);
     $roster->update(['status' => $status]);
+    $originalRoster = $roster->fresh()->getAttributes();
     DoctorMonthlyExclusion::query()->create(['doctor_id' => $groups['A'][0], 'year' => 2026, 'month' => 12]);
 
     $this->get(weekendPairUiUrl())->assertInertia(fn (Assert $page) => $page
         ->where('configuration.read_only', true)->where('configuration.groups.A.configuration.doctor_ids', $groups['A'])
-        ->has('configuration.groups.A.doctors', 5)
-        ->has('savedDoctors', 12)->where('savedDoctors.0.id', $groups['A'][0])
+        ->where('configuration.groups.A.configuration.mode', 7)
+        ->where('configuration.groups.A.weekend_day_main_count', 3)
+        ->where('configuration.groups.B.configuration.doctor_ids', $groups['B'])
+        ->where('configuration.groups.B.configuration.mode', 6)
+        ->where('configuration.groups.B.weekend_day_main_count', 2)
+        ->has('configuration.groups.A.doctors', 6)
+        ->has('configuration.groups.B.doctors', 7)
+        ->has('savedDoctors', 13)->where('savedDoctors.0.id', $groups['A'][0])
         ->where('links.roster', weekendPairUiUrl('rosters.show')));
     $this->from(weekendPairUiUrl())->post(weekendPairUiUrl('weekend-pairs.confirm'), weekendPairUiPayload($groups))
         ->assertRedirect(weekendPairUiUrl())->assertSessionHasErrors('roster');
 
     expect(MonthlyWeekendPairConfirmation::query()->firstOrFail()->getAttributes())->toBe($original);
+    expect(WeekendPairConfiguration::query()->with('doctors')->orderBy('id')->get()->toArray())->toBe($originalConfigurations);
+    expect($roster->fresh()->getAttributes())->toBe($originalRoster);
     $this->assertDatabaseCount('monthly_weekend_pair_confirmations', 1);
     $this->assertDatabaseCount('weekend_pair_configurations', 2);
 })->with(['draft', 'final']);
