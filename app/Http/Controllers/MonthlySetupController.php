@@ -23,6 +23,7 @@ class MonthlySetupController extends Controller
         return Inertia::render('monthly-setup', [
             ...$monthlySetup->build($year, $month, $isPlanningPeriod),
             'isPlanningPeriod' => $isPlanningPeriod,
+            'weekendPairConfigurationUrl' => route('weekend-pairs.show', ['year' => $year, 'month' => $month]),
         ]);
     }
 }

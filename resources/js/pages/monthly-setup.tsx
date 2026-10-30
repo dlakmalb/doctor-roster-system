@@ -107,6 +107,7 @@ type WeekdayPreference = {
 
 type PageProps = {
     month: Month;
+    weekendPairConfigurationUrl: string;
     rosterStatus: 'not_started' | 'draft' | 'final';
     rosterAction: 'generate' | 'view_draft' | 'view_final';
     isPlanningPeriod: boolean;
@@ -575,6 +576,12 @@ export default function MonthlySetup(props: PageProps) {
                 >
                     Weekend Group Rotation
                 </Link>
+                <Link
+                    href={props.weekendPairConfigurationUrl}
+                    className="inline-flex min-h-11 items-center justify-center rounded-lg border border-slate-300 px-4 py-2.5 text-sm font-semibold text-slate-800"
+                >
+                    Weekend Pair Configuration
+                </Link>
             </div>
 
             {isFinal && (
@@ -710,8 +717,8 @@ export default function MonthlySetup(props: PageProps) {
                                 {props.capacityConfiguration.map((capacity) => (
                                     <tr key={capacity.shift_type.code}>
                                         <th scope="row" className="px-3 py-3 font-medium text-slate-900">{capacity.shift_type.name}</th>
-                                        <td className="px-3 py-3">{capacity.main_count ?? '—'}</td>
-                                        <td className="px-3 py-3">{capacity.optional_count ?? '—'}</td>
+                                        <td className="px-3 py-3">{capacity.main_count ?? '-'}</td>
+                                        <td className="px-3 py-3">{capacity.optional_count ?? '-'}</td>
                                         <td className="px-3 py-3">
                                             {capacity.source === 'inconsistent' ? (
                                                 <span className="text-red-700">{capacity.error}</span>

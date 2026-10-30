@@ -47,6 +47,13 @@ Route::middleware('auth')->group(function (): void {
         ->where(['year' => '[1-9][0-9]{3}', 'month' => '(?:[1-9]|1[0-2])'])
         ->name('monthly-weekend-pairs.store');
 
+    Route::get('/weekend-pairs/{year}/{month}', [MonthlyWeekendPairController::class, 'page'])
+        ->where(['year' => '[1-9][0-9]{3}', 'month' => '(?:[1-9]|1[0-2])'])
+        ->name('weekend-pairs.show');
+    Route::post('/weekend-pairs/{year}/{month}', [MonthlyWeekendPairController::class, 'confirm'])
+        ->where(['year' => '[1-9][0-9]{3}', 'month' => '(?:[1-9]|1[0-2])'])
+        ->name('weekend-pairs.confirm');
+
     Route::get('/weekend-groups/{year}/{month}', [WeekendGroupManagementController::class, 'show'])
         ->where(['year' => '[1-9][0-9]{3}', 'month' => '(?:[1-9]|1[0-2])'])
         ->name('weekend-groups.show');
