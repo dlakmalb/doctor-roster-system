@@ -142,7 +142,7 @@ class November2026DoctorRequestsSeeder extends Seeder
     }
 
     /** @param Collection<int, Doctor> $doctors
-     * @param Collection<int, ShiftType> $shiftTypes
+     * @param  Collection<int, ShiftType>  $shiftTypes
      * @return list<array{doctor_id: int, year: int, month: int, shift_type_id: int, weekday: int}>
      */
     private function resolvePreferences(Collection $doctors, Collection $shiftTypes): array
@@ -174,7 +174,7 @@ class November2026DoctorRequestsSeeder extends Seeder
     }
 
     /** @param list<array{doctor: string, doctor_id: int, request_date: string, request_type: DoctorRequestType, shift_type_id: null}> $expected
-     * @param Collection<int, DoctorRequest> $existing
+     * @param  Collection<int, DoctorRequest>  $existing
      * @return list<array{doctor_id: int, request_type: DoctorRequestType, request_date: string, shift_type_id: null}>
      */
     private function missingRequests(array $expected, Collection $existing, RequestIntervalService $intervals): array
@@ -211,7 +211,7 @@ class November2026DoctorRequestsSeeder extends Seeder
     }
 
     /** @param list<array{doctor_id: int, year: int, month: int}> $expected
-     * @param Collection<int, DoctorMonthlyExclusion> $existing
+     * @param  Collection<int, DoctorMonthlyExclusion>  $existing
      * @return list<array{doctor_id: int, year: int, month: int}>
      */
     private function missingExclusions(array $expected, Collection $existing): array
@@ -220,8 +220,8 @@ class November2026DoctorRequestsSeeder extends Seeder
     }
 
     /** @param list<array{doctor: string, doctor_id: int, request_date: string, request_type: DoctorRequestType, shift_type_id: null}> $requests
-     * @param list<array{doctor_id: int, year: int, month: int, shift_type_id: int, weekday: int}> $preferences
-     * @param Collection<int, DoctorMonthlyExclusion> $existing
+     * @param  list<array{doctor_id: int, year: int, month: int, shift_type_id: int, weekday: int}>  $preferences
+     * @param  Collection<int, DoctorMonthlyExclusion>  $existing
      */
     private function assertNoConflictingExclusions(array $requests, array $preferences, Collection $existing): void
     {
@@ -232,7 +232,7 @@ class November2026DoctorRequestsSeeder extends Seeder
     }
 
     /** @param list<array{doctor_id: int, year: int, month: int, shift_type_id: int, weekday: int}> $expected
-     * @param Collection<int, DoctorMonthlyWeekdayPreference> $existing
+     * @param  Collection<int, DoctorMonthlyWeekdayPreference>  $existing
      * @return list<array{doctor_id: int, year: int, month: int, shift_type_id: int, weekday: int}>
      */
     private function missingPreferences(array $expected, Collection $existing): array
@@ -241,8 +241,8 @@ class November2026DoctorRequestsSeeder extends Seeder
     }
 
     /** @param list<array<string, int>> $expected
-     * @param Collection<int, Model> $existing
-     * @param list<string> $additionalKeys
+     * @param  Collection<int, Model>  $existing
+     * @param  list<string>  $additionalKeys
      * @return list<array<string, int>>
      */
     private function missingRows(array $expected, Collection $existing, array $additionalKeys): array

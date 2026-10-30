@@ -48,6 +48,7 @@ type CapacityConfiguration = {
     optional_count: number | null;
     source: 'global_default' | 'monthly_custom' | 'roster_snapshot' | 'inconsistent';
     error: string | null;
+    per_shift?: Array<{ date: string; main_count: number; optional_count: number }>;
 };
 
 type CapacityPayload = {
@@ -115,6 +116,14 @@ type PageProps = {
     shiftTypes: ShiftType[];
     capacityConfiguration: CapacityConfiguration[];
     capacityEditable: boolean;
+    weekendDayCapacities: Array<{
+        saturday: string;
+        group: string | null;
+        mode: number | null;
+        main_count: number;
+        source: 'legacy' | 'confirmed_pairs';
+    }>;
+    weekendCapacityError: string | null;
     shiftRestrictions: ShiftRestriction[];
     weekdayPreferences: WeekdayPreference[];
     requests: MonthlyRequest[];
@@ -642,6 +651,15 @@ export default function MonthlySetup(props: PageProps) {
                         {capacityMonthError}
                     </p>
                 )}
+                {props.capacityEditable && (
+                    <div className="mt-3 space-y-1 text-sm text-slate-600">
+                        <p>Weekend Day Main is automatic for pair-enabled weekends: six doctors require 2 positions; seven require 3. The monthly Main setting below applies only to legacy weekends. Optional capacity remains editable.</p>
+                        {props.weekendCapacityError && <p role="alert" className="text-red-700">{props.weekendCapacityError}</p>}
+                        {props.weekendDayCapacities.map((weekend) => (
+                            <p key={weekend.saturday}>Weekend starting {weekend.saturday}: {weekend.source === 'legacy' ? 'Legacy monthly setting' : `Group ${weekend.group}, ${weekend.mode} doctors`} — Day Main {weekend.main_count} (Saturday and Sunday shifts in this month).</p>
+                        ))}
+                    </div>
+                )}
                 {capacityForm.errors.capacities && (
                     <p role="alert" className="mt-3 rounded-lg bg-red-50 p-3 text-sm text-red-700">
                         {capacityForm.errors.capacities}
@@ -676,7 +694,7 @@ export default function MonthlySetup(props: PageProps) {
                                             return (
                                                 <td key={field} className="px-3 py-3">
                                                     <input
-                                                        aria-label={`${capacity.shift_type.name} ${field === 'main_count' ? 'Main' : 'Optional'} positions`}
+                                                        aria-label={`${capacity.shift_type.name} ${field === 'main_count' ? (capacity.shift_type.code === 'weekend_day' ? 'Legacy Main only' : 'Main') : 'Optional'} positions`}
                                                         aria-invalid={Boolean(error)}
                                                         aria-describedby={error ? `${errorKey}-error` : undefined}
                                                         type="number"
@@ -690,6 +708,7 @@ export default function MonthlySetup(props: PageProps) {
                                                         }}
                                                         className={`${fieldClassName} mt-0 max-w-36`}
                                                     />
+                                                    {capacity.shift_type.code === 'weekend_day' && field === 'main_count' && <p className="mt-1 text-xs text-slate-500">Legacy weekends only; pair-enabled Main is automatic.</p>}
                                                     {error && <p id={`${errorKey}-error`} role="alert" className="mt-1 text-xs text-red-700">{error}</p>}
                                                 </td>
                                             );
@@ -717,7 +736,11 @@ export default function MonthlySetup(props: PageProps) {
                                 {props.capacityConfiguration.map((capacity) => (
                                     <tr key={capacity.shift_type.code}>
                                         <th scope="row" className="px-3 py-3 font-medium text-slate-900">{capacity.shift_type.name}</th>
-                                        <td className="px-3 py-3">{capacity.main_count ?? '-'}</td>
+                                        <td className="px-3 py-3">
+                                            {capacity.per_shift ? capacity.per_shift.map((shift) => (
+                                                <p key={shift.date}>{shift.date}: Main {shift.main_count}, Optional {shift.optional_count}</p>
+                                            )) : (capacity.main_count ?? '-')}
+                                        </td>
                                         <td className="px-3 py-3">{capacity.optional_count ?? '-'}</td>
                                         <td className="px-3 py-3">
                                             {capacity.source === 'inconsistent' ? (

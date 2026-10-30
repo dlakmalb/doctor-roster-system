@@ -13,6 +13,7 @@ use App\Models\RosterShift;
 use App\Models\ShiftType;
 use App\Services\DoctorAssignmentEligibilityService;
 use App\Services\RequestIntervalService;
+use App\Services\WeekendPairCoordination;
 use Database\Seeders\DoctorsSeeder;
 use Database\Seeders\November2026DoctorRequestsSeeder;
 use Database\Seeders\October2026DoctorRequestsSeeder;
@@ -27,7 +28,7 @@ function prepareNovemberDoctorRequests(): void
 function runNovemberDoctorRequestsSeeder(): void
 {
     app(November2026DoctorRequestsSeeder::class)->run(
-        app(\App\Services\WeekendPairCoordination::class),
+        app(WeekendPairCoordination::class),
         app(RequestIntervalService::class),
     );
 }

@@ -125,10 +125,14 @@ test('it preserves existing shift type definitions and inactive state when resee
     ]);
 });
 
-test('it seeds domain records without creating a starter admin user', function () {
+test('it seeds local UAT records including the starter admin user', function () {
     $this->seed(DatabaseSeeder::class);
 
-    $this->assertDatabaseCount('users', 0);
+    $this->assertDatabaseCount('users', 1);
+    $this->assertDatabaseHas('users', [
+        'name' => 'Admin',
+        'email' => 'admin@roster.test',
+    ]);
     $this->assertDatabaseCount('doctors', 15);
     $this->assertDatabaseCount('shift_types', 5);
 });

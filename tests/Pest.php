@@ -98,8 +98,12 @@ function snapshotRosterParticipation(Roster $roster, ?Collection $participatingD
     if ($roster->status === RosterStatus::Final) {
         $lastDate = CarbonImmutable::create($roster->year, $roster->month, 1)->endOfMonth();
         $nightType = ShiftType::query()->where('code', $lastDate->isWeekend() ? 'weekend_night' : 'weekday_night')->firstOrFail();
-        $nightShift = RosterShift::query()->firstOrCreate([
-            'roster_id' => $roster->id,
+        $nightShift = RosterShift::query()
+            ->where('roster_id', $roster->id)
+            ->whereDate('shift_date', $lastDate->toDateString())
+            ->where('shift_type_id', $nightType->id)
+            ->first();
+        $nightShift ??= $roster->shifts()->create([
             'shift_date' => $lastDate->toDateString(),
             'shift_type_id' => $nightType->id,
         ]);
