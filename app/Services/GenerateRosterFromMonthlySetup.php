@@ -5,6 +5,8 @@ namespace App\Services;
 use App\Enums\RosterStatus;
 use App\Models\Roster;
 use App\Models\User;
+use App\Models\WeekendPairConfiguration;
+use Carbon\CarbonImmutable;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
@@ -20,6 +22,24 @@ class GenerateRosterFromMonthlySetup
     ) {}
 
     public function handle(int $year, int $month, User $admin): Roster
+    {
+        $roster = DB::transaction(function () use ($year, $month, $admin): ?Roster {
+            $this->coordination->lock();
+            $end = CarbonImmutable::create($year, $month, 1)->endOfMonth()->toDateString();
+            $pairEnabled = WeekendPairConfiguration::query()->whereDate('effective_saturday', '<=', $end)->exists();
+            if ($pairEnabled) {
+                return $this->createAndGenerate($year, $month, $admin);
+            }
+
+            $this->structure->create($year, $month, $admin);
+
+            return null;
+        });
+
+        return $roster ?? $this->createAndGenerate($year, $month, $admin);
+    }
+
+    private function createAndGenerate(int $year, int $month, User $admin): Roster
     {
         try {
             $this->structure->create($year, $month, $admin);
