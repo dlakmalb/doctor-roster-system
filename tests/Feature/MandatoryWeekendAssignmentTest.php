@@ -25,6 +25,7 @@ use App\Services\GenerateRosterFromMonthlySetup;
 use App\Services\MonthlyShiftCapacityService;
 use App\Services\MonthlyWeekendPairService;
 use App\Services\PreviousNightBoundaryService;
+use App\Services\RecreateDraftRoster;
 use App\Services\RosterAssignmentGenerator;
 use App\Services\RosterCandidateRanker;
 use App\Services\RosterDraftValidationService;
@@ -34,6 +35,7 @@ use App\Services\WeekendPairRotationService;
 use Carbon\CarbonImmutable;
 use Database\Seeders\ShiftTypesSeeder;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Validation\ValidationException;
 
 afterEach(function (): void {
@@ -672,3 +674,184 @@ it('returns actionable mandatory validation through each generation endpoint', f
     'fill unfilled Draft' => ['rosters.generate', true],
     'regenerate Draft' => ['rosters.regenerate', true],
 ]);
+
+it('recreates the November Draft with two legacy Main slots and preserves monthly inputs and October Final', function (bool $seven) {
+    ['admin' => $admin, 'groups' => $groups, 'october' => $october] = mandatoryWeekendFixture($seven);
+    $nightType = ShiftType::query()->where('code', 'weekday_night')->sole();
+    foreach ([5, 12, 19, 26] as $day) {
+        DoctorRequest::query()->create([
+            'doctor_id' => $groups['A'][0], 'request_type' => DoctorRequestType::PreferredWork,
+            'request_date' => sprintf('2026-11-%02d', $day), 'shift_type_id' => $nightType->id,
+        ]);
+    }
+    $roster = app(GenerateRosterFromMonthlySetup::class)->handle(2026, 11, $admin);
+    $oldShiftIds = $roster->shifts()->pluck('id')->all();
+    $octoberBefore = $october->fresh()->toArray();
+    $octoberAssignments = RosterAssignment::query()->whereHas('rosterShift', fn ($query) => $query->where('roster_id', $october->id))->orderBy('id')->get()->toArray();
+    $octoberSnapshots = RosterShiftCapacitySnapshot::query()->whereHas('rosterShift', fn ($query) => $query->where('roster_id', $october->id))->orderBy('id')->get()->toArray();
+    $participation = DoctorMonthlyParticipation::query()->orderBy('id')->get()->toArray();
+    $confirmations = MonthlyWeekendPairConfirmation::query()->orderBy('id')->get()->toArray();
+    $versions = WeekendPairConfiguration::query()->orderBy('id')->get()->toArray();
+    $requests = DoctorRequest::query()->orderBy('id')->get()->toArray();
+    $exclusions = DoctorMonthlyExclusion::query()->orderBy('id')->get()->toArray();
+    $saved = $roster->shifts()->with(['shiftType', 'capacitySnapshot'])->get()->mapWithKeys(fn (RosterShift $shift): array => [
+        $shift->shift_date->toDateString().':'.$shift->shiftType->code => [$shift->savedCapacity()->main_count, $shift->savedCapacity()->optional_count],
+    ])->all();
+    expect(mandatoryWeekendShift($roster, '2026-11-01')->savedCapacity()->main_count)->toBe(3);
+
+    $this->actingAs($admin)->post(route('rosters.recreate', ['year' => 2026, 'month' => 11]), [
+        'legacy_main_count' => 2, 'confirmation' => true,
+    ])->assertSessionHasNoErrors()->assertRedirect(route('rosters.show', ['year' => 2026, 'month' => 11]));
+
+    expect($roster->fresh()->status)->toBe(RosterStatus::Draft);
+    expect($roster->fresh()->updated_by)->toBe($admin->id);
+    expect($roster->fresh()->last_generated_at)->not->toBeNull();
+    expect($roster->shifts()->whereIn('id', $oldShiftIds)->exists())->toBeFalse();
+    expect(RosterShiftCapacitySnapshot::query()->whereIn('roster_shift_id', $oldShiftIds)->exists())->toBeFalse();
+    foreach ($roster->shifts()->with(['shiftType', 'capacitySnapshot'])->get() as $shift) {
+        $key = $shift->shift_date->toDateString().':'.$shift->shiftType->code;
+        $expected = $key === '2026-11-01:weekend_day' ? [2, 7] : $saved[$key];
+        expect([$shift->savedCapacity()->main_count, $shift->savedCapacity()->optional_count])->toBe($expected);
+    }
+    expect($roster->shifts()->with('capacitySnapshot')->get()->sum(fn (RosterShift $shift): int => $shift->savedCapacity()->main_count))->toBe($seven ? 191 : 183);
+    expect(app(MonthlyShiftCapacityService::class)->resolve(2026, 11, 'weekend_day')['main_count'])->toBe(2);
+    expect(app(MonthlyShiftCapacityService::class)->resolve(2026, 12, 'weekend_day')['main_count'])->toBe(3);
+    expect(DoctorMonthlyParticipation::query()->orderBy('id')->get()->toArray())->toBe($participation);
+    expect(MonthlyWeekendPairConfirmation::query()->orderBy('id')->get()->toArray())->toBe($confirmations);
+    expect(WeekendPairConfiguration::query()->orderBy('id')->get()->toArray())->toBe($versions);
+    expect(DoctorRequest::query()->orderBy('id')->get()->toArray())->toBe($requests);
+    expect(DoctorMonthlyExclusion::query()->orderBy('id')->get()->toArray())->toBe($exclusions);
+    expect($october->fresh()->toArray())->toBe($octoberBefore);
+    expect(RosterAssignment::query()->whereHas('rosterShift', fn ($query) => $query->where('roster_id', $october->id))->orderBy('id')->get()->toArray())->toBe($octoberAssignments);
+    expect(RosterShiftCapacitySnapshot::query()->whereHas('rosterShift', fn ($query) => $query->where('roster_id', $october->id))->orderBy('id')->get()->toArray())->toBe($octoberSnapshots);
+    $firstSundayIds = $roster->shifts()->whereDate('shift_date', '2026-11-01')->get()->flatMap(fn (RosterShift $shift) => $shift->assignments()->pluck('doctor_id'))->all();
+    expect(array_intersect($firstSundayIds, array_slice($groups['A'], 0, 2)))->toBe([]);
+    foreach (['weekend_day', 'weekend_night'] as $code) {
+        expect(mandatoryWeekendMainIds($roster, '2026-11-01', $code))->toHaveCount(2);
+        expect(array_diff(mandatoryWeekendMainIds($roster, '2026-11-01', $code), $groups['A']))->toBe([]);
+    }
+    foreach (['2026-11-07', '2026-11-14', '2026-11-21', '2026-11-28'] as $saturday) {
+        $plan = app(WeekendPairRotationService::class)->forSaturday($saturday);
+        expect(mandatoryWeekendMainIds($roster, $saturday))->toBe($plan['shifts']['saturday_day']);
+        expect(mandatoryWeekendMainIds($roster, $saturday, 'weekend_night'))->toBe($plan['shifts']['saturday_night']);
+        expect(mandatoryWeekendMainIds($roster, $plan['sunday']))->toBe($plan['shifts']['sunday_day']);
+        expect(mandatoryWeekendMainIds($roster, $plan['sunday'], 'weekend_night'))->toBe($plan['shifts']['sunday_night']);
+    }
+    assertMandatoryWeekendSafe($roster);
+})->with(['six doctors' => false, 'seven doctors' => true]);
+
+it('allows legacy cross group fallback after recreation when Group A cannot fill both Night slots', function () {
+    ['admin' => $admin, 'groups' => $groups] = mandatoryWeekendFixture();
+    $roster = app(RosterStructureService::class)->create(2026, 11, $admin);
+    $night = ShiftType::query()->where('code', 'weekend_night')->sole();
+    foreach (array_slice($groups['A'], 2) as $id) {
+        DoctorRequest::query()->create(['doctor_id' => $id, 'request_type' => DoctorRequestType::DayOff, 'request_date' => '2026-11-01', 'shift_type_id' => $night->id]);
+    }
+
+    app(RecreateDraftRoster::class)->handle($roster, $admin, 2, true);
+
+    $ids = mandatoryWeekendMainIds($roster, '2026-11-01', 'weekend_night');
+    expect($ids)->toHaveCount(2);
+    expect(array_intersect($ids, $groups['B']))->toHaveCount(2);
+    expect(collect(app(RosterDraftValidationService::class)->validate($roster->fresh()))->where('code', 'weekend_group_exception'))->not->toBeEmpty();
+    assertMandatoryWeekendSafe($roster);
+});
+
+it('rejects unconfirmed or invalid Draft recreation without changing snapshots', function (array $input, string $error) {
+    ['admin' => $admin] = mandatoryWeekendFixture();
+    app(RosterStructureService::class)->create(2026, 11, $admin);
+    $before = RosterShiftCapacitySnapshot::query()->orderBy('id')->get()->toArray();
+
+    $this->actingAs($admin)->post(route('rosters.recreate', ['year' => 2026, 'month' => 11]), $input)->assertSessionHasErrors($error);
+
+    expect(RosterShiftCapacitySnapshot::query()->orderBy('id')->get()->toArray())->toBe($before);
+    expect(app(MonthlyShiftCapacityService::class)->resolve(2026, 11, 'weekend_day')['main_count'])->toBe(3);
+})->with([
+    'missing confirmation' => [['legacy_main_count' => 2], 'confirmation'],
+    'declined confirmation' => [['legacy_main_count' => 2, 'confirmation' => false], 'confirmation'],
+    'negative capacity' => [['legacy_main_count' => -1, 'confirmation' => true], 'legacy_main_count'],
+    'fractional capacity' => [['legacy_main_count' => 2.5, 'confirmation' => true], 'legacy_main_count'],
+    'too large' => [['legacy_main_count' => 256, 'confirmation' => true], 'legacy_main_count'],
+]);
+
+it('requires authentication to recreate a Draft', function () {
+    $this->post(route('rosters.recreate', ['year' => 2026, 'month' => 11]), ['legacy_main_count' => 2, 'confirmation' => true])
+        ->assertRedirect(route('login'));
+});
+
+it('protects Final and previously finalized Draft rosters from recreation', function (RosterStatus $status) {
+    ['admin' => $admin] = mandatoryWeekendFixture();
+    $roster = app(RosterStructureService::class)->create(2026, 11, $admin);
+    $roster->update(['status' => $status, 'finalized_at' => now()]);
+    $before = RosterShiftCapacitySnapshot::query()->orderBy('id')->get()->toArray();
+
+    $this->actingAs($admin)->post(route('rosters.recreate', ['year' => 2026, 'month' => 11]), ['legacy_main_count' => 2, 'confirmation' => true])
+        ->assertSessionHasErrors('roster');
+
+    expect($roster->fresh()->status)->toBe($status);
+    expect(RosterShiftCapacitySnapshot::query()->orderBy('id')->get()->toArray())->toBe($before);
+    expect(app(MonthlyShiftCapacityService::class)->resolve(2026, 11, 'weekend_day')['main_count'])->toBe(3);
+})->with([RosterStatus::Final, RosterStatus::Draft]);
+
+it('rolls back the entire Draft recreation when snapshots generation or pair integrity fail', function (string $failure) {
+    ['admin' => $admin, 'groups' => $groups] = mandatoryWeekendFixture();
+    $roster = app(GenerateRosterFromMonthlySetup::class)->handle(2026, 11, $admin);
+    $enabled = true;
+    $created = 0;
+    if ($failure === 'stale pairs') {
+        DoctorMonthlyExclusion::query()->create(['doctor_id' => $groups['B'][0], 'year' => 2026, 'month' => 11]);
+    } elseif ($failure === 'mandatory conflict') {
+        DoctorRequest::query()->create(['doctor_id' => $groups['B'][0], 'request_type' => DoctorRequestType::DayOff, 'request_date' => '2026-11-07']);
+    } else {
+        $model = $failure === 'snapshots' ? RosterShiftCapacitySnapshot::class : RosterAssignment::class;
+        Event::listen('eloquent.creating: '.$model, function () use (&$enabled, &$created): void {
+            if ($enabled && ++$created === 4) {
+                throw new RuntimeException('Simulated recreation failure.');
+            }
+        });
+    }
+    $tables = ['rosters', 'roster_shifts', 'roster_shift_capacity_snapshots', 'roster_assignments', 'doctor_monthly_participations', 'monthly_shift_capacities', 'monthly_weekend_pair_confirmations', 'doctor_requests', 'doctor_monthly_exclusions'];
+    $before = [];
+    foreach ($tables as $table) {
+        $before[$table] = DB::table($table)->orderBy('id')->get()->toArray();
+    }
+
+    try {
+        expect(fn () => app(RecreateDraftRoster::class)->handle($roster, $admin, 2, true))
+            ->toThrow(in_array($failure, ['stale pairs', 'mandatory conflict'], true) ? ValidationException::class : RuntimeException::class);
+    } finally {
+        $enabled = false;
+    }
+
+    foreach ($tables as $table) {
+        expect(DB::table($table)->orderBy('id')->get()->toArray())->toEqual($before[$table]);
+    }
+})->with(['snapshots', 'assignments', 'stale pairs', 'mandatory conflict']);
+
+it('refuses recreation when actual work or a later dependent roster exists', function (string $history) {
+    ['admin' => $admin] = mandatoryWeekendFixture();
+    $roster = app(RosterStructureService::class)->create(2026, 11, $admin);
+    if ($history === 'actual work') {
+        $roster->update(['actual_work_confirmed_at' => now()]);
+    } else {
+        Roster::query()->create(['year' => 2026, 'month' => 12, 'status' => RosterStatus::Draft]);
+    }
+    $before = RosterShiftCapacitySnapshot::query()->orderBy('id')->get()->toArray();
+
+    expect(fn () => app(RecreateDraftRoster::class)->handle($roster, $admin, 2, true))->toThrow(ValidationException::class);
+
+    expect(RosterShiftCapacitySnapshot::query()->orderBy('id')->get()->toArray())->toBe($before);
+    expect(app(MonthlyShiftCapacityService::class)->resolve(2026, 11, 'weekend_day')['main_count'])->toBe(3);
+})->with(['actual work', 'later roster']);
+
+it('refuses recreation outside the current planning period without changing the Draft', function () {
+    ['admin' => $admin] = mandatoryWeekendFixture();
+    $roster = app(RosterStructureService::class)->create(2026, 11, $admin);
+    $before = RosterShiftCapacitySnapshot::query()->orderBy('id')->get()->toArray();
+    $this->travelTo(new DateTimeImmutable('2026-12-01 09:00:00'));
+    config(['roster.uat_operational_month' => null]);
+
+    expect(fn () => app(RecreateDraftRoster::class)->handle($roster, $admin, 2, true))->toThrow(ValidationException::class);
+
+    expect(RosterShiftCapacitySnapshot::query()->orderBy('id')->get()->toArray())->toBe($before);
+});

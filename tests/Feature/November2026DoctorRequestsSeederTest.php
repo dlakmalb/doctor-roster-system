@@ -33,22 +33,24 @@ function runNovemberDoctorRequestsSeeder(): void
     );
 }
 
-it('seeds the twelve full-day requests, two exclusions, and Thisaras Thursday Night preference', function () {
+it('seeds twelve full-day requests, six date-specific preferences, two exclusions, and Thisaras Thursday Night preference', function () {
     prepareNovemberDoctorRequests();
 
     runNovemberDoctorRequestsSeeder();
 
-    $actualRequests = DoctorRequest::query()->with('doctor')->get()
+    $actualRequests = DoctorRequest::query()->with(['doctor', 'shiftType'])->get()
         ->map(fn (DoctorRequest $request): array => [
             $request->doctor->short_code,
             $request->request_date->toDateString(),
             $request->request_type,
-            $request->shift_type_id,
+            $request->shiftType?->code,
         ])->sort()->values()->all();
     expect($actualRequests)->toBe([
         ['A', '2026-11-02', DoctorRequestType::DayOff, null],
         ['A', '2026-11-09', DoctorRequestType::DayOff, null],
         ['A', '2026-11-16', DoctorRequestType::DayOff, null],
+        ['G', '2026-11-12', DoctorRequestType::PreferredWork, 'weekday_night'],
+        ['G', '2026-11-19', DoctorRequestType::PreferredWork, 'weekday_night'],
         ['I', '2026-11-05', DoctorRequestType::DayOff, null],
         ['I', '2026-11-06', DoctorRequestType::DayOff, null],
         ['L', '2026-11-01', DoctorRequestType::DayOff, null],
@@ -58,7 +60,14 @@ it('seeds the twelve full-day requests, two exclusions, and Thisaras Thursday Ni
         ['R', '2026-11-24', DoctorRequestType::DayOff, null],
         ['R', '2026-11-25', DoctorRequestType::DayOff, null],
         ['R', '2026-11-26', DoctorRequestType::DayOff, null],
+        ['T', '2026-11-05', DoctorRequestType::PreferredWork, 'weekday_night'],
+        ['T', '2026-11-12', DoctorRequestType::PreferredWork, 'weekday_night'],
+        ['T', '2026-11-19', DoctorRequestType::PreferredWork, 'weekday_night'],
+        ['T', '2026-11-26', DoctorRequestType::PreferredWork, 'weekday_night'],
     ]);
+    expect(DoctorRequest::query()->where('request_type', DoctorRequestType::DayOff)->count())->toBe(12)
+        ->and(DoctorRequest::query()->where('request_type', DoctorRequestType::PreferredWork)->whereNotNull('shift_type_id')->count())->toBe(6)
+        ->and(DoctorRequest::query()->where('request_type', DoctorRequestType::DayOff)->whereNull('shift_type_id')->count())->toBe(12);
 
     $actualExclusions = DoctorMonthlyExclusion::query()->with('doctor')->get()
         ->map(fn (DoctorMonthlyExclusion $exclusion): array => [
@@ -81,6 +90,7 @@ it('preserves matching records and does not duplicate them on repeat execution',
     $lasantha = Doctor::query()->where('short_code', 'L')->firstOrFail();
     $mareena = Doctor::query()->where('short_code', 'M')->firstOrFail();
     $thisara = Doctor::query()->where('short_code', 'T')->firstOrFail();
+    $ganga = Doctor::query()->where('short_code', 'G')->firstOrFail();
     $weekdayNight = ShiftType::query()->where('code', 'weekday_night')->firstOrFail();
     $request = DoctorRequest::query()->create([
         'doctor_id' => $lasantha->id,
@@ -88,6 +98,13 @@ it('preserves matching records and does not duplicate them on repeat execution',
         'request_date' => '2026-11-01',
         'shift_type_id' => null,
         'note' => 'preserve this note',
+    ]);
+    $matchingPreferredWorkRequest = DoctorRequest::query()->create([
+        'doctor_id' => $ganga->id,
+        'request_type' => DoctorRequestType::PreferredWork,
+        'request_date' => '2026-11-12',
+        'shift_type_id' => $weekdayNight->id,
+        'note' => 'preserve this preferred work request',
     ]);
     $exclusion = DoctorMonthlyExclusion::query()->create([
         'doctor_id' => $mareena->id,
@@ -103,17 +120,23 @@ it('preserves matching records and does not duplicate them on repeat execution',
         'weekday' => 4,
     ]);
     $requestCreatedAt = $request->created_at->toDateTimeString();
+    $matchingPreferredWorkRequestId = $matchingPreferredWorkRequest->id;
     $exclusionCreatedAt = $exclusion->created_at->toDateTimeString();
     $preferenceCreatedAt = $preference->created_at->toDateTimeString();
 
     runNovemberDoctorRequestsSeeder();
     runNovemberDoctorRequestsSeeder();
 
-    expect(DoctorRequest::query()->count())->toBe(12)
+    expect(DoctorRequest::query()->count())->toBe(18)
+        ->and(DoctorRequest::query()->where('request_type', DoctorRequestType::DayOff)->count())->toBe(12)
+        ->and(DoctorRequest::query()->where('request_type', DoctorRequestType::PreferredWork)->count())->toBe(6)
         ->and(DoctorMonthlyExclusion::query()->where('year', 2026)->where('month', 11)->count())->toBe(2)
         ->and(DoctorMonthlyWeekdayPreference::query()->where('year', 2026)->where('month', 11)->count())->toBe(1);
     expect($request->fresh()->note)->toBe('preserve this note')
         ->and($request->fresh()->created_at->toDateTimeString())->toBe($requestCreatedAt);
+    expect($matchingPreferredWorkRequest->fresh()->id)->toBe($matchingPreferredWorkRequestId)
+        ->and($matchingPreferredWorkRequest->fresh()->note)->toBe('preserve this preferred work request')
+        ->and($matchingPreferredWorkRequest->fresh()->shift_type_id)->toBe($weekdayNight->id);
     expect($exclusion->fresh()->note)->toBe('preserve this note')
         ->and($exclusion->fresh()->created_at->toDateTimeString())->toBe($exclusionCreatedAt);
     expect($preference->fresh()->created_at->toDateTimeString())->toBe($preferenceCreatedAt);

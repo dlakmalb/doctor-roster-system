@@ -26,20 +26,26 @@ class November2026DoctorRequestsSeeder extends Seeder
 
     private const MONTH = 11;
 
-    /** @var list<array{doctor: string, date: string}> */
+    /** @var list<array{doctor: string, date: string, type: DoctorRequestType, shift: string|null}> */
     private const REQUESTS = [
-        ['doctor' => 'L', 'date' => '2026-11-01'],
-        ['doctor' => 'L', 'date' => '2026-11-05'],
-        ['doctor' => 'L', 'date' => '2026-11-06'],
-        ['doctor' => 'L', 'date' => '2026-11-09'],
-        ['doctor' => 'A', 'date' => '2026-11-02'],
-        ['doctor' => 'A', 'date' => '2026-11-09'],
-        ['doctor' => 'A', 'date' => '2026-11-16'],
-        ['doctor' => 'I', 'date' => '2026-11-05'],
-        ['doctor' => 'I', 'date' => '2026-11-06'],
-        ['doctor' => 'R', 'date' => '2026-11-24'],
-        ['doctor' => 'R', 'date' => '2026-11-25'],
-        ['doctor' => 'R', 'date' => '2026-11-26'],
+        ['doctor' => 'L', 'date' => '2026-11-01', 'type' => DoctorRequestType::DayOff, 'shift' => null],
+        ['doctor' => 'L', 'date' => '2026-11-05', 'type' => DoctorRequestType::DayOff, 'shift' => null],
+        ['doctor' => 'L', 'date' => '2026-11-06', 'type' => DoctorRequestType::DayOff, 'shift' => null],
+        ['doctor' => 'L', 'date' => '2026-11-09', 'type' => DoctorRequestType::DayOff, 'shift' => null],
+        ['doctor' => 'A', 'date' => '2026-11-02', 'type' => DoctorRequestType::DayOff, 'shift' => null],
+        ['doctor' => 'A', 'date' => '2026-11-09', 'type' => DoctorRequestType::DayOff, 'shift' => null],
+        ['doctor' => 'A', 'date' => '2026-11-16', 'type' => DoctorRequestType::DayOff, 'shift' => null],
+        ['doctor' => 'I', 'date' => '2026-11-05', 'type' => DoctorRequestType::DayOff, 'shift' => null],
+        ['doctor' => 'I', 'date' => '2026-11-06', 'type' => DoctorRequestType::DayOff, 'shift' => null],
+        ['doctor' => 'R', 'date' => '2026-11-24', 'type' => DoctorRequestType::DayOff, 'shift' => null],
+        ['doctor' => 'R', 'date' => '2026-11-25', 'type' => DoctorRequestType::DayOff, 'shift' => null],
+        ['doctor' => 'R', 'date' => '2026-11-26', 'type' => DoctorRequestType::DayOff, 'shift' => null],
+        ['doctor' => 'G', 'date' => '2026-11-12', 'type' => DoctorRequestType::PreferredWork, 'shift' => 'weekday_night'],
+        ['doctor' => 'G', 'date' => '2026-11-19', 'type' => DoctorRequestType::PreferredWork, 'shift' => 'weekday_night'],
+        ['doctor' => 'T', 'date' => '2026-11-05', 'type' => DoctorRequestType::PreferredWork, 'shift' => 'weekday_night'],
+        ['doctor' => 'T', 'date' => '2026-11-12', 'type' => DoctorRequestType::PreferredWork, 'shift' => 'weekday_night'],
+        ['doctor' => 'T', 'date' => '2026-11-19', 'type' => DoctorRequestType::PreferredWork, 'shift' => 'weekday_night'],
+        ['doctor' => 'T', 'date' => '2026-11-26', 'type' => DoctorRequestType::PreferredWork, 'shift' => 'weekday_night'],
     ];
 
     /** @var list<string> */
@@ -56,7 +62,7 @@ class November2026DoctorRequestsSeeder extends Seeder
 
             $doctors = Doctor::query()->lockForUpdate()->get()->keyBy('short_code');
             $shiftTypes = ShiftType::query()->lockForUpdate()->get()->keyBy('code');
-            $resolvedRequests = $this->resolveRequests($doctors);
+            $resolvedRequests = $this->resolveRequests($doctors, $shiftTypes);
             $resolvedExclusions = $this->resolveExclusions($doctors);
             $resolvedPreferences = $this->resolvePreferences($doctors, $shiftTypes);
 
@@ -77,7 +83,7 @@ class November2026DoctorRequestsSeeder extends Seeder
                 ->get();
 
             $this->assertNoConflictingExclusions($resolvedRequests, $resolvedPreferences, $existingExclusions);
-            $missingRequests = $this->missingRequests($resolvedRequests, $existingRequests, $intervals);
+            $missingRequests = $this->missingRequests($resolvedRequests, $existingRequests, $shiftTypes, $intervals);
             $missingExclusions = $this->missingExclusions($resolvedExclusions, $existingExclusions);
             $missingPreferences = $this->missingPreferences($resolvedPreferences, $existingPreferences);
 
@@ -112,19 +118,24 @@ class November2026DoctorRequestsSeeder extends Seeder
     }
 
     /** @param Collection<int, Doctor> $doctors
-     * @return list<array{doctor: string, doctor_id: int, request_date: string, request_type: DoctorRequestType, shift_type_id: null}>
+     * @param Collection<int, ShiftType> $shiftTypes
+     * @return list<array{doctor: string, doctor_id: int, request_date: string, request_type: DoctorRequestType, shift_type_id: int|null}>
      */
-    private function resolveRequests(Collection $doctors): array
+    private function resolveRequests(Collection $doctors, Collection $shiftTypes): array
     {
-        return array_map(function (array $request) use ($doctors): array {
+        return array_map(function (array $request) use ($doctors, $shiftTypes): array {
             $doctor = $this->activeDoctor($doctors, $request['doctor']);
+            $shiftType = $request['shift'] === null ? null : $shiftTypes->get($request['shift']);
+            if ($request['shift'] !== null && (! $shiftType instanceof ShiftType || ! $shiftType->is_active)) {
+                $this->fail("Required active shift type {$request['shift']} does not exist.");
+            }
 
             return [
                 'doctor' => $request['doctor'],
                 'doctor_id' => $doctor->id,
                 'request_date' => $request['date'],
-                'request_type' => DoctorRequestType::DayOff,
-                'shift_type_id' => null,
+                'request_type' => $request['type'],
+                'shift_type_id' => $shiftType?->id,
             ];
         }, self::REQUESTS);
     }
@@ -173,19 +184,22 @@ class November2026DoctorRequestsSeeder extends Seeder
         return $doctor;
     }
 
-    /** @param list<array{doctor: string, doctor_id: int, request_date: string, request_type: DoctorRequestType, shift_type_id: null}> $expected
+    /** @param list<array{doctor: string, doctor_id: int, request_date: string, request_type: DoctorRequestType, shift_type_id: int|null}> $expected
      * @param  Collection<int, DoctorRequest>  $existing
-     * @return list<array{doctor_id: int, request_type: DoctorRequestType, request_date: string, shift_type_id: null}>
+     * @return list<array{doctor_id: int, request_type: DoctorRequestType, request_date: string, shift_type_id: int|null}>
      */
-    private function missingRequests(array $expected, Collection $existing, RequestIntervalService $intervals): array
+    private function missingRequests(array $expected, Collection $existing, Collection $shiftTypes, RequestIntervalService $intervals): array
     {
         $missing = [];
         foreach ($expected as $request) {
-            $requestedInterval = $intervals->forDate(CarbonImmutable::parse($request['request_date']), null);
+            $shiftType = $request['shift_type_id'] === null
+                ? null
+                : $shiftTypes->first(fn (ShiftType $shift): bool => $shift->id === $request['shift_type_id']);
+            $requestedInterval = $intervals->forDate(CarbonImmutable::parse($request['request_date']), $shiftType);
             $matching = $existing->filter(fn (DoctorRequest $candidate): bool => $candidate->doctor_id === $request['doctor_id']
                 && $candidate->request_date->toDateString() === $request['request_date']
                 && $candidate->request_type === $request['request_type']
-                && $candidate->shift_type_id === null);
+                && $candidate->shift_type_id === $request['shift_type_id']);
 
             if ($matching->count() > 1) {
                 $this->fail("Duplicate November requests already exist for doctor {$request['doctor']} on {$request['request_date']}.");
@@ -202,7 +216,7 @@ class November2026DoctorRequestsSeeder extends Seeder
                     'doctor_id' => $request['doctor_id'],
                     'request_type' => $request['request_type'],
                     'request_date' => $request['request_date'],
-                    'shift_type_id' => null,
+                    'shift_type_id' => $request['shift_type_id'],
                 ];
             }
         }
@@ -219,7 +233,7 @@ class November2026DoctorRequestsSeeder extends Seeder
         return $this->missingRows($expected, $existing, []);
     }
 
-    /** @param list<array{doctor: string, doctor_id: int, request_date: string, request_type: DoctorRequestType, shift_type_id: null}> $requests
+    /** @param list<array{doctor: string, doctor_id: int, request_date: string, request_type: DoctorRequestType, shift_type_id: int|null}> $requests
      * @param  list<array{doctor_id: int, year: int, month: int, shift_type_id: int, weekday: int}>  $preferences
      * @param  Collection<int, DoctorMonthlyExclusion>  $existing
      */

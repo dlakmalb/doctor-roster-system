@@ -6,6 +6,7 @@ import {
     generate,
     pdf,
     print,
+    recreate,
     regenerate,
     reopen,
     show as showRoster,
@@ -46,6 +47,7 @@ type Day = {
 type RosterProps = {
     month: { year: number; month: number; label: string };
     status: 'draft' | 'final';
+    legacy_weekend_day_main: number | null;
     can_reopen: boolean;
     history_readiness: {
         ready: boolean;
@@ -138,6 +140,7 @@ async function jsonRequest<T>(
 export default function Roster({
     month,
     status,
+    legacy_weekend_day_main,
     can_reopen,
     history_readiness,
     has_generated,
@@ -421,6 +424,51 @@ export default function Roster({
     return (
         <AppLayout title={`${month.label} Roster`}>
             <Head title={`${month.label} Roster`} />
+
+            {status === 'draft' && legacy_weekend_day_main !== null && (
+                <details className="mb-6 rounded-lg border border-red-200 bg-white p-4">
+                    <summary className="cursor-pointer font-semibold text-red-700">
+                        Recreate Draft with corrected legacy capacity
+                    </summary>
+                    <p className="my-3 text-sm text-slate-600">
+                        This replaces all Draft shifts and assignments, including manual edits.
+                        Monthly requests, participation, pair confirmations, and other saved
+                        capacities are preserved. Confirmed pair capacities remain automatic.
+                    </p>
+                    <Form {...recreate.form(month)}>
+                        {({ processing, errors }) => (
+                            <div className="flex flex-col items-start gap-3">
+                                <label className="text-sm font-semibold">
+                                    Legacy Weekend Day Main positions
+                                    <input
+                                        className="ml-3 w-24 rounded-lg border border-slate-300 px-3 py-2"
+                                        type="number"
+                                        name="legacy_main_count"
+                                        min="0"
+                                        max="255"
+                                        required
+                                        defaultValue={legacy_weekend_day_main}
+                                    />
+                                </label>
+                                <label className="flex items-center gap-2 text-sm">
+                                    <input type="checkbox" name="confirmation" value="1" required />
+                                    I confirm all current Draft assignments, including manual edits, will be lost.
+                                </label>
+                                {Object.entries(errors).map(([field, error]) => (
+                                    <p key={field} className="text-sm text-red-700" role="alert">{error}</p>
+                                ))}
+                                <button
+                                    type="submit"
+                                    disabled={processing}
+                                    className="cursor-pointer rounded-lg border border-red-600 px-4 py-2 text-sm font-semibold text-red-700 disabled:opacity-50"
+                                >
+                                    {processing ? 'Recreating…' : 'Recreate Draft and Generate'}
+                                </button>
+                            </div>
+                        )}
+                    </Form>
+                </details>
+            )}
 
             <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
                 <div className="flex flex-wrap items-center gap-3">

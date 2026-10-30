@@ -337,6 +337,32 @@ it('preserves all October Final capacity snapshots while creating November', fun
     expect($october->fresh()->status)->toBe(RosterStatus::Final);
 });
 
+it('uses November legacy capacity independently of the Final October Saturday', function (int $legacyMain) {
+    ['admin' => $admin, 'groups' => $groups] = weekendCapacityFixture();
+    $capacities = app(MonthlyShiftCapacityService::class);
+    $capacities->create(2026, 10, 'weekend_day', 3, 7);
+    $october = app(RosterStructureService::class)->create(2026, 10, $admin);
+    $saturday = weekendCapacityShift($october, '2026-10-31');
+    $assignment = $saturday->assignments()->create(['doctor_id' => $groups['A'][0], 'role' => 'main', 'slot_number' => 1]);
+    $october->update(['status' => RosterStatus::Final]);
+    $before = $saturday->savedCapacity()->toArray();
+    $assignedBefore = $assignment->toArray();
+    $capacities->create(2026, 11, 'weekend_day', $legacyMain, 7);
+    confirmWeekendCapacityMonth($admin, $groups);
+
+    $november = app(RosterStructureService::class)->create(2026, 11, $admin);
+
+    expect(weekendCapacityShift($november, '2026-11-01')->savedCapacity()->main_count)->toBe($legacyMain);
+    expect(weekendCapacityShift($november, '2026-11-01', 'weekend_night')->savedCapacity()->main_count)->toBe(2);
+    expect(app(WeekendDayCapacityService::class)->forMonth(2026, 11, $legacyMain)['2026-10-31']['source'])->toBe('legacy');
+    expect(weekendCapacityShift($november, '2026-11-07')->savedCapacity()->main_count)->toBe(2);
+    expect($saturday->savedCapacity()->fresh()->toArray())->toBe($before);
+    expect($assignment->fresh()->toArray())->toEqual($assignedBefore);
+    expect($october->fresh()->status)->toBe(RosterStatus::Final);
+    expect($capacities->resolve(2026, 10, 'weekend_day')['main_count'])->toBe(3);
+    expect(ShiftType::query()->where('code', 'weekend_day')->sole()->main_count)->toBe(3);
+})->with(['corrected two' => 2, 'legitimate legacy three' => 3]);
+
 it('rolls back roster participation shifts and snapshots together if snapshot persistence fails', function () {
     ['admin' => $admin, 'groups' => $groups] = weekendCapacityFixture();
     confirmWeekendCapacityMonth($admin, $groups);
