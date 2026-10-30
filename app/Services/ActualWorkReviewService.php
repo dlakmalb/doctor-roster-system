@@ -17,7 +17,7 @@ use Illuminate\Validation\ValidationException;
 /** @phpstan-import-type BalancedRow from DoctorMonthlyWorkloadService */
 class ActualWorkReviewService
 {
-    public function __construct(private DoctorMonthlyWorkloadService $workloads, private RosterPlanningHistoryService $history) {}
+    public function __construct(private DoctorMonthlyWorkloadService $workloads, private RosterPlanningHistoryService $history, private WeekendPairCoordination $coordination) {}
 
     public function save(Roster $roster, int $assignmentId, ActualWorkExceptionType $type, ?int $replacementDoctorId, User $admin): void
     {
@@ -80,6 +80,7 @@ class ActualWorkReviewService
     public function changeMonthlyExclusion(int $year, int $month, User $admin, Closure $change): void
     {
         DB::transaction(function () use ($year, $month, $admin, $change): void {
+            $this->coordination->lock();
             $roster = Roster::query()->where('year', $year)->where('month', $month)->lockForUpdate()->first();
             $change();
             if ($roster !== null && $roster->status === RosterStatus::Final && $roster->actual_work_confirmed_at !== null) {

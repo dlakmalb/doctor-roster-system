@@ -8,6 +8,7 @@ use App\Models\Roster;
 use App\Models\User;
 use App\Models\WeekendRotationConfiguration;
 use App\Services\WeekendGroupRotationService;
+use App\Services\WeekendPairCoordination;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -60,27 +61,27 @@ class WeekendGroupManagementController extends Controller
         ]);
     }
 
-    public function store(Request $request, int $year, int $month, WeekendGroupRotationService $rotation): RedirectResponse
+    public function store(Request $request, int $year, int $month, WeekendGroupRotationService $rotation, WeekendPairCoordination $coordination): RedirectResponse
     {
         $data = $request->validate([
             'doctor_id' => ['required', 'integer', 'exists:doctors,id'],
             'group_code' => ['required', 'in:A,B'],
             'effective_from_saturday' => ['required', 'date'],
         ]);
-        $doctor = Doctor::query()->whereKey($data['doctor_id'])->where('is_active', true)->first();
-        if ($doctor === null) {
-            throw ValidationException::withMessages(['doctor_id' => 'Select an active doctor.']);
-        }
-        $rotation->assertChangeAllowed($data['effective_from_saturday']);
-
-        DB::transaction(function () use ($doctor, $data, $request): void {
+        $doctor = DB::transaction(function () use ($data, $request, $rotation, $coordination): Doctor {
+            $coordination->lock();
+            $doctor = Doctor::query()->whereKey($data['doctor_id'])->where('is_active', true)->first();
+            if ($doctor === null) {
+                throw ValidationException::withMessages(['doctor_id' => 'Select an active doctor.']);
+            }
+            $rotation->assertChangeAllowed($data['effective_from_saturday']);
             $existing = DoctorWeekendGroupMembership::query()
                 ->where('doctor_id', $doctor->id)
                 ->whereDate('effective_from_saturday', $data['effective_from_saturday'])
                 ->first();
             if ($existing !== null) {
                 if ($existing->group_code === $data['group_code']) {
-                    return;
+                    return $doctor;
                 }
                 throw ValidationException::withMessages(['effective_from_saturday' => 'This doctor already has a different group recorded for that Saturday. Add a new future-effective change instead.']);
             }
@@ -91,12 +92,14 @@ class WeekendGroupManagementController extends Controller
                 'effective_from_saturday' => $data['effective_from_saturday'],
                 'changed_by' => $request->user() instanceof User ? $request->user()->id : null,
             ]);
+
+            return $doctor;
         });
 
         return back()->with('status', "{$doctor->name}'s Group {$data['group_code']} membership was saved.");
     }
 
-    public function configure(Request $request, int $year, int $month): RedirectResponse
+    public function configure(Request $request, int $year, int $month, WeekendPairCoordination $coordination): RedirectResponse
     {
         $data = $request->validate([
             'anchor_saturday' => ['required', 'date'],
@@ -105,14 +108,16 @@ class WeekendGroupManagementController extends Controller
         if (! CarbonImmutable::parse($data['anchor_saturday'])->isSaturday()) {
             throw ValidationException::withMessages(['anchor_saturday' => 'The rotation anchor must be a Saturday.']);
         }
-        if (WeekendRotationConfiguration::query()->exists()) {
-            throw ValidationException::withMessages(['anchor_saturday' => 'The rotation anchor is already configured and cannot be changed because it defines historical weekends.']);
-        }
-        if (Roster::query()->where('status', 'final')->exists()) {
-            throw ValidationException::withMessages(['anchor_saturday' => 'Configure the anchor before finalizing any roster.']);
-        }
-
-        WeekendRotationConfiguration::query()->create(['singleton_key' => 'primary', ...$data]);
+        DB::transaction(function () use ($data, $coordination): void {
+            $coordination->lock();
+            if (WeekendRotationConfiguration::query()->exists()) {
+                throw ValidationException::withMessages(['anchor_saturday' => 'The rotation anchor is already configured and cannot be changed because it defines historical weekends.']);
+            }
+            if (Roster::query()->where('status', 'final')->exists()) {
+                throw ValidationException::withMessages(['anchor_saturday' => 'Configure the anchor before finalizing any roster.']);
+            }
+            WeekendRotationConfiguration::query()->create(['singleton_key' => 'primary', ...$data]);
+        });
 
         return back()->with('status', 'Weekend rotation anchor configured.');
     }

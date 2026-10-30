@@ -1,7 +1,7 @@
-# Doctor Roster MVP — Hospital UAT Checklist
+# Doctor Roster MVP - Hospital UAT Checklist
 
-**Scenario month:** October 2026  
-**Hospital reviewer:** Dr Nuwan  
+**Scenario month:** October 2026
+**Hospital reviewer:** Dr Nuwan
 **Status:** Prepared for UAT; no hospital acceptance testing is recorded here.
 
 ## Before UAT
@@ -84,8 +84,8 @@ Repeat this record for each scenario or issue. Attach a roster reference that do
 |          |                 |               |           |          |
 |          |                 |               |           |          |
 
-**Hospital reviewer confirmation (Dr Nuwan):** ______________________________  
-**Date:** __________________  
+**Hospital reviewer confirmation (Dr Nuwan):** ______________________________
+**Date:** __________________
 **Open issues / follow-up owner:** __________________________________________
 
 ## Coverage reporting for local comparison

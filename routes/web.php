@@ -11,6 +11,8 @@ use App\Http\Controllers\DoctorRequestController;
 use App\Http\Controllers\InitialWorkloadSetupController;
 use App\Http\Controllers\MonthlySetupController;
 use App\Http\Controllers\MonthlySetupRosterGenerationController;
+use App\Http\Controllers\MonthlyShiftCapacityController;
+use App\Http\Controllers\MonthlyWeekendPairController;
 use App\Http\Controllers\RosterAssignmentGenerationController;
 use App\Http\Controllers\RosterAssignmentOptionsController;
 use App\Http\Controllers\RosterAssignmentRegenerationController;
@@ -38,6 +40,20 @@ Route::middleware('auth')->group(function (): void {
     Route::post('/logout', LogoutController::class)->name('logout');
     Route::get('/dashboard', DashboardController::class)->name('dashboard');
 
+    Route::get('/monthly-weekend-pairs/{year}/{month}', [MonthlyWeekendPairController::class, 'show'])
+        ->where(['year' => '[1-9][0-9]{3}', 'month' => '(?:[1-9]|1[0-2])'])
+        ->name('monthly-weekend-pairs.show');
+    Route::post('/monthly-weekend-pairs/{year}/{month}', [MonthlyWeekendPairController::class, 'store'])
+        ->where(['year' => '[1-9][0-9]{3}', 'month' => '(?:[1-9]|1[0-2])'])
+        ->name('monthly-weekend-pairs.store');
+
+    Route::get('/weekend-pairs/{year}/{month}', [MonthlyWeekendPairController::class, 'page'])
+        ->where(['year' => '[1-9][0-9]{3}', 'month' => '(?:[1-9]|1[0-2])'])
+        ->name('weekend-pairs.show');
+    Route::post('/weekend-pairs/{year}/{month}', [MonthlyWeekendPairController::class, 'confirm'])
+        ->where(['year' => '[1-9][0-9]{3}', 'month' => '(?:[1-9]|1[0-2])'])
+        ->name('weekend-pairs.confirm');
+
     Route::get('/weekend-groups/{year}/{month}', [WeekendGroupManagementController::class, 'show'])
         ->where(['year' => '[1-9][0-9]{3}', 'month' => '(?:[1-9]|1[0-2])'])
         ->name('weekend-groups.show');
@@ -55,6 +71,8 @@ Route::middleware('auth')->group(function (): void {
             Route::post('/', [RosterController::class, 'store'])->middleware(EnsureMonthlySetupPlanningPeriod::class)->name('rosters.store');
             Route::post('/generate', RosterAssignmentGenerationController::class)->name('rosters.generate');
             Route::post('/regenerate', RosterAssignmentRegenerationController::class)->name('rosters.regenerate');
+            Route::post('/recreate', [RosterController::class, 'recreate'])->middleware(EnsureMonthlySetupPlanningPeriod::class)->name('rosters.recreate');
+            Route::post('/recreate-updated-setup', [RosterController::class, 'recreateUpdatedSetup'])->middleware(EnsureMonthlySetupPlanningPeriod::class)->name('rosters.recreate-updated-setup');
             Route::post('/finalize', RosterFinalizationController::class)->name('rosters.finalize');
             Route::post('/reopen', RosterReopenController::class)->name('rosters.reopen');
             Route::get('/print', RosterPrintController::class)->name('rosters.print');
@@ -80,6 +98,7 @@ Route::middleware('auth')->group(function (): void {
         ->middleware(EnsureMonthlySetupPlanningPeriod::class)
         ->group(function (): void {
             Route::get('/', MonthlySetupController::class)->name('monthly-setup.show');
+            Route::post('/capacities', [MonthlyShiftCapacityController::class, 'store'])->name('monthly-setup.capacities.store');
             Route::post('/generate-roster', MonthlySetupRosterGenerationController::class)->name('monthly-setup.generate-roster');
             Route::post('/requests', [DoctorRequestController::class, 'store'])->middleware(EnsureMonthlySetupEditable::class)->name('doctor-requests.store');
             Route::put('/requests/{doctorRequest}', [DoctorRequestController::class, 'update'])->middleware(EnsureMonthlySetupEditable::class)->name('doctor-requests.update');

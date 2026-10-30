@@ -26,11 +26,13 @@ class RosterAssignmentGenerator
         private DoctorMonthlyParticipationService $participation,
         private WeekendGroupRotationService $weekendRotation,
         private PreviousNightBoundaryService $nightBoundary,
+        private WeekendPairCoordination $coordination,
+        private MandatoryWeekendAssignmentService $mandatoryWeekends,
     ) {}
 
-    public function generate(Roster $roster, User $admin): void
+    public function generate(Roster $roster, User $admin, bool $deferUndoUntilCommit = false): void
     {
-        $this->run($roster, $admin, false);
+        $this->run($roster, $admin, false, $deferUndoUntilCommit);
     }
 
     public function regenerate(Roster $roster, User $admin): void
@@ -38,16 +40,32 @@ class RosterAssignmentGenerator
         $this->run($roster, $admin, true);
     }
 
-    private function run(Roster $roster, User $admin, bool $replace): void
+    private function run(Roster $roster, User $admin, bool $replace, bool $deferUndoUntilCommit = false): void
     {
         DB::transaction(function () use ($roster, $admin, $replace): void {
+            $this->coordination->lock();
             $roster = Roster::query()->lockForUpdate()->findOrFail($roster->id);
             if ($roster->status !== RosterStatus::Draft) {
                 throw ValidationException::withMessages(['roster' => 'Assignments can only be generated for a Draft roster.']);
             }
 
-            $shifts = $roster->shifts()->with(['shiftType', 'assignments'])->get();
+            $shifts = $roster->shifts()->with(['shiftType', 'assignments', 'capacitySnapshot'])->get();
+            foreach ($shifts as $shift) {
+                try {
+                    $capacity = $shift->savedCapacity();
+                } catch (\LogicException $exception) {
+                    throw ValidationException::withMessages(['roster' => $exception->getMessage()]);
+                }
+                foreach ($shift->assignments as $assignment) {
+                    $limit = $assignment->role === RosterAssignmentRole::Main ? $capacity->main_count : $capacity->optional_count;
+                    if ($assignment->slot_number < 1 || $assignment->slot_number > $limit) {
+                        throw ValidationException::withMessages(['roster' => "Roster shift {$shift->id} has an assignment outside its saved {$assignment->role->value} capacity."]);
+                    }
+                }
+            }
             $previousNightDoctorIds = $this->nightBoundary->doctorIdsForMonth($roster->year, $roster->month);
+            $mandatoryPlan = $this->mandatoryWeekends->resolve($roster, $shifts);
+            $this->mandatoryWeekends->assertPopulation($roster, $shifts, $mandatoryPlan);
             $doctors = Doctor::query()->where('is_active', true)->get();
             $participationSnapshot = $this->participation->ensureRosterSnapshot($roster, $doctors);
             $excludedDoctorIds = DoctorMonthlyExclusion::query()
@@ -90,10 +108,12 @@ class RosterAssignmentGenerator
                             $doctor = $doctors->firstWhere('id', $assignment->doctor_id);
                             $doctorLabel = $doctor === null ? "doctor ID {$assignment->doctor_id}" : "{$doctor->name} ({$doctor->short_code})";
 
-                            throw ValidationException::withMessages(['roster' => "{$doctorLabel} already has an assignment but is excluded for this month. Correct the assignment or regenerate the roster before generating."]);
+                            throw ValidationException::withMessages(['roster' => "{$doctorLabel} already has an assignment on {$shift->shift_date->toDateString()} {$shift->shiftType->name} but is excluded for this month. Correct the assignment or regenerate the roster before generating."]);
                         }
                         if ($assignment->role === RosterAssignmentRole::Main && isset($restrictedShiftTypes[$assignment->doctor_id][$shift->shift_type_id])) {
-                            throw ValidationException::withMessages(['roster' => 'An existing assignment violates a Monthly Shift Restriction. Correct it or regenerate the roster before generating.']);
+                            $doctor = $doctors->firstWhere('id', $assignment->doctor_id);
+                            $doctorLabel = $doctor === null ? "Doctor ID {$assignment->doctor_id}" : "{$doctor->name} ({$doctor->short_code})";
+                            throw ValidationException::withMessages(['roster' => "{$doctorLabel}: {$shift->shift_date->toDateString()} {$shift->shiftType->name} existing Main assignment violates a Monthly Shift Restriction. Correct it or regenerate the roster before generating."]);
                         }
                     }
                 }
@@ -105,8 +125,24 @@ class RosterAssignmentGenerator
                 }
             }
 
+            $mandatoryAssignments = $this->mandatoryWeekends->reserve(
+                $roster, $shifts, $mandatoryPlan, $excludedDoctorIds, $dayOffRequests,
+                $previousHistory, $restrictedShiftTypes, $participationSnapshot, $previousNightDoctorIds,
+            );
             $this->ranker->initialize($shifts, $preferredRequests, $previousHistory, $firstDate, $restrictedShiftTypes, $monthlyWeekdayPreferences, $weekendRotation, $previousParticipation);
-            $assignments = $this->recovery->plan($shifts, $doctors, $excludedDoctorIds, $dayOffRequests, $previousHistory, $this->ranker, $restrictedShiftTypes, $participationSnapshot, $previousNightDoctorIds);
+            $ordinaryAssignments = $this->recovery->plan($shifts, $doctors, $excludedDoctorIds, $dayOffRequests, $previousHistory, $this->ranker, $restrictedShiftTypes, $participationSnapshot, $previousNightDoctorIds);
+            if ($mandatoryPlan !== []) {
+                foreach ($shifts as $shift) {
+                    $filled = $shift->assignments->where('role', RosterAssignmentRole::Main)->count()
+                        + collect($ordinaryAssignments)->where('roster_shift_id', $shift->id)->where('role', RosterAssignmentRole::Main)->count();
+                    if ($filled !== $shift->savedCapacity()->main_count) {
+                        throw ValidationException::withMessages([
+                            'roster' => "{$shift->shift_date->toDateString()} {$shift->shiftType->name}: unable to fill all saved Main positions around mandatory weekend commitments under the existing hard constraints. Review availability and fixed Draft assignments. Optional vacancies are permitted.",
+                        ]);
+                    }
+                }
+            }
+            $assignments = array_merge($mandatoryAssignments, $ordinaryAssignments);
 
             $lastNightDoctorIds = [];
             $shiftsById = $shifts->keyBy('id');
@@ -115,7 +151,7 @@ class RosterAssignmentGenerator
                     array_push($lastNightDoctorIds, ...$shift->assignments->pluck('doctor_id')->all());
                 }
             }
-            foreach ($assignments as $assignment) {
+            foreach ($ordinaryAssignments as $assignment) {
                 $shift = $shiftsById->get($assignment['roster_shift_id']);
                 if ($shift !== null && $shift->shift_date->isSameDay($lastDate) && $shift->shiftType->is_overnight) {
                     $lastNightDoctorIds[] = $assignment['doctor_id'];
@@ -134,9 +170,16 @@ class RosterAssignmentGenerator
             $roster->update(['last_generated_at' => now(), 'generated_history_fingerprint' => $historyFingerprint, 'updated_by' => $admin->id]);
         });
 
-        $undo = session()->get(RosterManualEditService::UNDO_KEY);
-        if (is_array($undo) && ($undo['roster_id'] ?? null) === $roster->id) {
-            session()->forget(RosterManualEditService::UNDO_KEY);
+        $clearUndo = function () use ($roster): void {
+            $undo = session()->get(RosterManualEditService::UNDO_KEY);
+            if (is_array($undo) && ($undo['roster_id'] ?? null) === $roster->id) {
+                session()->forget(RosterManualEditService::UNDO_KEY);
+            }
+        };
+        if ($deferUndoUntilCommit) {
+            DB::afterCommit($clearUndo);
+        } else {
+            $clearUndo();
         }
     }
 }

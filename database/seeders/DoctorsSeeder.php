@@ -3,7 +3,9 @@
 namespace Database\Seeders;
 
 use App\Models\Doctor;
+use App\Services\WeekendPairCoordination;
 use Illuminate\Database\Seeder;
+use Illuminate\Support\Facades\DB;
 
 class DoctorsSeeder extends Seeder
 {
@@ -27,11 +29,14 @@ class DoctorsSeeder extends Seeder
             ['short_code' => 'C', 'name' => 'Dr Umanga'],
         ];
 
-        foreach ($doctors as $doctor) {
-            Doctor::firstOrCreate(
-                ['short_code' => $doctor['short_code']],
-                ['name' => $doctor['name'], 'is_active' => $doctor['is_active'] ?? true],
-            );
-        }
+        DB::transaction(function () use ($doctors): void {
+            app(WeekendPairCoordination::class)->lock();
+            foreach ($doctors as $doctor) {
+                Doctor::firstOrCreate(
+                    ['short_code' => $doctor['short_code']],
+                    ['name' => $doctor['name'], 'is_active' => $doctor['is_active'] ?? true],
+                );
+            }
+        });
     }
 }

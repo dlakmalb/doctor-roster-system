@@ -8,17 +8,33 @@ use App\Models\DoctorMonthlyExclusion;
 use App\Models\DoctorMonthlyShiftRestriction;
 use App\Models\DoctorMonthlyWeekdayPreference;
 use App\Models\DoctorRequest;
+use App\Models\MonthlyShiftCapacity;
 use App\Models\Roster;
+use App\Models\RosterShift;
+use App\Models\RosterShiftCapacitySnapshot;
 use App\Models\ShiftType;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Collection;
+use Illuminate\Validation\ValidationException;
 
 class MonthlySetupService
 {
-    public function __construct(private RequestIntervalService $intervals) {}
+    private const CAPACITY_DISPLAY_ORDER = [
+        'weekday_day',
+        'weekday_evening',
+        'weekday_night',
+        'weekend_day',
+        'weekend_night',
+    ];
+
+    public function __construct(
+        private RequestIntervalService $intervals,
+        private MonthlyShiftCapacityService $capacities,
+        private WeekendDayCapacityService $weekendCapacities,
+    ) {}
 
     /** @return array<string, mixed> */
-    public function build(int $year, int $monthNumber): array
+    public function build(int $year, int $monthNumber, bool $isPlanningPeriod = true): array
     {
         $month = CarbonImmutable::create($year, $monthNumber, 1)->startOfMonth();
         $monthEnd = $month->endOfMonth();
@@ -50,14 +66,33 @@ class MonthlySetupService
             ->where('is_active', true)
             ->whereIn('code', ['weekday_day', 'weekday_evening', 'weekday_night', 'weekend_day', 'weekend_night'])
             ->orderBy('start_time')
+            ->orderBy('id')
             ->get(['id', 'code', 'name', 'start_time', 'end_time', 'main_count', 'optional_count', 'is_overnight']);
+        $roster = Roster::query()->where('year', $year)->where('month', $monthNumber)->first();
+        $rosterShiftsByDateAndType = $roster === null
+            ? collect()
+            : $roster->shifts()
+                ->with('capacitySnapshot')
+                ->get()
+                ->keyBy(fn (RosterShift $shift): string => $shift->shift_date->toDateString().'|'.$shift->shift_type_id);
+
+        $weekendDayCapacities = [];
+        $weekendCapacityError = null;
+        if ($roster === null && $shiftTypes->contains('code', 'weekend_day')) {
+            try {
+                $legacy = $this->capacities->resolve($year, $monthNumber, 'weekend_day');
+                $weekendDayCapacities = $this->weekendCapacities->forMonth($year, $monthNumber, $legacy['main_count']);
+            } catch (ValidationException $exception) {
+                $weekendCapacityError = implode(' ', array_merge(...array_values($exception->errors())));
+            }
+        }
 
         $dayOffRequests = $requests->where('request_type', DoctorRequestType::DayOff);
         $preferredWorkRequests = $requests->where('request_type', DoctorRequestType::PreferredWork);
         $warnings = collect()
             ->concat($this->lateWarnings($dayOffRequests, $month))
             ->concat($this->dayOffLimitWarnings($dayOffRequests))
-            ->concat($this->staffingRiskWarnings($month, $activeDoctors, $exclusions, $shiftTypes, $shiftRestrictions));
+            ->concat($this->staffingRiskWarnings($month, $activeDoctors, $exclusions, $shiftTypes, $shiftRestrictions, $roster, $rosterShiftsByDateAndType, $weekendDayCapacities, $weekendCapacityError));
         foreach ($requests->where('request_type', DoctorRequestType::PreferredWork) as $preferredRequest) {
             if ($shiftRestrictions->contains(fn (DoctorMonthlyShiftRestriction $restriction): bool => $restriction->doctor_id === $preferredRequest->doctor_id && $restriction->shift_type_id === $preferredRequest->shift_type_id)) {
                 $warnings->push(['type' => 'restricted_preferred_work', 'message' => "{$preferredRequest->doctor->name}'s Preferred Work request conflicts with a Monthly Shift Restriction."]);
@@ -113,7 +148,84 @@ class MonthlySetupService
             ->sortBy(fn (array $request): string => ($request['request_date'] ?? $month->toDateString()).'-'.$request['doctor']['name'])
             ->values();
 
-        $roster = Roster::query()->where('year', $year)->where('month', $monthNumber)->first();
+        $monthlyCapacities = MonthlyShiftCapacity::query()
+            ->where('year', $year)
+            ->where('month', $monthNumber)
+            ->get()
+            ->keyBy('shift_type_id');
+        $capacityShiftTypes = $roster === null
+            ? $shiftTypes
+            : ShiftType::query()
+                ->whereIn('code', ['weekday_day', 'weekday_evening', 'weekday_night', 'weekend_day', 'weekend_night'])
+                ->orderBy('start_time')
+                ->orderBy('id')
+                ->get(['id', 'code', 'name', 'start_time', 'end_time', 'main_count', 'optional_count', 'is_overnight']);
+        $rosterCapacities = $roster === null
+            ? collect()
+            : $rosterShiftsByDateAndType->groupBy('shift_type_id');
+        $capacityOrder = array_flip(self::CAPACITY_DISPLAY_ORDER);
+        $capacityConfiguration = $capacityShiftTypes->map(function (ShiftType $shiftType) use ($year, $monthNumber, $roster, $monthlyCapacities, $rosterCapacities): array {
+            if ($roster !== null) {
+                /** @var Collection<int, RosterShift> $shifts */
+                $shifts = $rosterCapacities->get($shiftType->id, collect());
+                $snapshots = $shifts->map(fn (RosterShift $shift) => $shift->capacitySnapshot);
+                $complete = $shifts->isNotEmpty() && $snapshots->every(fn (?RosterShiftCapacitySnapshot $snapshot): bool => $snapshot !== null);
+                $uniqueCapacities = $snapshots
+                    ->filter()
+                    ->map(fn (RosterShiftCapacitySnapshot $snapshot): string => $snapshot->main_count.':'.$snapshot->optional_count)
+                    ->unique();
+
+                $validWeekendVariation = $complete && $shiftType->code === 'weekend_day'
+                    && $snapshots->pluck('optional_count')->unique()->count() === 1
+                    && $shifts->groupBy(fn (RosterShift $shift): string => ($shift->shift_date->isSunday() ? $shift->shift_date->copy()->subDay() : $shift->shift_date)->toDateString())
+                        ->every(fn (Collection $weekend): bool => $weekend->map(fn (RosterShift $shift): int => $shift->savedCapacity()->main_count)->unique()->count() === 1);
+
+                if ($validWeekendVariation && $uniqueCapacities->count() > 1) {
+                    return [
+                        'shift_type' => ['id' => $shiftType->id, 'code' => $shiftType->code, 'name' => $shiftType->name],
+                        'main_count' => null,
+                        'optional_count' => $snapshots->first()->optional_count,
+                        'source' => 'roster_snapshot',
+                        'error' => null,
+                        'per_shift' => $shifts->map(fn (RosterShift $shift): array => [
+                            'date' => $shift->shift_date->toDateString(),
+                            'main_count' => $shift->savedCapacity()->main_count,
+                            'optional_count' => $shift->savedCapacity()->optional_count,
+                        ])->values()->all(),
+                    ];
+                }
+
+                if (! $complete || $uniqueCapacities->count() !== 1) {
+                    return [
+                        'shift_type' => ['id' => $shiftType->id, 'code' => $shiftType->code, 'name' => $shiftType->name],
+                        'main_count' => null,
+                        'optional_count' => null,
+                        'source' => 'inconsistent',
+                        'error' => 'Saved roster capacity snapshots are missing or inconsistent for this shift type.',
+                    ];
+                }
+
+                [$mainCount, $optionalCount] = explode(':', $uniqueCapacities->first());
+
+                return [
+                    'shift_type' => ['id' => $shiftType->id, 'code' => $shiftType->code, 'name' => $shiftType->name],
+                    'main_count' => (int) $mainCount,
+                    'optional_count' => (int) $optionalCount,
+                    'source' => 'roster_snapshot',
+                    'error' => null,
+                ];
+            }
+
+            $resolved = $this->capacities->resolve($year, $monthNumber, $shiftType);
+
+            return [
+                'shift_type' => ['id' => $shiftType->id, 'code' => $shiftType->code, 'name' => $shiftType->name],
+                'main_count' => $resolved['main_count'],
+                'optional_count' => $resolved['optional_count'],
+                'source' => $monthlyCapacities->has($shiftType->id) ? 'monthly_custom' : 'global_default',
+                'error' => null,
+            ];
+        })->sortBy(fn (array $capacity): int => $capacityOrder[$capacity['shift_type']['code']])->values();
 
         return [
             'month' => [
@@ -125,6 +237,7 @@ class MonthlySetupService
             'rosterAction' => match (true) {
                 $roster === null => 'generate',
                 $roster->status->value === 'final' => 'view_final',
+                ! $isPlanningPeriod => 'view_draft',
                 $roster->last_generated_at !== null => 'view_draft',
                 default => 'generate',
             },
@@ -141,6 +254,10 @@ class MonthlySetupService
                 'end_time' => $shiftType->end_time,
                 'is_overnight' => $shiftType->is_overnight,
             ])->values(),
+            'capacityConfiguration' => $capacityConfiguration,
+            'capacityEditable' => $roster === null,
+            'weekendDayCapacities' => array_values($weekendDayCapacities),
+            'weekendCapacityError' => $weekendCapacityError,
             'shiftRestrictions' => $shiftRestrictions->map(fn (DoctorMonthlyShiftRestriction $restriction): array => [
                 'id' => $restriction->id,
                 'doctor' => ['id' => $restriction->doctor->id, 'name' => $restriction->doctor->name, 'short_code' => $restriction->doctor->short_code, 'is_active' => $restriction->doctor->is_active],
@@ -229,6 +346,8 @@ class MonthlySetupService
      * @param  Collection<int, DoctorMonthlyExclusion>  $exclusions
      * @param  Collection<int, ShiftType>  $shiftTypes
      * @param  Collection<int, DoctorMonthlyShiftRestriction>  $shiftRestrictions
+     * @param  Collection<string, RosterShift>  $rosterShiftsByDateAndType
+     * @param  array<string, array{main_count: int}>  $weekendDayCapacities
      * @return Collection<int, array{type: string, message: string}>
      */
     private function staffingRiskWarnings(
@@ -237,6 +356,10 @@ class MonthlySetupService
         Collection $exclusions,
         Collection $shiftTypes,
         Collection $shiftRestrictions,
+        ?Roster $roster,
+        Collection $rosterShiftsByDateAndType,
+        array $weekendDayCapacities,
+        ?string $weekendCapacityError,
     ): Collection {
         $eligibleDoctorIds = $activeDoctors->pluck('id')->all();
         $excludedDoctorIds = $exclusions->pluck('doctor_id')->all();
@@ -271,7 +394,26 @@ class MonthlySetupService
                     ->all();
                 $unavailableDoctorIds = array_unique([...$unavailableDoctorIds, ...array_intersect($eligibleDoctorIds, $restrictedByDoctor->get($shiftType->id, []))]);
                 $availableCount = count($eligibleDoctorIds) - count($unavailableDoctorIds);
-                $requiredCount = $shiftType->main_count + $shiftType->optional_count;
+                if ($roster !== null) {
+                    $rosterShift = $rosterShiftsByDateAndType->get($date->toDateString().'|'.$shiftType->id);
+                    $snapshot = $rosterShift instanceof RosterShift ? $rosterShift->capacitySnapshot : null;
+
+                    if (! $snapshot instanceof RosterShiftCapacitySnapshot) {
+                        continue;
+                    }
+
+                    $requiredCount = $snapshot->main_count + $snapshot->optional_count;
+                } else {
+                    $capacity = $this->capacities->resolve($month->year, $month->month, $shiftType);
+                    if ($code === 'weekend_day') {
+                        if ($weekendCapacityError !== null) {
+                            continue;
+                        }
+                        $saturday = $date->isSunday() ? $date->subDay() : $date;
+                        $capacity['main_count'] = $weekendDayCapacities[$saturday->toDateString()]['main_count'];
+                    }
+                    $requiredCount = $capacity['main_count'] + $capacity['optional_count'];
+                }
 
                 if ($availableCount < $requiredCount) {
                     $warnings->push([

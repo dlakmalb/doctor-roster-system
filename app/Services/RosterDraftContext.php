@@ -19,6 +19,7 @@ use Carbon\CarbonImmutable;
 use Carbon\CarbonInterface;
 use Illuminate\Support\Collection;
 use Illuminate\Validation\ValidationException;
+use LogicException;
 
 class RosterDraftContext
 {
@@ -55,6 +56,9 @@ class RosterDraftContext
 
     public ?string $previousNightBoundaryError = null;
 
+    /** @var array<int, string> */
+    public array $capacitySnapshotErrors = [];
+
     /** @var Collection<int, true> */
     private Collection $finalDependentDoctorIds;
 
@@ -69,13 +73,21 @@ class RosterDraftContext
         $this->checkActiveStatus = $roster->status === RosterStatus::Draft;
         $this->previousNightDoctorIds = null;
         $this->previousNightBoundaryError = null;
+        $this->capacitySnapshotErrors = [];
         $this->finalDependentDoctorIds = $this->nightBoundary->doctorIdsInFinalDependentRoster($roster->year, $roster->month);
         try {
             $this->previousNightDoctorIds = $this->nightBoundary->doctorIdsForMonth($roster->year, $roster->month);
         } catch (ValidationException $exception) {
             $this->previousNightBoundaryError = $exception->errors()['roster'][0] ?? 'Previous-month Night assignment information is incomplete.';
         }
-        $this->shifts = $roster->shifts()->with(['shiftType', 'assignments'])->get()->keyBy('id');
+        $this->shifts = $roster->shifts()->with(['shiftType', 'assignments', 'capacitySnapshot'])->get()->keyBy('id');
+        foreach ($this->shifts as $shift) {
+            try {
+                $shift->savedCapacity();
+            } catch (LogicException $exception) {
+                $this->capacitySnapshotErrors[$shift->id] = $exception->getMessage();
+            }
+        }
         $this->doctors = Doctor::query()->get()->keyBy('id');
         try {
             $this->monthlyParticipation->assertRosterSnapshotIntegrity($roster);
@@ -172,7 +184,11 @@ class RosterDraftContext
         if ($shift === null) {
             abort(404);
         }
-        $capacity = $role === RosterAssignmentRole::Main ? $shift->shiftType->main_count : $shift->shiftType->optional_count;
+        try {
+            $capacity = $shift->savedCapacityForRole($role);
+        } catch (LogicException $exception) {
+            throw ValidationException::withMessages(['edit' => $exception->getMessage()]);
+        }
         if ($slot < 1 || $slot > $capacity) {
             abort(422, 'This slot does not exist for the shift.');
         }
@@ -452,7 +468,10 @@ class RosterDraftContext
             if ($shift->shift_type_id !== $request->shift_type_id || ! $shift->shift_date->isSameDay($request->request_date)) {
                 continue;
             }
-            for ($slot = 1; $slot <= $shift->shiftType->main_count; $slot++) {
+            if (isset($this->capacitySnapshotErrors[$shift->id])) {
+                continue;
+            }
+            for ($slot = 1; $slot <= $shift->savedCapacityForRole(RosterAssignmentRole::Main); $slot++) {
                 if (($state[$this->key($shift->id, RosterAssignmentRole::Main, $slot)] ?? null) === $request->doctor_id) {
                     return true;
                 }

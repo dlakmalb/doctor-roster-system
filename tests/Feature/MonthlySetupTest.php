@@ -47,6 +47,7 @@ it('renders monthly setup without creating a roster', function () {
         ->assertInertia(fn (Assert $page) => $page
             ->component('monthly-setup')
             ->where('month.label', 'October 2026')
+            ->where('weekendPairConfigurationUrl', route('weekend-pairs.show', ['year' => 2026, 'month' => 10]))
             ->where('rosterStatus', 'not_started')
             ->where('summary.active_doctors', 14)
             ->where('summary.total_requests', 0)

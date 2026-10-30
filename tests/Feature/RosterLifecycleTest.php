@@ -42,6 +42,7 @@ function lifecycleFixture(bool $filled = true): array
     $roster = Roster::create(['year' => 2026, 'month' => 10, 'status' => RosterStatus::Draft, 'created_by' => $admin->id, 'last_generated_at' => now()->subDay()]);
     app(DoctorMonthlyParticipationService::class)->snapshotRoster($roster, $doctors);
     $shift = RosterShift::create(['roster_id' => $roster->id, 'shift_date' => '2026-10-05', 'shift_type_id' => $type->id]);
+    $shift->capacitySnapshot()->create(['main_count' => 1, 'optional_count' => 1]);
     if ($filled) {
         RosterAssignment::create(['roster_shift_id' => $shift->id, 'doctor_id' => $doctors[0]->id, 'role' => RosterAssignmentRole::Main, 'slot_number' => 1]);
         RosterAssignment::create(['roster_shift_id' => $shift->id, 'doctor_id' => $doctors[1]->id, 'role' => RosterAssignmentRole::Optional, 'slot_number' => 1]);
@@ -63,6 +64,8 @@ it('keeps an older Final roster viewable after a new doctor is added', function 
     snapshotRosterParticipation($roster, $doctors, true);
     $previousShift = RosterShift::create(['roster_id' => $previous->id, 'shift_date' => '2026-08-05', 'shift_type_id' => $type->id]);
     $shift = RosterShift::create(['roster_id' => $roster->id, 'shift_date' => '2026-09-05', 'shift_type_id' => $type->id]);
+    $previousShift->capacitySnapshot()->create(['main_count' => 1, 'optional_count' => 1]);
+    $shift->capacitySnapshot()->create(['main_count' => 1, 'optional_count' => 1]);
     RosterAssignment::create(['roster_shift_id' => $previousShift->id, 'doctor_id' => $doctors[0]->id, 'role' => RosterAssignmentRole::Main, 'slot_number' => 1]);
     RosterAssignment::create(['roster_shift_id' => $shift->id, 'doctor_id' => $doctors[0]->id, 'role' => RosterAssignmentRole::Main, 'slot_number' => 1]);
     RosterAssignment::create(['roster_shift_id' => $shift->id, 'doctor_id' => $doctors[1]->id, 'role' => RosterAssignmentRole::Optional, 'slot_number' => 1]);
@@ -104,6 +107,7 @@ it('resets participation validation state when a draft context loads another ros
     $historicalFinal = Roster::create(['year' => 2026, 'month' => 9, 'status' => RosterStatus::Final, 'created_by' => $admin->id]);
     app(DoctorMonthlyParticipationService::class)->snapshotRoster($historicalFinal, $doctors->where('is_active', true));
     $shift = RosterShift::create(['roster_id' => $historicalFinal->id, 'shift_date' => '2026-09-05', 'shift_type_id' => $type->id]);
+    $shift->capacitySnapshot()->create(['main_count' => 1, 'optional_count' => 1]);
     $doctors[0]->update(['is_active' => false]);
     $context->load($historicalFinal);
 
@@ -201,6 +205,7 @@ it('reports multiple Main duties with the dates of the weekend period', function
 
     foreach ([['2026-11-27', $nightType], ['2026-11-29', $weekendType]] as [$date, $shiftType]) {
         $shift = RosterShift::create(['roster_id' => $roster->id, 'shift_date' => $date, 'shift_type_id' => $shiftType->id]);
+        $shift->capacitySnapshot()->create(['main_count' => $shiftType->main_count, 'optional_count' => $shiftType->optional_count]);
         RosterAssignment::create(['roster_shift_id' => $shift->id, 'doctor_id' => $doctor->id, 'role' => RosterAssignmentRole::Main, 'slot_number' => 1]);
     }
 

@@ -8,6 +8,7 @@ use App\Models\DoctorMonthlyShiftRestriction;
 use App\Models\DoctorMonthlyWeekdayPreference;
 use App\Models\DoctorRequest;
 use App\Models\Roster;
+use App\Services\WeekendPairCoordination;
 use Carbon\CarbonImmutable;
 use Closure;
 use Illuminate\Http\RedirectResponse;
@@ -17,6 +18,8 @@ use Symfony\Component\HttpFoundation\Response;
 
 class EnsureMonthlySetupEditable
 {
+    public function __construct(private WeekendPairCoordination $coordination) {}
+
     public function handle(Request $request, Closure $next): Response|RedirectResponse
     {
         $year = (int) $request->route('year');
@@ -24,6 +27,7 @@ class EnsureMonthlySetupEditable
         $this->ensureResourcesBelongToMonth($request, $year, $month);
 
         return DB::transaction(function () use ($next, $request, $year, $month): Response|RedirectResponse {
+            $this->coordination->lock();
             $roster = Roster::query()->where('year', $year)->where('month', $month)->lockForUpdate()->first();
             if ($roster?->status !== RosterStatus::Final) {
                 return $next($request);

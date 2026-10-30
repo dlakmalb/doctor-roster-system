@@ -18,9 +18,13 @@ use Carbon\CarbonImmutable;
 use Database\Seeders\DoctorsSeeder;
 use Database\Seeders\ShiftTypesSeeder;
 
-function smartRoster(?callable $prepareDoctors = null): array
+/** @param array<string, array{main_count: int, optional_count: int}> $capacityOverrides */
+function smartRoster(?callable $prepareDoctors = null, array $capacityOverrides = []): array
 {
     test()->seed([DoctorsSeeder::class, ShiftTypesSeeder::class]);
+    foreach ($capacityOverrides as $code => $capacity) {
+        ShiftType::query()->where('code', $code)->update($capacity);
+    }
     seedInitialHistoryForGeneration();
     $admin = User::factory()->create();
     if ($prepareDoctors !== null) {
@@ -606,11 +610,15 @@ it('preserves a Tuesday Main preference when another doctor can take Monday Nigh
     [$admin, $roster, $preferred, $other] = smartRoster(function (): void {
         $eligibleIds = Doctor::query()->orderBy('id')->take(2)->pluck('id');
         Doctor::query()->whereNotIn('id', $eligibleIds)->update(['is_active' => false]);
-    });
+    }, [
+        'weekday_day' => ['main_count' => 1, 'optional_count' => 0],
+        'weekday_night' => ['main_count' => 1, 'optional_count' => 0],
+    ]);
     $night = smartShift('2026-10-05', 'weekday_night');
     $day = smartShift('2026-10-06', 'weekday_day');
+    expect([$night->capacitySnapshot->main_count, $night->capacitySnapshot->optional_count])->toBe([1, 0]);
+    expect([$day->capacitySnapshot->main_count, $day->capacitySnapshot->optional_count])->toBe([1, 0]);
     $roster->shifts()->whereNotIn('id', [$night->id, $day->id])->delete();
-    ShiftType::query()->whereIn('id', [$night->shift_type_id, $day->shift_type_id])->update(['main_count' => 1, 'optional_count' => 0]);
     app(PreviousNightBoundaryService::class)->saveInitialSnapshot(
         2026,
         9,
@@ -628,12 +636,16 @@ it('preserves a same-date Day Main preference when Night is planned first across
     [$admin, $roster, $preferred, $other] = smartRoster(function (): void {
         $eligibleIds = Doctor::query()->orderBy('id')->take(3)->pluck('id');
         Doctor::query()->whereNotIn('id', $eligibleIds)->update(['is_active' => false]);
-    });
+    }, [
+        'weekday_day' => ['main_count' => 1, 'optional_count' => 0],
+        'weekday_night' => ['main_count' => 1, 'optional_count' => 0],
+    ]);
     $anotherNightCandidate = Doctor::query()->orderBy('id')->skip(2)->firstOrFail();
     $night = smartShift('2026-10-01', 'weekday_night');
     $day = smartShift('2026-10-01', 'weekday_day');
+    expect([$night->capacitySnapshot->main_count, $night->capacitySnapshot->optional_count])->toBe([1, 0]);
+    expect([$day->capacitySnapshot->main_count, $day->capacitySnapshot->optional_count])->toBe([1, 0]);
     $roster->shifts()->whereNotIn('id', [$night->id, $day->id])->delete();
-    ShiftType::query()->whereIn('id', [$night->shift_type_id, $day->shift_type_id])->update(['main_count' => 1, 'optional_count' => 0]);
     app(PreviousNightBoundaryService::class)->saveInitialSnapshot(
         2026,
         9,
@@ -662,11 +674,15 @@ it('preserves a same-date Day Main preference when Night is planned first across
 it('fills a required Night even when it consumes the only doctors future preference', function () {
     [$admin, $roster, $preferred] = smartRoster(function (): void {
         Doctor::query()->where('id', '!=', Doctor::query()->min('id'))->update(['is_active' => false]);
-    });
+    }, [
+        'weekday_day' => ['main_count' => 1, 'optional_count' => 0],
+        'weekday_night' => ['main_count' => 1, 'optional_count' => 0],
+    ]);
     $night = smartShift('2026-10-05', 'weekday_night');
     $day = smartShift('2026-10-06', 'weekday_day');
+    expect([$night->capacitySnapshot->main_count, $night->capacitySnapshot->optional_count])->toBe([1, 0]);
+    expect([$day->capacitySnapshot->main_count, $day->capacitySnapshot->optional_count])->toBe([1, 0]);
     $roster->shifts()->whereNotIn('id', [$night->id, $day->id])->delete();
-    ShiftType::query()->whereIn('id', [$night->shift_type_id, $day->shift_type_id])->update(['main_count' => 1, 'optional_count' => 0]);
     app(PreviousNightBoundaryService::class)->saveInitialSnapshot(
         2026,
         9,
@@ -712,9 +728,9 @@ it('generates a full smart roster with preferences and historical fairness input
     expect($assignments->where('role', RosterAssignmentRole::Main)->count())->toBeGreaterThan(0);
     expect($assignments->where('role', RosterAssignmentRole::Optional)->count())->toBeGreaterThan(0);
     foreach ($assignments->groupBy('roster_shift_id') as $shiftAssignments) {
-        $shiftType = $shiftAssignments->firstOrFail()->rosterShift->shiftType;
-        expect($shiftAssignments->where('role', RosterAssignmentRole::Main)->count())->toBeLessThanOrEqual($shiftType->main_count);
-        expect($shiftAssignments->where('role', RosterAssignmentRole::Optional)->count())->toBeLessThanOrEqual($shiftType->optional_count);
+        $capacity = $shiftAssignments->firstOrFail()->rosterShift->capacitySnapshot;
+        expect($shiftAssignments->where('role', RosterAssignmentRole::Main)->count())->toBeLessThanOrEqual($capacity->main_count);
+        expect($shiftAssignments->where('role', RosterAssignmentRole::Optional)->count())->toBeLessThanOrEqual($capacity->optional_count);
     }
     expect(DoctorMonthlyWorkload::query()->count())->toBe(Doctor::query()->count());
 });

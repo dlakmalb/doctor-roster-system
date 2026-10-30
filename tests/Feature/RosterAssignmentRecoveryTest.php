@@ -22,10 +22,22 @@ use Database\Seeders\ShiftTypesSeeder;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 
-/** @return array{User, list<Doctor>, list<RosterShift>} */
-function recoveryScenario(array $shifts, int $doctorCount = 2): array
+/**
+ * @param  list<array{0: string, 1: string}>  $shifts
+ * @param  array<string, array{main_count: int, optional_count: int}>  $capacityOverrides
+ * @return array{User, list<Doctor>, list<RosterShift>}
+ */
+function recoveryScenario(array $shifts, int $doctorCount = 2, array $capacityOverrides = []): array
 {
     test()->seed([DoctorsSeeder::class, ShiftTypesSeeder::class]);
+    $selectedCodes = array_values(array_unique(array_column($shifts, 1)));
+    $capacities = array_fill_keys($selectedCodes, ['main_count' => 1, 'optional_count' => 0]);
+    foreach ($capacityOverrides as $code => $capacity) {
+        $capacities[$code] = $capacity;
+    }
+    foreach ($capacities as $code => $capacity) {
+        ShiftType::query()->where('code', $code)->update($capacity);
+    }
     seedInitialHistoryForGeneration();
     $admin = User::factory()->create();
     $doctors = Doctor::query()->where('is_active', true)->orderBy('short_code')->take($doctorCount)->get()->all();
@@ -36,11 +48,9 @@ function recoveryScenario(array $shifts, int $doctorCount = 2): array
     foreach ($shifts as [$date, $code]) {
         $selected[] = RosterShift::query()->whereDate('shift_date', $date)
             ->whereHas('shiftType', fn ($query) => $query->where('code', $code))
-            ->with('shiftType')->firstOrFail();
+            ->with(['shiftType', 'capacitySnapshot'])->firstOrFail();
     }
     $roster->shifts()->whereNotIn('id', array_map(fn (RosterShift $shift): int => $shift->id, $selected))->delete();
-    ShiftType::query()->whereIn('id', array_unique(array_map(fn (RosterShift $shift): int => $shift->shift_type_id, $selected)))
-        ->update(['main_count' => 1, 'optional_count' => 0]);
     if (collect($selected)->contains(fn (RosterShift $shift): bool => $shift->shiftType->code === 'weekday_night')) {
         $boundaryDoctor = Doctor::query()
             ->whereNotIn('id', array_map(fn (Doctor $doctor): int => $doctor->id, $doctors))
@@ -101,7 +111,7 @@ it('performs recursive recovery without database queries after inputs are loaded
     ]);
     recoveryRequest($a, $day, DoctorRequestType::PreferredWork);
     recoveryRequest($b, $evening, DoctorRequestType::DayOff);
-    $shifts = RosterShift::query()->with(['shiftType', 'assignments'])->whereIn('id', [$day->id, $evening->id])->get();
+    $shifts = RosterShift::query()->with(['shiftType', 'assignments', 'capacitySnapshot'])->whereIn('id', [$day->id, $evening->id])->get();
     $requests = DoctorRequest::query()->with('shiftType')->get();
     $ranker = app(RosterCandidateRanker::class);
     $ranker->initialize($shifts, $requests->where('request_type', DoctorRequestType::PreferredWork), collect(), CarbonImmutable::parse('2026-10-01'));
@@ -129,7 +139,7 @@ it('prefers a one-blocker repair over a better ranked two-blocker repair', funct
     recoveryRequest($b, $targetNight, DoctorRequestType::PreferredWork);
     recoveryRequest($c, $targetNight, DoctorRequestType::DayOff);
     $requests = DoctorRequest::query()->with('shiftType')->get();
-    $shifts = RosterShift::query()->with(['shiftType', 'assignments'])->get();
+    $shifts = RosterShift::query()->with(['shiftType', 'assignments', 'capacitySnapshot'])->get();
     $ranker = app(RosterCandidateRanker::class);
     $ranker->initialize($shifts, $requests->where('request_type', DoctorRequestType::PreferredWork), collect(), CarbonImmutable::parse('2026-10-01'));
     $recovery = app(RosterAssignmentRecoveryService::class);
@@ -217,8 +227,7 @@ it('leaves an impossible slot empty and continues filling later slots', function
 it('keeps an infeasible Optional vacancy when fixed same-date Main assignments block every doctor', function () {
     [$admin, [$a, $b], [$day, $evening, $night]] = recoveryScenario([
         ['2026-10-06', 'weekday_day'], ['2026-10-06', 'weekday_evening'], ['2026-10-06', 'weekday_night'],
-    ]);
-    ShiftType::query()->whereKey($night->shift_type_id)->update(['main_count' => 0, 'optional_count' => 1]);
+    ], capacityOverrides: ['weekday_night' => ['main_count' => 0, 'optional_count' => 1]]);
     $fixedDay = $day->assignments()->create(['doctor_id' => $a->id, 'role' => RosterAssignmentRole::Main, 'slot_number' => 1]);
     $fixedEvening = $evening->assignments()->create(['doctor_id' => $b->id, 'role' => RosterAssignmentRole::Main, 'slot_number' => 1]);
 
@@ -244,8 +253,7 @@ it('keeps prior Draft assignments fixed during normal fill', function () {
 it('moves generated Main staffing to fill a required Optional slot', function () {
     [$admin, [$a, $b], [$day, $evening]] = recoveryScenario([
         ['2026-10-06', 'weekday_day'], ['2026-10-06', 'weekday_evening'],
-    ]);
-    ShiftType::query()->whereKey($evening->shift_type_id)->update(['main_count' => 0, 'optional_count' => 1]);
+    ], capacityOverrides: ['weekday_evening' => ['main_count' => 0, 'optional_count' => 1]]);
     recoveryRequest($a, $day, DoctorRequestType::PreferredWork);
     recoveryRequest($b, $evening, DoctorRequestType::DayOff);
     runRecovery($admin);
@@ -258,8 +266,7 @@ it('moves generated Main staffing to fill a required Optional slot', function ()
 it('preserves completed Main positions when an Optional candidate is directly available', function () {
     [$admin, [$a, $b, $c], [$day, $evening, $night]] = recoveryScenario([
         ['2026-10-06', 'weekday_day'], ['2026-10-06', 'weekday_evening'], ['2026-10-06', 'weekday_night'],
-    ], 3);
-    ShiftType::query()->whereKey($night->shift_type_id)->update(['main_count' => 0, 'optional_count' => 1]);
+    ], 3, ['weekday_night' => ['main_count' => 0, 'optional_count' => 1]]);
     recoveryRequest($a, $day, DoctorRequestType::PreferredWork);
     recoveryRequest($b, $evening, DoctorRequestType::PreferredWork);
     recoveryRequest($c, $day, DoctorRequestType::DayOff);
@@ -277,8 +284,10 @@ it('preserves completed Main positions when an Optional candidate is directly av
 });
 
 it('fills Main directly before moving a generated Optional doctor', function () {
-    [, [$a, $b], [$day]] = recoveryScenario([['2026-10-06', 'weekday_day']]);
-    ShiftType::query()->whereKey($day->shift_type_id)->update(['main_count' => 1, 'optional_count' => 1]);
+    [, [$a, $b], [$day]] = recoveryScenario(
+        [['2026-10-06', 'weekday_day']],
+        capacityOverrides: ['weekday_day' => ['main_count' => 1, 'optional_count' => 1]],
+    );
     $day->load('shiftType');
     recoveryRequest($a, $day, DoctorRequestType::PreferredWork);
 
@@ -306,8 +315,10 @@ it('fills Main directly before moving a generated Optional doctor', function () 
 });
 
 it('fills Optional directly before moving a generated Main doctor on the same shift', function () {
-    [, [$a, $b], [$day]] = recoveryScenario([['2026-10-06', 'weekday_day']]);
-    ShiftType::query()->whereKey($day->shift_type_id)->update(['main_count' => 1, 'optional_count' => 1]);
+    [, [$a, $b], [$day]] = recoveryScenario(
+        [['2026-10-06', 'weekday_day']],
+        capacityOverrides: ['weekday_day' => ['main_count' => 1, 'optional_count' => 1]],
+    );
     $day->load('shiftType');
     recoveryRequest($a, $day, DoctorRequestType::PreferredWork);
     DoctorMonthlyWorkload::query()->where('doctor_id', $b->id)->where('month', 9)->update(['optional_assignment_count' => 1]);
@@ -339,8 +350,7 @@ it('fills Optional directly before moving a generated Main doctor on the same sh
 it('keeps fixed Main staffing in place and permits Optional despite Day-Off', function () {
     [$admin, [$a, $b], [$day, $evening]] = recoveryScenario([
         ['2026-10-06', 'weekday_day'], ['2026-10-06', 'weekday_evening'],
-    ]);
-    ShiftType::query()->whereKey($evening->shift_type_id)->update(['main_count' => 0, 'optional_count' => 1]);
+    ], capacityOverrides: ['weekday_evening' => ['main_count' => 0, 'optional_count' => 1]]);
     $existing = $day->assignments()->create(['doctor_id' => $a->id, 'role' => RosterAssignmentRole::Main, 'slot_number' => 1]);
     recoveryRequest($b, $evening, DoctorRequestType::DayOff);
 
@@ -349,7 +359,7 @@ it('keeps fixed Main staffing in place and permits Optional despite Day-Off', fu
     expect($existing->fresh()->doctor_id)->toBe($a->id)
         ->and($evening->assignments()->where('role', RosterAssignmentRole::Optional)->firstOrFail()->doctor_id)->toBe($b->id);
 
-    $shifts = RosterShift::query()->with(['shiftType', 'assignments'])->whereIn('id', [$day->id, $evening->id])->get();
+    $shifts = RosterShift::query()->with(['shiftType', 'assignments', 'capacitySnapshot'])->whereIn('id', [$day->id, $evening->id])->get();
     $ranker = app(RosterCandidateRanker::class);
     $ranker->initialize($shifts, collect(), collect(), CarbonImmutable::parse('2026-10-01'));
     $recovery = app(RosterAssignmentRecoveryService::class);
@@ -362,8 +372,7 @@ it('keeps fixed Main staffing in place and permits Optional despite Day-Off', fu
 it('restores a failed cross-role branch before trying another Optional candidate', function () {
     [$admin, [$a, $b, $c], [$day, $evening, $night]] = recoveryScenario([
         ['2026-10-06', 'weekday_day'], ['2026-10-06', 'weekday_evening'], ['2026-10-06', 'weekday_night'],
-    ], 3);
-    ShiftType::query()->whereKey($night->shift_type_id)->update(['main_count' => 0, 'optional_count' => 1]);
+    ], 3, ['weekday_night' => ['main_count' => 0, 'optional_count' => 1]]);
     recoveryRequest($a, $day, DoctorRequestType::PreferredWork);
     recoveryRequest($b, $evening, DoctorRequestType::PreferredWork);
     recoveryRequest($b, $day, DoctorRequestType::DayOff);
@@ -375,7 +384,7 @@ it('restores a failed cross-role branch before trying another Optional candidate
     app()->instance(RosterCandidateRanker::class, $ranker);
     runRecovery($admin);
 
-    $finalShifts = RosterShift::query()->with(['shiftType', 'assignments'])->whereIn('id', [$day->id, $evening->id, $night->id])->get();
+    $finalShifts = RosterShift::query()->with(['shiftType', 'assignments', 'capacitySnapshot'])->whereIn('id', [$day->id, $evening->id, $night->id])->get();
     $requests = DoctorRequest::query()->with('shiftType')->get();
     $history = DoctorMonthlyWorkload::query()->where('year', 2026)->where('month', 9)->get()->keyBy('doctor_id');
     $expectedRanker = new RosterCandidateRanker(app(DoctorAssignmentEligibilityService::class));
@@ -402,8 +411,7 @@ it('restores a failed cross-role branch before trying another Optional candidate
 it('fills Optional when the only available doctor requested a Day-Off', function () {
     [$admin, [$a, $b], [$day, $evening]] = recoveryScenario([
         ['2026-10-06', 'weekday_day'], ['2026-10-06', 'weekday_evening'],
-    ]);
-    ShiftType::query()->whereKey($evening->shift_type_id)->update(['main_count' => 0, 'optional_count' => 1]);
+    ], capacityOverrides: ['weekday_evening' => ['main_count' => 0, 'optional_count' => 1]]);
     recoveryRequest($a, $day, DoctorRequestType::PreferredWork);
     recoveryRequest($b, $day, DoctorRequestType::DayOff);
     recoveryRequest($b, $evening, DoctorRequestType::DayOff);

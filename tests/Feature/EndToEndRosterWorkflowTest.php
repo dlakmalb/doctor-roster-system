@@ -182,9 +182,9 @@ it('fully staffs and finalizes a normal month with exactly the fourteen seeded d
     $roster = Roster::query()->where('year', 2026)->where('month', 10)->firstOrFail();
     $this->post(workflowUrl('rosters.generate', 2026, 10))->assertRedirect();
 
-    $shifts = $roster->shifts()->with(['shiftType', 'assignments'])->get();
-    $requiredMain = $shifts->sum(fn (RosterShift $shift): int => $shift->shiftType->main_count);
-    $requiredOptional = $shifts->sum(fn (RosterShift $shift): int => $shift->shiftType->optional_count);
+    $shifts = $roster->shifts()->with(['shiftType', 'assignments', 'capacitySnapshot'])->get();
+    $requiredMain = $shifts->sum(fn (RosterShift $shift): int => $shift->savedCapacity()->main_count);
+    $requiredOptional = $shifts->sum(fn (RosterShift $shift): int => $shift->savedCapacity()->optional_count);
     $assignments = $shifts->flatMap->assignments;
     $inactiveDoctor = $doctors->firstWhere('is_active', false);
     expect($assignments->where('role', RosterAssignmentRole::Main))->toHaveCount($requiredMain)
@@ -192,7 +192,7 @@ it('fully staffs and finalizes a normal month with exactly the fourteen seeded d
         ->and($assignments->contains('doctor_id', $inactiveDoctor->id))->toBeFalse();
     foreach ($shifts as $shift) {
         foreach ([RosterAssignmentRole::Main, RosterAssignmentRole::Optional] as $role) {
-            $capacity = $role === RosterAssignmentRole::Main ? $shift->shiftType->main_count : $shift->shiftType->optional_count;
+            $capacity = $shift->savedCapacityForRole($role);
             expect($shift->assignments->where('role', $role)->pluck('slot_number')->sort()->values()->all())
                 ->toBe($capacity === 0 ? [] : range(1, $capacity));
         }
@@ -279,6 +279,7 @@ it('carries a confirmed historical correction forward without changing a later d
     $october = Roster::create(['year' => 2026, 'month' => 10, 'status' => RosterStatus::Final, 'created_by' => $admin->id]);
     snapshotRosterParticipation($october, $doctors, true);
     $octoberShift = RosterShift::create(['roster_id' => $october->id, 'shift_date' => '2026-10-01', 'shift_type_id' => $dayType->id]);
+    $octoberShift->capacitySnapshot()->create(['main_count' => 3, 'optional_count' => 2]);
     $octoberAssignment = RosterAssignment::create([
         'roster_shift_id' => $octoberShift->id, 'doctor_id' => $doctors[0]->id,
         'role' => RosterAssignmentRole::Main, 'slot_number' => 1,
@@ -287,6 +288,7 @@ it('carries a confirmed historical correction forward without changing a later d
     $november = Roster::create(['year' => 2026, 'month' => 11, 'status' => RosterStatus::Final, 'created_by' => $admin->id]);
     snapshotRosterParticipation($november, $doctors, true);
     $novemberShift = RosterShift::create(['roster_id' => $november->id, 'shift_date' => '2026-11-02', 'shift_type_id' => $dayType->id]);
+    $novemberShift->capacitySnapshot()->create(['main_count' => 4, 'optional_count' => 2]);
     $novemberAssignment = RosterAssignment::create([
         'roster_shift_id' => $novemberShift->id, 'doctor_id' => $doctors[1]->id,
         'role' => RosterAssignmentRole::Main, 'slot_number' => 1,

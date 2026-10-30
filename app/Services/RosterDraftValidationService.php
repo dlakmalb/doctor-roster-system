@@ -31,14 +31,19 @@ class RosterDraftValidationService
             $items[] = $this->item('Error', 'previous_night_boundary_unknown', $this->context->previousNightBoundaryError, 'conflicts');
         }
         foreach ($this->context->shifts as $shift) {
+            if (isset($this->context->capacitySnapshotErrors[$shift->id])) {
+                $items[] = $this->item('Error', 'invalid_capacity_snapshot', $this->context->capacitySnapshotErrors[$shift->id], "shift-$shift->id");
+
+                continue;
+            }
             foreach ($shift->assignments as $assignment) {
-                $capacity = $assignment->role === RosterAssignmentRole::Main ? $shift->shiftType->main_count : $shift->shiftType->optional_count;
+                $capacity = $shift->savedCapacityForRole($assignment->role);
                 if ($assignment->slot_number < 1 || $assignment->slot_number > $capacity) {
                     $items[] = $this->item('Error', 'assignment_outside_capacity', "{$shift->shift_date->format('M j')} {$shift->shiftType->name} has an assignment outside its {$assignment->role->value} slot capacity.", "shift-$shift->id");
                 }
             }
             foreach (RosterAssignmentRole::cases() as $role) {
-                $capacity = $role === RosterAssignmentRole::Main ? $shift->shiftType->main_count : $shift->shiftType->optional_count;
+                $capacity = $shift->savedCapacityForRole($role);
                 for ($slot = 1; $slot <= $capacity; $slot++) {
                     $key = $this->context->key($shift->id, $role, $slot);
                     $target = "slot-{$shift->id}-{$role->value}-$slot";

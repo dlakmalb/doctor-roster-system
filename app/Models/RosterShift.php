@@ -2,11 +2,14 @@
 
 namespace App\Models;
 
+use App\Enums\RosterAssignmentRole;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Support\Carbon;
+use LogicException;
 
 /**
  * @property int $id
@@ -36,6 +39,37 @@ class RosterShift extends Model
     public function shiftType(): BelongsTo
     {
         return $this->belongsTo(ShiftType::class);
+    }
+
+    /** @return HasOne<RosterShiftCapacitySnapshot, $this> */
+    public function capacitySnapshot(): HasOne
+    {
+        return $this->hasOne(RosterShiftCapacitySnapshot::class);
+    }
+
+    public function savedCapacity(): RosterShiftCapacitySnapshot
+    {
+        $snapshot = $this->relationLoaded('capacitySnapshot')
+            ? $this->getRelation('capacitySnapshot')
+            : $this->capacitySnapshot()->first();
+
+        if (! $snapshot instanceof RosterShiftCapacitySnapshot) {
+            throw new LogicException("Roster shift {$this->id} is missing its capacity snapshot.");
+        }
+        if ((int) $snapshot->roster_shift_id !== (int) $this->id
+            || $snapshot->main_count < 0 || $snapshot->main_count > 255
+            || $snapshot->optional_count < 0 || $snapshot->optional_count > 255) {
+            throw new LogicException("Roster shift {$this->id} has an inconsistent capacity snapshot.");
+        }
+
+        return $snapshot;
+    }
+
+    public function savedCapacityForRole(RosterAssignmentRole $role): int
+    {
+        $capacity = $this->savedCapacity();
+
+        return $role === RosterAssignmentRole::Main ? $capacity->main_count : $capacity->optional_count;
     }
 
     /** @return HasMany<RosterAssignment, $this> */

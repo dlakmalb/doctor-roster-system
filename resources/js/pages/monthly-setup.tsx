@@ -17,6 +17,7 @@ import {
     store as storeRequest,
     update as updateRequest,
 } from '@/actions/App/Http/Controllers/DoctorRequestController';
+import { store as storeMonthlyCapacities } from '@/actions/App/Http/Controllers/MonthlyShiftCapacityController';
 import AppLayout from '@/components/app-layout';
 import { show as showRoster } from '@/routes/rosters';
 import { generateRoster as generateRosterFromSetup } from '@/routes/monthly-setup';
@@ -39,6 +40,23 @@ type ShiftType = {
     start_time: string;
     end_time: string;
     is_overnight: boolean;
+};
+
+type CapacityConfiguration = {
+    shift_type: Pick<ShiftType, 'id' | 'code' | 'name'>;
+    main_count: number | null;
+    optional_count: number | null;
+    source: 'global_default' | 'monthly_custom' | 'roster_snapshot' | 'inconsistent';
+    error: string | null;
+    per_shift?: Array<{ date: string; main_count: number; optional_count: number }>;
+};
+
+type CapacityPayload = {
+    capacities: Array<{
+        shift_type: string;
+        main_count: number | '';
+        optional_count: number | '';
+    }>;
 };
 
 type RequestKind = 'off_request' | 'preferred_work' | 'monthly_exclusion';
@@ -90,10 +108,22 @@ type WeekdayPreference = {
 
 type PageProps = {
     month: Month;
+    weekendPairConfigurationUrl: string;
     rosterStatus: 'not_started' | 'draft' | 'final';
     rosterAction: 'generate' | 'view_draft' | 'view_final';
+    isPlanningPeriod: boolean;
     doctors: Doctor[];
     shiftTypes: ShiftType[];
+    capacityConfiguration: CapacityConfiguration[];
+    capacityEditable: boolean;
+    weekendDayCapacities: Array<{
+        saturday: string;
+        group: string | null;
+        mode: number | null;
+        main_count: number;
+        source: 'legacy' | 'confirmed_pairs';
+    }>;
+    weekendCapacityError: string | null;
     shiftRestrictions: ShiftRestriction[];
     weekdayPreferences: WeekdayPreference[];
     requests: MonthlyRequest[];
@@ -167,6 +197,7 @@ function Chevron({ expanded }: { expanded: boolean }) {
 
 export default function MonthlySetup(props: PageProps) {
     const isFinal = props.rosterStatus === 'final';
+    const canEditMonthlySetup = props.isPlanningPeriod && !isFinal;
     const [requestKind, setRequestKind] = useState<RequestKind>('off_request');
     const [expandedSections, setExpandedSections] = useState({
         restrictions: true,
@@ -183,6 +214,16 @@ export default function MonthlySetup(props: PageProps) {
         note: '',
     });
     const rosterForm = useForm<{ roster?: string }>({});
+    const capacityForm = useForm<CapacityPayload>({
+        capacities: props.capacityConfiguration.map((capacity) => ({
+            shift_type: capacity.shift_type.code,
+            main_count: capacity.main_count ?? '',
+            optional_count: capacity.optional_count ?? '',
+        })),
+    });
+    const capacityMonthError = (
+        capacityForm.errors as typeof capacityForm.errors & { month?: string }
+    ).month;
     const restrictionForm = useForm<{
         doctor_id: number | '';
         shift_type_ids: number[];
@@ -215,20 +256,34 @@ export default function MonthlySetup(props: PageProps) {
             .filter((request) => request.kind === 'monthly_exclusion')
             .map((request) => request.doctor.id),
     );
+    const shiftTypesInDisplayOrder = useMemo(() => {
+        const displayOrder = new Map(
+            props.capacityConfiguration.map((capacity, index) => [
+                capacity.shift_type.code,
+                index,
+            ] as const),
+        );
+
+        return [...props.shiftTypes].sort(
+            (left, right) =>
+                (displayOrder.get(left.code) ?? Number.MAX_SAFE_INTEGER) -
+                (displayOrder.get(right.code) ?? Number.MAX_SAFE_INTEGER),
+        );
+    }, [props.capacityConfiguration, props.shiftTypes]);
     const validShiftTypes = useMemo(() => {
         if (!form.data.request_date) {
-            return props.shiftTypes;
+            return [];
         }
 
         const day = new Date(`${form.data.request_date}T00:00:00`).getDay();
         const weekend = day === 0 || day === 6;
 
-        return props.shiftTypes.filter((shiftType) =>
+        return shiftTypesInDisplayOrder.filter((shiftType) =>
             weekend
                 ? shiftType.code.startsWith('weekend_')
                 : shiftType.code.startsWith('weekday_'),
         );
-    }, [form.data.request_date, props.shiftTypes]);
+    }, [form.data.request_date, shiftTypesInDisplayOrder]);
 
     function toggleSection(section: keyof typeof expandedSections): void {
         setExpandedSections((current) => ({
@@ -530,6 +585,12 @@ export default function MonthlySetup(props: PageProps) {
                 >
                     Weekend Group Rotation
                 </Link>
+                <Link
+                    href={props.weekendPairConfigurationUrl}
+                    className="inline-flex min-h-11 items-center justify-center rounded-lg border border-slate-300 px-4 py-2.5 text-sm font-semibold text-slate-800"
+                >
+                    Weekend Pair Configuration
+                </Link>
             </div>
 
             {isFinal && (
@@ -547,11 +608,152 @@ export default function MonthlySetup(props: PageProps) {
                 </div>
             )}
 
+            {!props.isPlanningPeriod && (
+                <p className="mb-5 rounded-xl border border-slate-200 bg-slate-100 p-4 text-sm text-slate-700">
+                    This is a historical roster view. Monthly Setup values are read-only.
+                </p>
+            )}
+
             {rosterForm.errors.roster && (
                 <p className="mb-4 rounded-lg bg-red-50 p-3 text-sm text-red-700">
                     {rosterForm.errors.roster}
                 </p>
             )}
+
+            <section className="mb-5 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                    <div>
+                        <h2 className="text-xl font-semibold text-slate-950">
+                            Shift Capacity Configuration
+                        </h2>
+                        <p className="mt-1 text-sm text-slate-600">
+                            Set Main and Optional positions for each active shift type in {props.month.label}.
+                        </p>
+                    </div>
+                    {props.capacityEditable && (
+                        <button
+                            type="submit"
+                            form="monthly-shift-capacity-form"
+                            disabled={capacityForm.processing}
+                            className="inline-flex min-h-11 items-center justify-center rounded-lg bg-teal-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-teal-800 disabled:opacity-60"
+                        >
+                            {capacityForm.processing ? 'Saving…' : 'Save Capacities'}
+                        </button>
+                    )}
+                </div>
+                {!props.capacityEditable && (
+                    <p className="mt-3 rounded-lg bg-slate-100 p-3 text-sm text-slate-700">
+                        Capacities are read-only because a roster record exists. These values come from its saved capacity snapshots.
+                    </p>
+                )}
+                {capacityMonthError && (
+                    <p role="alert" className="mt-3 rounded-lg bg-red-50 p-3 text-sm text-red-700">
+                        {capacityMonthError}
+                    </p>
+                )}
+                {props.capacityEditable && (
+                    <div className="mt-3 space-y-1 text-sm text-slate-600">
+                        <p>Weekend Day Main is automatic for pair-enabled weekends: six doctors require 2 positions; seven require 3. The monthly Main setting below applies only to legacy weekends. Optional capacity remains editable.</p>
+                        {props.weekendCapacityError && <p role="alert" className="text-red-700">{props.weekendCapacityError}</p>}
+                        {props.weekendDayCapacities.map((weekend) => (
+                            <p key={weekend.saturday}>Weekend starting {weekend.saturday}: {weekend.source === 'legacy' ? 'Legacy monthly setting' : `Group ${weekend.group}, ${weekend.mode} doctors`} — Day Main {weekend.main_count} (Saturday and Sunday shifts in this month).</p>
+                        ))}
+                    </div>
+                )}
+                {capacityForm.errors.capacities && (
+                    <p role="alert" className="mt-3 rounded-lg bg-red-50 p-3 text-sm text-red-700">
+                        {capacityForm.errors.capacities}
+                    </p>
+                )}
+                {props.capacityEditable ? (
+                    <form
+                        id="monthly-shift-capacity-form"
+                        onSubmit={(event: FormEvent<HTMLFormElement>) => {
+                            event.preventDefault();
+                            capacityForm.post(storeMonthlyCapacities.url(props.month));
+                        }}
+                        className="mt-4 overflow-x-auto"
+                    >
+                        <table className="w-full min-w-[42rem] text-left text-sm">
+                            <thead className="border-b border-slate-200 text-xs tracking-wide text-slate-500 uppercase">
+                                <tr>
+                                    <th className="px-3 py-3 font-semibold">Shift Type</th>
+                                    <th className="px-3 py-3 font-semibold">Main Positions</th>
+                                    <th className="px-3 py-3 font-semibold">Optional Positions</th>
+                                    <th className="px-3 py-3 font-semibold">Configuration</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100">
+                                {props.capacityConfiguration.map((capacity, index) => (
+                                    <tr key={capacity.shift_type.code}>
+                                        <th scope="row" className="px-3 py-3 font-medium text-slate-900">{capacity.shift_type.name}</th>
+                                        {(['main_count', 'optional_count'] as const).map((field) => {
+                                            const errorKey: `capacities.${number}.main_count` | `capacities.${number}.optional_count` = `capacities.${index}.${field}`;
+                                            const error = capacityForm.errors[errorKey];
+
+                                            return (
+                                                <td key={field} className="px-3 py-3">
+                                                    <input
+                                                        aria-label={`${capacity.shift_type.name} ${field === 'main_count' ? (capacity.shift_type.code === 'weekend_day' ? 'Legacy Main only' : 'Main') : 'Optional'} positions`}
+                                                        aria-invalid={Boolean(error)}
+                                                        aria-describedby={error ? `${errorKey}-error` : undefined}
+                                                        type="number"
+                                                        min="0"
+                                                        max="255"
+                                                        step="1"
+                                                        value={capacityForm.data.capacities[index]?.[field] ?? ''}
+                                                        onChange={(event) => {
+                                                            const value = event.target.value;
+                                                            capacityForm.setData('capacities', capacityForm.data.capacities.map((item, itemIndex) => itemIndex === index ? { ...item, [field]: value === '' ? '' : Number(value) } : item));
+                                                        }}
+                                                        className={`${fieldClassName} mt-0 max-w-36`}
+                                                    />
+                                                    {capacity.shift_type.code === 'weekend_day' && field === 'main_count' && <p className="mt-1 text-xs text-slate-500">Legacy weekends only; pair-enabled Main is automatic.</p>}
+                                                    {error && <p id={`${errorKey}-error`} role="alert" className="mt-1 text-xs text-red-700">{error}</p>}
+                                                </td>
+                                            );
+                                        })}
+                                        <td className="px-3 py-3 text-slate-600">
+                                            {capacity.source === 'global_default' ? 'Inherited from global defaults' : 'Customized for this month'}
+                                        </td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </form>
+                ) : (
+                    <div className="mt-4 overflow-x-auto">
+                        <table className="w-full min-w-[42rem] text-left text-sm">
+                            <thead className="border-b border-slate-200 text-xs tracking-wide text-slate-500 uppercase">
+                                <tr>
+                                    <th className="px-3 py-3 font-semibold">Shift Type</th>
+                                    <th className="px-3 py-3 font-semibold">Main Positions</th>
+                                    <th className="px-3 py-3 font-semibold">Optional Positions</th>
+                                    <th className="px-3 py-3 font-semibold">Snapshot Status</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100">
+                                {props.capacityConfiguration.map((capacity) => (
+                                    <tr key={capacity.shift_type.code}>
+                                        <th scope="row" className="px-3 py-3 font-medium text-slate-900">{capacity.shift_type.name}</th>
+                                        <td className="px-3 py-3">
+                                            {capacity.per_shift ? capacity.per_shift.map((shift) => (
+                                                <p key={shift.date}>{shift.date}: Main {shift.main_count}, Optional {shift.optional_count}</p>
+                                            )) : (capacity.main_count ?? '-')}
+                                        </td>
+                                        <td className="px-3 py-3">{capacity.optional_count ?? '-'}</td>
+                                        <td className="px-3 py-3">
+                                            {capacity.source === 'inconsistent' ? (
+                                                <span className="text-red-700">{capacity.error}</span>
+                                            ) : 'Saved roster snapshots'}
+                                        </td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+                )}
+            </section>
 
             <section className="mb-5 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
                 <h2 className="text-xl font-semibold text-slate-950">
@@ -604,7 +806,7 @@ export default function MonthlySetup(props: PageProps) {
                     }}
                 >
                     <div className="min-h-0 overflow-hidden">
-                        {!isFinal && (
+                        {canEditMonthlySetup && (
                             <form
                                 onSubmit={saveRestrictions}
                                 className="mt-4 grid gap-4 rounded-xl bg-slate-50 p-4 sm:grid-cols-2"
@@ -664,7 +866,7 @@ export default function MonthlySetup(props: PageProps) {
                                         Prohibited shift types
                                     </legend>
                                     <div className="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                                        {props.shiftTypes.map((shiftType) => (
+                                        {shiftTypesInDisplayOrder.map((shiftType) => (
                                             <label
                                                 key={shiftType.id}
                                                 className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white p-3 text-sm"
@@ -769,7 +971,7 @@ export default function MonthlySetup(props: PageProps) {
                                                         .join(', ')}
                                                 </p>
                                             </div>
-                                            {!isFinal && (
+                                            {canEditMonthlySetup && (
                                                 <div className="flex flex-wrap gap-2">
                                                     {doctor.is_active !==
                                                         false && (
@@ -867,7 +1069,7 @@ export default function MonthlySetup(props: PageProps) {
                     }}
                 >
                     <div className="min-h-0 overflow-hidden">
-                        {!isFinal && (
+                        {canEditMonthlySetup && (
                             <form
                                 onSubmit={submitWeekdayPreference}
                                 className="mt-4 grid gap-4 rounded-xl bg-slate-50 p-4 sm:grid-cols-2"
@@ -937,7 +1139,7 @@ export default function MonthlySetup(props: PageProps) {
                                         <option value="">
                                             Select shift type
                                         </option>
-                                        {props.shiftTypes.map((shiftType) => (
+                                        {shiftTypesInDisplayOrder.map((shiftType) => (
                                             <option
                                                 key={shiftType.id}
                                                 value={shiftType.id}
@@ -1121,7 +1323,7 @@ export default function MonthlySetup(props: PageProps) {
                                                 </span>
                                             )}
                                         </p>
-                                        {!isFinal && (
+                                        {canEditMonthlySetup && (
                                             <div className="flex gap-2">
                                                 {preference.doctor.is_active !==
                                                     false && (
@@ -1222,7 +1424,7 @@ export default function MonthlySetup(props: PageProps) {
                             ))}
                         </div>
 
-                        {!isFinal && (
+                        {canEditMonthlySetup && (
                             <form
                                 onSubmit={submit}
                                 className="mt-5 grid gap-4 rounded-xl bg-slate-50 p-4 sm:grid-cols-2 xl:grid-cols-6"
@@ -1284,6 +1486,39 @@ export default function MonthlySetup(props: PageProps) {
                                     )}
                                 </label>
 
+                                <label className="block">
+                                    <span className="text-sm font-medium text-slate-800">
+                                        Request Type
+                                    </span>
+                                    <select
+                                        value={requestKind}
+                                        onChange={(event) =>
+                                            changeRequestKind(
+                                                event.target
+                                                    .value as RequestKind,
+                                            )
+                                        }
+                                        className={fieldClassName}
+                                    >
+                                        {(
+                                            Object.keys(
+                                                requestTypeLabels,
+                                            ) as RequestKind[]
+                                        ).map((kind) => (
+                                            <option
+                                                key={kind}
+                                                value={kind}
+                                                disabled={
+                                                    editingId !== null &&
+                                                    kind === 'monthly_exclusion'
+                                                }
+                                            >
+                                                {requestTypeLabels[kind]}
+                                            </option>
+                                        ))}
+                                    </select>
+                                </label>
+
                                 {requestKind !== 'monthly_exclusion' && (
                                     <>
                                         <label className="block">
@@ -1318,6 +1553,7 @@ export default function MonthlySetup(props: PageProps) {
                                             </span>
                                             <select
                                                 value={form.data.shift_type_id}
+                                                disabled={!form.data.request_date}
                                                 onChange={(event) =>
                                                     form.setData(
                                                         'shift_type_id',
@@ -1336,10 +1572,12 @@ export default function MonthlySetup(props: PageProps) {
                                                 }
                                             >
                                                 <option value="">
-                                                    {requestKind ===
-                                                    'off_request'
-                                                        ? 'Full Day'
-                                                        : 'Select shift'}
+                                                    {!form.data.request_date
+                                                        ? 'Select date first'
+                                                        : requestKind ===
+                                                            'off_request'
+                                                          ? 'Full Day'
+                                                          : 'Select shift'}
                                                 </option>
                                                 {validShiftTypes.map(
                                                     (shiftType) => (
@@ -1362,39 +1600,6 @@ export default function MonthlySetup(props: PageProps) {
                                         </label>
                                     </>
                                 )}
-
-                                <label className="block">
-                                    <span className="text-sm font-medium text-slate-800">
-                                        Request Type
-                                    </span>
-                                    <select
-                                        value={requestKind}
-                                        onChange={(event) =>
-                                            changeRequestKind(
-                                                event.target
-                                                    .value as RequestKind,
-                                            )
-                                        }
-                                        className={fieldClassName}
-                                    >
-                                        {(
-                                            Object.keys(
-                                                requestTypeLabels,
-                                            ) as RequestKind[]
-                                        ).map((kind) => (
-                                            <option
-                                                key={kind}
-                                                value={kind}
-                                                disabled={
-                                                    editingId !== null &&
-                                                    kind === 'monthly_exclusion'
-                                                }
-                                            >
-                                                {requestTypeLabels[kind]}
-                                            </option>
-                                        ))}
-                                    </select>
-                                </label>
 
                                 <label className="block xl:col-span-2">
                                     <span className="text-sm font-medium text-slate-800">
@@ -1520,7 +1725,7 @@ export default function MonthlySetup(props: PageProps) {
                                             </p>
                                         )}
                                     </div>
-                                    {!isFinal && (
+                                    {canEditMonthlySetup && (
                                         <div className="flex shrink-0 gap-2">
                                             {request.kind !==
                                                 'monthly_exclusion' && (

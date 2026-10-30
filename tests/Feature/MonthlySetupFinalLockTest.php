@@ -76,6 +76,7 @@ function monthlySetupFinalFixture(bool $final = true, bool $actualWorkStarted = 
         'shift_date' => '2026-11-02',
         'shift_type_id' => $weekdayDay->id,
     ]);
+    $shift->capacitySnapshot()->create(['main_count' => 2, 'optional_count' => 0]);
     RosterAssignment::create([
         'roster_shift_id' => $shift->id,
         'doctor_id' => $activeDoctors[0]->id,
@@ -197,7 +198,9 @@ it('restores Monthly Setup editing after Reopen and locks it again after re-fina
     $this->post(monthlySetupFinalUrl('monthly-exclusions.store'), ['doctor_id' => $doctors[5]->id, 'note' => 'Added after reopen'])
         ->assertRedirectToRoute('monthly-setup.show', ['year' => 2026, 'month' => 11]);
 
-    $this->postJson(monthlySetupFinalUrl('rosters.finalize'))->assertJsonPath('status', 'finalized');
+    $this->postJson(monthlySetupFinalUrl('rosters.finalize'))
+        ->assertJsonPath('status', 'finalized')
+        ->assertJsonCount(0, 'errors');
     expect($roster->fresh()->status)->toBe(RosterStatus::Final);
     $this->post(monthlySetupFinalUrl('doctor-requests.store'), monthlySetupFinalRequestPayload($doctors[6]->id, '2026-11-22'))
         ->assertSessionHas('status', 'Monthly Setup is locked because the November 2026 roster is Final. Reopen the roster before making changes.');

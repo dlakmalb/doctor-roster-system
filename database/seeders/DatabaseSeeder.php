@@ -18,5 +18,14 @@ class DatabaseSeeder extends Seeder
             DoctorsSeeder::class,
             ShiftTypesSeeder::class,
         ]);
+
+        if (app()->environment(['local', 'testing'])) {
+            $this->call([
+                AdminUserSeeder::class,
+                September2026HistoricalBaselineSeeder::class,
+                October2026DoctorRequestsSeeder::class,
+                October2026WeekendRotationSeeder::class,
+            ]);
+        }
     }
 }

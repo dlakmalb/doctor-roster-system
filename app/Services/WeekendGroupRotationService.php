@@ -26,9 +26,15 @@ class WeekendGroupRotationService
     }
 
     /** @return array{configured: bool, error: string|null, assignments: array<int, Collection<int, DoctorWeekendGroupMembership>>, expected: array<string, string>} */
-    public function forCalendarMonth(int $year, int $month, Collection $doctors): array
+    public function forCalendarMonth(int $year, int $month, Collection $doctors, bool $includePreviousMonthWeekend = true): array
     {
-        return $this->resolve($year, $month, $doctors, $this->weekendStartsForMonth($year, $month));
+        $dates = $this->weekendStartsForMonth($year, $month);
+        if (! $includePreviousMonthWeekend) {
+            $start = CarbonImmutable::create($year, $month, 1)->startOfDay();
+            $dates = $dates->filter(fn (CarbonImmutable $date): bool => $date->gte($start))->values();
+        }
+
+        return $this->resolve($year, $month, $doctors, $dates);
     }
 
     /** @return Collection<int, CarbonImmutable> */

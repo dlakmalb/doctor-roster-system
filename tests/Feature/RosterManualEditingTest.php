@@ -128,6 +128,8 @@ it('allows a manual assignment in Weekend Day Optional slot seven and rejects sl
     [$admin, , , , $doctors] = editingFixture();
     $shift = RosterShift::query()->whereDate('shift_date', '2026-10-03')
         ->whereHas('shiftType', fn ($query) => $query->where('code', 'weekend_day'))->firstOrFail();
+    $shift->shiftType->update(['main_count' => 1, 'optional_count' => 0]);
+
     $this->actingAs($admin)->postJson(editingUrl('edit'), [
         'operation' => 'replace', ...editPayload($shift, 'optional', 7),
         'doctor_id' => $doctors[0]->id, 'confirm_soft_override' => true,
@@ -405,6 +407,9 @@ it('blocks previous-Night assignments across dates and preserves physical overla
     $night = RosterShift::create(['roster_id' => $roster->id, 'shift_date' => '2026-10-08', 'shift_type_id' => $nightType->id]);
     $overlap = RosterShift::create(['roster_id' => $roster->id, 'shift_date' => '2026-10-09', 'shift_type_id' => $overlapType->id]);
     $adjacent = RosterShift::create(['roster_id' => $roster->id, 'shift_date' => '2026-10-09', 'shift_type_id' => $adjacentType->id]);
+    $night->capacitySnapshot()->create(['main_count' => 1, 'optional_count' => 0]);
+    $overlap->capacitySnapshot()->create(['main_count' => 0, 'optional_count' => 1]);
+    $adjacent->capacitySnapshot()->create(['main_count' => 0, 'optional_count' => 1]);
     RosterAssignment::create(['roster_shift_id' => $overlap->id, 'doctor_id' => $doctors[0]->id, 'role' => RosterAssignmentRole::Optional, 'slot_number' => 1]);
     RosterAssignment::create(['roster_shift_id' => $adjacent->id, 'doctor_id' => $doctors[1]->id, 'role' => RosterAssignmentRole::Optional, 'slot_number' => 1]);
 

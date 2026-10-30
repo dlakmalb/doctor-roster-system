@@ -17,19 +17,24 @@ class RosterStructureService
 
     private const WEEKEND_CODES = ['weekend_day', 'weekend_night'];
 
-    public function __construct(private DoctorMonthlyParticipationService $participation) {}
+    public function __construct(
+        private DoctorMonthlyParticipationService $participation,
+        private MonthlyShiftCapacityService $capacities,
+        private WeekendPairCoordination $coordination,
+        private WeekendDayCapacityService $weekendCapacities,
+    ) {}
 
     public function create(int $year, int $month, User $creator): Roster
     {
         return DB::transaction(function () use ($year, $month, $creator): Roster {
+            $this->coordination->lock();
+            $requiredCodes = [...self::WEEKDAY_CODES, ...self::WEEKEND_CODES];
+            $shiftTypes = ShiftType::query()->whereIn('code', $requiredCodes)->orderBy('id')->lockForUpdate()->get()->keyBy('code');
             $existing = Roster::query()->where('year', $year)->where('month', $month)->first();
 
             if ($existing !== null) {
                 return $existing;
             }
-
-            $requiredCodes = [...self::WEEKDAY_CODES, ...self::WEEKEND_CODES];
-            $shiftTypes = ShiftType::query()->whereIn('code', $requiredCodes)->get()->keyBy('code');
             $unavailableCodes = collect($requiredCodes)
                 ->filter(function (string $code) use ($shiftTypes): bool {
                     $shiftType = $shiftTypes->get($code);
@@ -40,6 +45,18 @@ class RosterStructureService
             if ($unavailableCodes->isNotEmpty()) {
                 throw ValidationException::withMessages([
                     'roster' => 'Cannot create the roster. Required shift types are missing or inactive: '.$unavailableCodes->implode(', ').'.',
+                ]);
+            }
+
+            $monthlyCapacities = [];
+            foreach ($shiftTypes as $code => $shiftType) {
+                $monthlyCapacities[$code] = $this->capacities->resolve($year, $month, $shiftType);
+            }
+            $weekendCapacities = $this->weekendCapacities->forMonth($year, $month, $monthlyCapacities['weekend_day']['main_count']);
+            if ($monthlyCapacities['weekend_night']['main_count'] !== 2
+                && collect($weekendCapacities)->contains(fn (array $weekend): bool => $weekend['source'] === 'confirmed_pairs')) {
+                throw ValidationException::withMessages([
+                    'weekend_capacity' => 'Pair-enabled weekends require Weekend Night Main capacity of 2. Review the monthly shift capacity before creating the roster; saved snapshots cannot be overwritten.',
                 ]);
             }
 
@@ -65,9 +82,18 @@ class RosterStructureService
                 foreach ($codes as $code) {
                     /** @var ShiftType $shiftType */
                     $shiftType = $shiftTypes->get($code);
-                    $roster->shifts()->create([
+                    $shift = $roster->shifts()->create([
                         'shift_type_id' => $shiftType->id,
                         'shift_date' => $date->toDateString(),
+                    ]);
+                    $capacity = $monthlyCapacities[$code];
+                    if ($code === 'weekend_day') {
+                        $saturday = $date->isSunday() ? $date->subDay() : $date;
+                        $capacity['main_count'] = $weekendCapacities[$saturday->toDateString()]['main_count'];
+                    }
+                    $shift->capacitySnapshot()->create([
+                        'main_count' => $capacity['main_count'],
+                        'optional_count' => $capacity['optional_count'],
                     ]);
                 }
 
