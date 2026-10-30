@@ -28,7 +28,6 @@
         .main { color: #000; font-weight: bold; }
         .optional { color: #c00000; }
         .slot { display: inline-block; min-width: 12pt; white-space: nowrap; margin-right: 10pt; }
-        .weekend-time { display: block; font-size: 7pt; margin-bottom: 1pt; }
         h2 { font-size: 12pt; margin: 6pt 0 3pt; }
         /* Fill the roster's width without letting legend text widen the shared container. */
         .reference { width: 0; min-width: 100%; font-size: 10pt; }

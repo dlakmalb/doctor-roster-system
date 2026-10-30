@@ -44,8 +44,9 @@ class RosterDocumentService
             $night = $this->cell($shifts->get($date->isWeekend() ? 'weekend_night' : 'weekday_night'));
 
             if ($date->isWeekend()) {
-                $evening = ['main' => [], 'optional' => array_slice($day['optional'], 3)];
-                $day['optional'] = array_slice($day['optional'], 0, 3);
+                $firstColumnOptionalCount = intdiv(count($day['optional']) + 1, 2);
+                $evening = ['main' => [], 'optional' => array_slice($day['optional'], $firstColumnOptionalCount)];
+                $day['optional'] = array_slice($day['optional'], 0, $firstColumnOptionalCount);
             }
 
             $rows[] = [

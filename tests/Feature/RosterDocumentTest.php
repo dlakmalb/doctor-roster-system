@@ -45,7 +45,7 @@ it('renders a compact Draft print preview with time headers, planned doctors and
         ->assertSee('Doctor code reference')
         ->assertDontSee('Main: black')->assertDontSee('Optional: red')->assertDontSee('unfilled position')
         ->assertDontSee('class="schedules"', false)->assertDontSee('(+1 day)')
-        ->assertDontSee('Weekend Day continues')->assertDontSee('Weekend Night:')
+        ->assertDontSee('Weekend Day continues')->assertDontSee('Weekend Day:')->assertDontSee('Weekend Night:')
         ->assertSee('window.print()');
 
     $dom = new DOMDocument;
@@ -232,21 +232,24 @@ it('renders all 31 calendar dates and generates a monthly PDF', function () {
     expect(substr($pdf->getContent(), 0, 4))->toBe('%PDF');
 });
 
-it('continues Weekend Day Optional slots in saved order without an Evening assignment', function (string $date) {
+it('distributes seven Weekend Day Optional slots four then three for two or three Main capacity', function (string $date, int $mainCapacity) {
     [$admin, $main, , , $roster, $nightShift] = documentFixture();
     $dayType = ShiftType::create([
         'code' => 'weekend_day', 'name' => 'Weekend Day', 'start_time' => '08:00:00', 'end_time' => '16:00:00',
-        'duration_minutes' => 480, 'main_count' => 3, 'optional_count' => 7, 'is_overnight' => false, 'is_active' => true,
+        'duration_minutes' => 480, 'main_count' => $mainCapacity, 'optional_count' => 7, 'is_overnight' => false, 'is_active' => true,
     ]);
     $shift = RosterShift::create(['roster_id' => $roster->id, 'shift_date' => $date, 'shift_type_id' => $dayType->id]);
-    $shift->capacitySnapshot()->create(['main_count' => 3, 'optional_count' => 7]);
+    $shift->capacitySnapshot()->create(['main_count' => $mainCapacity, 'optional_count' => 7]);
     RosterAssignment::create(['roster_shift_id' => $shift->id, 'doctor_id' => $main->id, 'role' => RosterAssignmentRole::Main, 'slot_number' => 1]);
-    $secondMain = Doctor::create(['name' => 'Second Main', 'short_code' => 'M2', 'is_active' => true]);
-    $thirdMain = Doctor::create(['name' => 'Third Main', 'short_code' => 'M3', 'is_active' => true]);
-    RosterAssignment::create(['roster_shift_id' => $shift->id, 'doctor_id' => $secondMain->id, 'role' => RosterAssignmentRole::Main, 'slot_number' => 2]);
-    RosterAssignment::create(['roster_shift_id' => $shift->id, 'doctor_id' => $thirdMain->id, 'role' => RosterAssignmentRole::Main, 'slot_number' => 3]);
+    for ($slot = 2; $slot <= $mainCapacity; $slot++) {
+        $doctor = Doctor::create(['name' => 'Weekend Main '.$slot, 'short_code' => 'M'.$slot, 'is_active' => true]);
+        RosterAssignment::create(['roster_shift_id' => $shift->id, 'doctor_id' => $doctor->id, 'role' => RosterAssignmentRole::Main, 'slot_number' => $slot]);
+    }
     $nightShift->update(['shift_date' => $date]);
-    foreach ([7, 4, 3, 2, 1] as $slot) {
+    DB::table('roster_shift_capacity_snapshots')->where('roster_shift_id', $nightShift->id)->update(['main_count' => 2, 'optional_count' => 0]);
+    $nightDoctor = Doctor::create(['name' => 'Weekend Night Two', 'short_code' => 'N2', 'is_active' => true]);
+    RosterAssignment::create(['roster_shift_id' => $nightShift->id, 'doctor_id' => $nightDoctor->id, 'role' => RosterAssignmentRole::Main, 'slot_number' => 2]);
+    foreach ([7, 5, 3, 2, 1] as $slot) {
         $doctor = Doctor::create(['name' => 'Optional '.$slot, 'short_code' => 'O'.$slot, 'is_active' => true]);
         RosterAssignment::create(['roster_shift_id' => $shift->id, 'doctor_id' => $doctor->id, 'role' => RosterAssignmentRole::Optional, 'slot_number' => $slot]);
     }
@@ -258,20 +261,39 @@ it('continues Weekend Day Optional slots in saved order without an Evening assig
     $cells = $xpath->query('//tr[@data-date="'.$date.'"]/td');
 
     expect($cells->length)->toBe(5);
+    expect($xpath->query('//tr[@data-date="'.$date.'"]/td[@colspan="2"]')->length)->toBe(0);
     $dayCodes = $xpath->query('//tr[@data-date="'.$date.'"]/td[3]/span[contains(@class,"slot")]');
     expect(array_map(fn (DOMNode $node): string => $node->textContent, iterator_to_array($dayCodes)))
-        ->toBe(['P', 'M2', 'M3', 'O1', 'O2', 'O3']);
-    $continuationCodes = $xpath->query('//tr[@data-date="'.$date.'"]/td[4]/span[contains(@class,"slot")]');
-    expect(array_map(fn (DOMNode $node): string => $node->textContent, iterator_to_array($continuationCodes)))
-        ->toBe(['O4', '-', '-', 'O7']);
+        ->toBe(['P', ...array_map(fn (int $slot): string => 'M'.$slot, range(2, $mainCapacity)), 'O1', 'O2', 'O3', '-']);
+    $remainingOptionalCodes = $xpath->query('//tr[@data-date="'.$date.'"]/td[4]/span[contains(@class,"slot")]');
+    expect(array_map(fn (DOMNode $node): string => $node->textContent, iterator_to_array($remainingOptionalCodes)))
+        ->toBe(['O5', '-', 'O7']);
     expect($xpath->query('//tr[@data-date="'.$date.'" and @class="weekend"]')->length)->toBe(1);
-    expect($xpath->query('//tr[@data-date="'.$date.'"]/td[4]/span[contains(@class,"main")]')->length)->toBe(0);
-    expect($xpath->query('//tr[@data-date="'.$date.'"]/td[3]/span[@class="weekend-time"]')->length)->toBe(0);
-    expect($xpath->query('//tr[@data-date="'.$date.'"]/td[3]/span[contains(@class,"slot")]')->length)->toBeGreaterThan(0);
-    expect($xpath->query('//tr[@data-date="'.$date.'"]/td[5]/span[@class="weekend-time"]')->length)->toBe(0);
-    expect($xpath->query('//tr[@data-date="'.$date.'"]/td[5]/span[contains(@class,"slot")]')->length)->toBeGreaterThan(0);
+    $nightCodes = $xpath->query('//tr[@data-date="'.$date.'"]/td[5]/span[@class="slot main"]');
+    expect(array_map(fn (DOMNode $node): string => $node->textContent, iterator_to_array($nightCodes)))
+        ->toBe(['P', 'N2']);
+    expect($xpath->query('//tr[@data-date="'.$date.'"]/td[5]/span[contains(@class,"optional")]')->length)->toBe(0);
+    expect($xpath->query('//tr[@data-date="'.$date.'"]/td[3]/span[@class="slot optional"]')->length
+        + $xpath->query('//tr[@data-date="'.$date.'"]/td[4]/span[@class="slot optional"]')->length)->toBe(7);
+    expect($xpath->query('//tr[@data-date="'.$date.'"]//*[contains(@class,"weekend-time")]')->length)->toBe(0);
+    expect($xpath->query('//tr[@data-date="'.$date.'"]/td[3]')->item(0)->textContent)
+        ->not->toContain('Weekend Day', '8:00 AM', '4:00 PM');
+    expect($xpath->query('//tr[@data-date="'.$date.'"]/td[5]')->item(0)->textContent)
+        ->not->toContain('Weekend Night', '8:00 PM', '8:00 AM');
     expect(ShiftType::query()->where('code', 'weekend_evening')->exists())->toBeFalse();
-})->with(['Saturday' => '2026-10-03', 'Sunday' => '2026-10-04']);
+
+    $pdfRows = null;
+    View::composer('rosters.document', function (Illuminate\View\View $view) use (&$pdfRows): void {
+        $pdfRows = $view->getData()['rows'];
+    });
+    $this->get(documentUrl('pdf'))->assertOk()->assertHeader('Content-Type', 'application/pdf');
+    expect($pdfRows)->toBe(app(RosterDocumentService::class)->build($roster->fresh())['rows']);
+})->with([
+    'Saturday with two Main' => ['2026-10-03', 2],
+    'Saturday with three Main' => ['2026-10-03', 3],
+    'Sunday with two Main' => ['2026-10-04', 2],
+    'Sunday with three Main' => ['2026-10-04', 3],
+]);
 
 it('renders weekday codes and vacancies with role formatting and no zero-capacity vacancies', function () {
     [$admin, , , $type, $roster, $shift] = documentFixture();
@@ -322,7 +344,7 @@ it('escapes database doctor codes and names in cells and reference', function ()
 
 it('leaves saved roster, shift, assignment and history records unchanged on preview and PDF requests', function () {
     [$admin, , , , $roster] = documentFixture();
-    $tables = ['rosters', 'roster_shifts', 'roster_assignments', 'shift_types', 'doctors', 'actual_work_exceptions', 'doctor_monthly_workloads', 'doctor_monthly_participations'];
+    $tables = ['rosters', 'roster_shifts', 'roster_assignments', 'roster_shift_capacity_snapshots', 'shift_types', 'doctors', 'actual_work_exceptions', 'doctor_monthly_workloads', 'doctor_monthly_participations', 'weekend_pair_configurations', 'weekend_pair_configuration_doctors', 'weekend_pair_coordination', 'monthly_weekend_pair_confirmations'];
     $before = [];
     foreach ($tables as $table) {
         $before[$table] = DB::table($table)->orderBy('id')->get()->toJson();

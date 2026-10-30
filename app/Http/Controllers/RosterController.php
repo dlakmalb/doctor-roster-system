@@ -25,6 +25,22 @@ use LogicException;
 
 class RosterController extends Controller
 {
+    public function recreateUpdatedSetup(int $year, int $month, Request $request, RecreateDraftRoster $recreation): RedirectResponse
+    {
+        $input = $request->validate([
+            'doctor_id' => ['required', 'integer', 'exists:doctors,id'],
+            'optional_count' => ['required', 'integer', 'min:0', 'max:255'],
+            'confirmation' => ['required', 'accepted'],
+            'revision' => ['required', 'string', 'size:64'],
+        ]);
+        $roster = Roster::query()->where('year', $year)->where('month', $month)->firstOrFail();
+        /** @var User $admin */
+        $admin = $request->user();
+        $recreation->handleUpdatedSetup($roster, $admin, (int) $input['doctor_id'], (int) $input['optional_count'], true, $input['revision']);
+
+        return to_route('rosters.show', ['year' => $year, 'month' => $month]);
+    }
+
     public function recreate(int $year, int $month, Request $request, RecreateDraftRoster $recreation): RedirectResponse
     {
         $input = $request->validate([
@@ -55,7 +71,7 @@ class RosterController extends Controller
         return to_route('rosters.show', ['year' => $year, 'month' => $month]);
     }
 
-    public function show(int $year, int $month, RosterDraftValidationService $validation, RosterHistoryReadinessService $history, RosterLifecycleService $lifecycle, MonthlyShiftCapacityService $capacities): Response
+    public function show(int $year, int $month, RosterDraftValidationService $validation, RosterHistoryReadinessService $history, RosterLifecycleService $lifecycle, MonthlyShiftCapacityService $capacities, RecreateDraftRoster $recreation): Response
     {
         $roster = Roster::query()
             ->where('year', $year)
@@ -98,6 +114,7 @@ class RosterController extends Controller
         return Inertia::render('roster', [
             'month' => ['year' => $year, 'month' => $month, 'label' => CarbonImmutable::create($year, $month, 1)->format('F Y')],
             'status' => $roster->status->value,
+            'monthly_setup_recreation' => $recreation->monthlySetupReview($roster),
             'legacy_weekend_day_main' => $roster->shifts->contains(fn (RosterShift $shift): bool => $shift->shiftType->code === 'weekend_day')
                 ? $capacities->resolve($year, $month, 'weekend_day')['main_count'] : null,
             'can_reopen' => $roster->status->value === 'final' && $lifecycle->canReopen($roster),

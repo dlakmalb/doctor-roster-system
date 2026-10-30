@@ -30,9 +30,9 @@ class RosterAssignmentGenerator
         private MandatoryWeekendAssignmentService $mandatoryWeekends,
     ) {}
 
-    public function generate(Roster $roster, User $admin): void
+    public function generate(Roster $roster, User $admin, bool $deferUndoUntilCommit = false): void
     {
-        $this->run($roster, $admin, false);
+        $this->run($roster, $admin, false, $deferUndoUntilCommit);
     }
 
     public function regenerate(Roster $roster, User $admin): void
@@ -40,7 +40,7 @@ class RosterAssignmentGenerator
         $this->run($roster, $admin, true);
     }
 
-    private function run(Roster $roster, User $admin, bool $replace): void
+    private function run(Roster $roster, User $admin, bool $replace, bool $deferUndoUntilCommit = false): void
     {
         DB::transaction(function () use ($roster, $admin, $replace): void {
             $this->coordination->lock();
@@ -170,9 +170,16 @@ class RosterAssignmentGenerator
             $roster->update(['last_generated_at' => now(), 'generated_history_fingerprint' => $historyFingerprint, 'updated_by' => $admin->id]);
         });
 
-        $undo = session()->get(RosterManualEditService::UNDO_KEY);
-        if (is_array($undo) && ($undo['roster_id'] ?? null) === $roster->id) {
-            session()->forget(RosterManualEditService::UNDO_KEY);
+        $clearUndo = function () use ($roster): void {
+            $undo = session()->get(RosterManualEditService::UNDO_KEY);
+            if (is_array($undo) && ($undo['roster_id'] ?? null) === $roster->id) {
+                session()->forget(RosterManualEditService::UNDO_KEY);
+            }
+        };
+        if ($deferUndoUntilCommit) {
+            DB::afterCommit($clearUndo);
+        } else {
+            $clearUndo();
         }
     }
 }

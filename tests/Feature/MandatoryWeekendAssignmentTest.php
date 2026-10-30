@@ -1,8 +1,10 @@
 <?php
 
+use App\Enums\ActualWorkExceptionType;
 use App\Enums\DoctorRequestType;
 use App\Enums\RosterAssignmentRole;
 use App\Enums\RosterStatus;
+use App\Models\ActualWorkException;
 use App\Models\Doctor;
 use App\Models\DoctorMonthlyExclusion;
 use App\Models\DoctorMonthlyParticipation;
@@ -10,6 +12,7 @@ use App\Models\DoctorMonthlyShiftRestriction;
 use App\Models\DoctorMonthlyWeekdayPreference;
 use App\Models\DoctorRequest;
 use App\Models\DoctorWeekendGroupMembership;
+use App\Models\MonthlyShiftCapacity;
 use App\Models\MonthlyWeekendPairConfirmation;
 use App\Models\Roster;
 use App\Models\RosterAssignment;
@@ -29,6 +32,7 @@ use App\Services\RecreateDraftRoster;
 use App\Services\RosterAssignmentGenerator;
 use App\Services\RosterCandidateRanker;
 use App\Services\RosterDraftValidationService;
+use App\Services\RosterManualEditService;
 use App\Services\RosterPlanningHistoryService;
 use App\Services\RosterStructureService;
 use App\Services\WeekendPairRotationService;
@@ -37,6 +41,7 @@ use Database\Seeders\ShiftTypesSeeder;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Validation\ValidationException;
+use Inertia\Testing\AssertableInertia as Assert;
 
 afterEach(function (): void {
     mt_srand();
@@ -130,6 +135,333 @@ function assertMandatoryWeekendSafe(Roster $roster): void
         expect($shift->assignments->where('role', RosterAssignmentRole::Main))->toHaveCount($shift->savedCapacity()->main_count);
     }
 }
+
+/** @return array{admin: User, groups: array<string, list<int>>, october: Roster, roster: Roster, doctor: Doctor, payload: array<string, mixed>} */
+function updatedMonthlySetupFixture(bool $generated = false, int $weekdayDayMainCount = 3): array
+{
+    $fixture = mandatoryWeekendFixture();
+    app(MonthlyShiftCapacityService::class)->update(2026, 11, 'weekend_day', 2, 7);
+    if ($weekdayDayMainCount !== 3) {
+        app(MonthlyShiftCapacityService::class)->update(2026, 11, 'weekday_day', $weekdayDayMainCount, 2);
+    }
+    $roster = $generated
+        ? app(GenerateRosterFromMonthlySetup::class)->handle(2026, 11, $fixture['admin'])
+        : app(RosterStructureService::class)->create(2026, 11, $fixture['admin']);
+    $doctor = Doctor::query()->where('short_code', 'U')->sole();
+    $review = app(RecreateDraftRoster::class)->monthlySetupReview($roster->fresh());
+    expect($review)->not->toBeNull();
+
+    return $fixture + compact('roster', 'doctor') + ['payload' => [
+        'doctor_id' => $doctor->id, 'optional_count' => 3, 'confirmation' => true, 'revision' => $review['revision'],
+    ]];
+}
+
+/** @return array<string, mixed> */
+function updatedMonthlySetupSavedState(): array
+{
+    $state = [];
+    foreach ([
+        'rosters', 'roster_shifts', 'roster_assignments', 'roster_shift_capacity_snapshots',
+        'doctor_monthly_participations', 'doctor_monthly_exclusions', 'monthly_shift_capacities',
+        'monthly_weekend_pair_confirmations', 'weekend_pair_configurations', 'weekend_pair_configuration_doctors',
+        'doctor_requests', 'doctor_monthly_weekday_preferences', 'doctor_monthly_shift_restrictions',
+    ] as $table) {
+        $state[$table] = DB::table($table)->orderBy('id')->get()->toArray();
+    }
+
+    return $state;
+}
+
+it('recreates updated monthly setup atomically while preserving requests rotations legacy boundaries and future confirmation history', function () {
+    ['admin' => $admin, 'groups' => $groups, 'october' => $october, 'roster' => $roster, 'doctor' => $doctor] = updatedMonthlySetupFixture(true);
+    $dayType = ShiftType::query()->where('code', 'weekday_day')->sole();
+    DoctorRequest::query()->create(['doctor_id' => $doctor->id, 'request_date' => '2026-11-03', 'request_type' => DoctorRequestType::DayOff]);
+    DoctorRequest::query()->create(['doctor_id' => $doctor->id, 'request_date' => '2026-11-04', 'request_type' => DoctorRequestType::PreferredWork, 'shift_type_id' => $dayType->id]);
+    DoctorMonthlyWeekdayPreference::query()->create(['doctor_id' => $doctor->id, 'year' => 2026, 'month' => 11, 'weekday' => 3, 'shift_type_id' => $dayType->id]);
+    DoctorMonthlyShiftRestriction::query()->create(['doctor_id' => $doctor->id, 'year' => 2026, 'month' => 11, 'shift_type_id' => ShiftType::query()->where('code', 'weekday_evening')->sole()->id]);
+    mandatoryWeekendConfirm($admin, ['A' => $groups['A'], 'B' => array_reverse($groups['B'])], 2026, 12);
+    mandatoryWeekendConfirm($admin, $groups, 2026, 12);
+    $december = app(MonthlyWeekendPairService::class)->load(2026, 12);
+    $before = updatedMonthlySetupSavedState();
+    $octoberBefore = $october->fresh()->load('shifts.assignments', 'shifts.capacitySnapshot')->toArray();
+    $oldShiftIds = $roster->shifts()->pluck('id')->all();
+    $savedCapacities = $roster->shifts()->with('shiftType', 'capacitySnapshot')->get()->mapWithKeys(fn (RosterShift $shift): array => [
+        $shift->shift_date->toDateString().'|'.$shift->shiftType->code => [$shift->savedCapacity()->main_count, $shift->savedCapacity()->optional_count],
+    ])->all();
+    $previous = MonthlyWeekendPairConfirmation::query()->where('year', 2026)->where('month', 11)->latest('id')->firstOrFail();
+    $payload = ['doctor_id' => $doctor->id, 'optional_count' => 3, 'confirmation' => true,
+        'revision' => app(RecreateDraftRoster::class)->monthlySetupReview($roster->fresh())['revision']];
+
+    $this->actingAs($admin)->post(route('rosters.recreate-updated-setup', ['year' => 2026, 'month' => 11]), $payload)
+        ->assertSessionHasNoErrors()->assertRedirect(route('rosters.show', ['year' => 2026, 'month' => 11]));
+
+    $this->assertDatabaseMissing('doctor_monthly_exclusions', ['doctor_id' => $doctor->id, 'year' => 2026, 'month' => 11]);
+    $this->assertDatabaseHas('doctor_monthly_exclusions', ['doctor_id' => Doctor::query()->where('short_code', 'M')->sole()->id, 'year' => 2026, 'month' => 11]);
+    expect($roster->fresh()->id)->toBe($roster->id);
+    expect($roster->fresh()->last_generated_at)->not->toBeNull();
+    expect($roster->shifts()->whereIn('id', $oldShiftIds)->exists())->toBeFalse();
+    $shifts = $roster->shifts()->with('shiftType', 'capacitySnapshot', 'assignments')->get();
+    expect($shifts)->toHaveCount(81);
+    expect($shifts->sum(fn (RosterShift $shift): int => $shift->savedCapacity()->main_count))->toBe(183);
+    expect($shifts->sum(fn (RosterShift $shift): int => $shift->savedCapacity()->optional_count))->toBe(147);
+    foreach ($shifts as $shift) {
+        $key = $shift->shift_date->toDateString().'|'.$shift->shiftType->code;
+        $expected = $shift->shiftType->code === 'weekday_day' ? [3, 3] : $savedCapacities[$key];
+        expect([$shift->savedCapacity()->main_count, $shift->savedCapacity()->optional_count])->toBe($expected);
+    }
+    expect(mandatoryWeekendShift($roster, '2026-11-01')->savedCapacity()->main_count)->toBe(2);
+    foreach (['2026-11-07', '2026-11-14', '2026-11-21', '2026-11-28'] as $saturday) {
+        $plan = app(WeekendPairRotationService::class)->forSaturday($saturday);
+        foreach (['saturday' => $saturday, 'sunday' => $plan['sunday']] as $day => $date) {
+            foreach (['day', 'night'] as $duty) {
+                expect(mandatoryWeekendMainIds($roster, $date, 'weekend_'.$duty))->toBe($plan['shifts'][$day.'_'.$duty]);
+                expect(mandatoryWeekendMainIds($roster, $date, 'weekend_'.$duty))->not->toContain($doctor->id);
+            }
+        }
+    }
+    $current = app(MonthlyWeekendPairService::class)->load(2026, 11);
+    expect($current['status'])->toBe('confirmed');
+    $newConfirmation = MonthlyWeekendPairConfirmation::query()->findOrFail($current['confirmation']['id']);
+    expect((int) $newConfirmation->supersedes_confirmation_id)->toBe($previous->id);
+    expect($newConfirmation->population_fingerprint)->not->toBe($previous->population_fingerprint);
+    expect((int) $newConfirmation->group_a_configuration_id)->toBe((int) $previous->group_a_configuration_id);
+    expect((int) $newConfirmation->group_b_configuration_id)->toBe((int) $previous->group_b_configuration_id);
+    expect($previous->fresh()->toArray())->toBe($previous->toArray());
+    expect(MonthlyWeekendPairConfirmation::query()->where('month', 11)->where('year', 2026)->count())->toBe(2);
+    $after = updatedMonthlySetupSavedState();
+    foreach (['doctor_monthly_participations', 'weekend_pair_configurations', 'weekend_pair_configuration_doctors', 'doctor_requests', 'doctor_monthly_weekday_preferences', 'doctor_monthly_shift_restrictions'] as $table) {
+        expect($after[$table])->toEqual($before[$table]);
+    }
+    $dayCapacityId = MonthlyShiftCapacity::query()->where('year', 2026)->where('month', 11)->where('shift_type_id', $dayType->id)->sole()->id;
+    expect(collect($after['monthly_shift_capacities'])->reject(fn ($row): bool => $row->id === $dayCapacityId)->values()->all())
+        ->toEqual(collect($before['monthly_shift_capacities'])->reject(fn ($row): bool => $row->id === $dayCapacityId)->values()->all());
+    expect(app(MonthlyWeekendPairService::class)->load(2026, 12))->toBe($december);
+    expect($october->fresh()->load('shifts.assignments', 'shifts.capacitySnapshot')->toArray())->toBe($octoberBefore);
+    $violations = collect(app(RosterDraftValidationService::class)->validate($roster->fresh()));
+    expect($violations->where('severity', 'Error'))->toBeEmpty();
+    expect($violations->where('code', 'unfilled_optional_slot')->every(fn (array $violation): bool => $violation['severity'] === 'Warning'))->toBeTrue();
+    assertMandatoryWeekendSafe($roster);
+    $afterSuccess = updatedMonthlySetupSavedState();
+
+    $this->post(route('rosters.recreate-updated-setup', ['year' => 2026, 'month' => 11]), $payload)->assertSessionHasErrors('revision');
+    expect(updatedMonthlySetupSavedState())->toEqual($afterSuccess);
+});
+
+it('preserves a configured Weekday Day Main capacity other than three during updated setup recreation', function () {
+    ['admin' => $admin, 'roster' => $roster, 'doctor' => $doctor, 'payload' => $payload] = updatedMonthlySetupFixture(weekdayDayMainCount: 2);
+    $dayShifts = $roster->shifts()->whereHas('shiftType', fn ($query) => $query->where('code', 'weekday_day'));
+    foreach ($dayShifts->with('capacitySnapshot')->get() as $shift) {
+        expect([$shift->savedCapacity()->main_count, $shift->savedCapacity()->optional_count])->toBe([2, 2]);
+    }
+
+    app(RecreateDraftRoster::class)->handleUpdatedSetup($roster, $admin, $doctor->id, 3, true, $payload['revision']);
+
+    $recreated = $dayShifts->with('capacitySnapshot', 'assignments')->get();
+    expect($recreated)->toHaveCount(21);
+    foreach ($recreated as $shift) {
+        expect([$shift->savedCapacity()->main_count, $shift->savedCapacity()->optional_count])->toBe([2, 3]);
+        expect($shift->assignments->where('role', RosterAssignmentRole::Main))->toHaveCount(2);
+    }
+    expect(app(MonthlyShiftCapacityService::class)->resolve(2026, 11, 'weekday_day'))->toBe(['main_count' => 2, 'optional_count' => 3]);
+    expect(collect(app(RosterDraftValidationService::class)->validate($roster->fresh()))->where('severity', 'Error'))->toBeEmpty();
+});
+
+it('rolls back every updated setup change and keeps manual undo when recreation fails', function (string $failure) {
+    ['admin' => $admin, 'roster' => $roster, 'doctor' => $doctor, 'payload' => $payload] = updatedMonthlySetupFixture(true);
+    $enabled = true;
+    $created = 0;
+    if ($failure === 'hard validation') {
+        $this->mock(RosterDraftValidationService::class, function ($mock): void {
+            $mock->shouldReceive('validate')->once()->andReturn([['severity' => 'Error', 'message' => 'Simulated hard violation.']]);
+        });
+    } else {
+        $model = $failure === 'snapshots' ? RosterShiftCapacitySnapshot::class : RosterAssignment::class;
+        Event::listen('eloquent.creating: '.$model, function () use (&$enabled, &$created): void {
+            if ($enabled && ++$created === 4) {
+                throw new RuntimeException('Simulated updated setup failure.');
+            }
+        });
+    }
+    $undo = ['roster_id' => $roster->id, 'generated_at' => $roster->last_generated_at?->toDateTimeString(), 'test' => 'preserved'];
+    session()->put(RosterManualEditService::UNDO_KEY, $undo);
+    $before = updatedMonthlySetupSavedState();
+
+    try {
+        expect(fn () => app(RecreateDraftRoster::class)->handleUpdatedSetup($roster, $admin, $doctor->id, 3, true, $payload['revision']))
+            ->toThrow($failure === 'hard validation' ? ValidationException::class : RuntimeException::class);
+    } finally {
+        $enabled = false;
+    }
+
+    expect(updatedMonthlySetupSavedState())->toEqual($before);
+    expect(session()->get(RosterManualEditService::UNDO_KEY))->toBe($undo);
+})->with(['snapshots', 'assignments', 'hard validation']);
+
+it('rejects invalid updated setup submissions without changing the Draft', function (array $changes, string $field) {
+    ['admin' => $admin, 'payload' => $payload] = updatedMonthlySetupFixture();
+    $before = updatedMonthlySetupSavedState();
+
+    $this->actingAs($admin)->post(route('rosters.recreate-updated-setup', ['year' => 2026, 'month' => 11]), array_replace($payload, $changes))
+        ->assertSessionHasErrors($field);
+
+    expect(updatedMonthlySetupSavedState())->toEqual($before);
+})->with([
+    'invalid doctor' => [['doctor_id' => -1], 'doctor_id'],
+    'missing doctor' => [['doctor_id' => null], 'doctor_id'],
+    'missing confirmation' => [['confirmation' => null], 'confirmation'],
+    'declined confirmation' => [['confirmation' => false], 'confirmation'],
+    'negative capacity' => [['optional_count' => -1], 'optional_count'],
+    'fractional capacity' => [['optional_count' => 2.5], 'optional_count'],
+    'excess capacity' => [['optional_count' => 256], 'optional_count'],
+    'unchanged capacity' => [['optional_count' => 2], 'optional_count'],
+    'missing revision' => [['revision' => null], 'revision'],
+    'stale revision' => [['revision' => str_repeat('0', 64)], 'revision'],
+]);
+
+it('rejects unsafe updated setup states before destroying shifts', function (string $condition, string $field) {
+    ['admin' => $admin, 'groups' => $groups, 'roster' => $roster, 'doctor' => $doctor, 'october' => $october, 'payload' => $payload] = updatedMonthlySetupFixture();
+    switch ($condition) {
+        case 'final':
+            $roster->update(['status' => RosterStatus::Final, 'finalized_at' => now()]);
+            break;
+        case 'previously final':
+            $roster->update(['finalized_at' => now()]);
+            break;
+        case 'actual work':
+            $roster->update(['actual_work_confirmed_at' => now()]);
+            break;
+        case 'actual work exception':
+            ActualWorkException::query()->create([
+                'roster_shift_id' => $roster->shifts()->firstOrFail()->id,
+                'exception_type' => ActualWorkExceptionType::OptionalWorked,
+                'actual_doctor_id' => $doctor->id, 'recorded_by' => $admin->id,
+            ]);
+            break;
+        case 'later roster':
+            Roster::query()->create(['year' => 2026, 'month' => 12, 'status' => RosterStatus::Draft]);
+            break;
+        case 'history':
+            $october->update(['status' => RosterStatus::Draft]);
+            break;
+        case 'inactive':
+            $doctor->update(['is_active' => false]);
+            break;
+        case 'nonparticipating':
+            DoctorMonthlyParticipation::query()->where('roster_id', $roster->id)->where('doctor_id', $doctor->id)->update(['is_participating' => false]);
+            break;
+        case 'missing participation':
+            DoctorMonthlyParticipation::query()->where('roster_id', $roster->id)->where('doctor_id', $doctor->id)->delete();
+            break;
+        case 'snapshot':
+            $roster->shifts()->firstOrFail()->capacitySnapshot()->delete();
+            break;
+        case 'missing shift':
+            $roster->shifts()->firstOrFail()->delete();
+            break;
+        case 'incompatible rotation':
+            DoctorMonthlyExclusion::query()->create(['doctor_id' => $groups['B'][0], 'year' => 2026, 'month' => 11]);
+            break;
+        case 'no exclusion':
+            $payload['doctor_id'] = $groups['B'][0];
+            break;
+        case 'changed assignments':
+            mandatoryWeekendShift($roster, '2026-11-03', 'weekday_day')->assignments()->create([
+                'doctor_id' => $groups['A'][0], 'role' => RosterAssignmentRole::Main, 'slot_number' => 1,
+            ]);
+            break;
+        case 'changed capacity':
+            MonthlyShiftCapacity::query()->where('year', 2026)->where('month', 11)
+                ->where('shift_type_id', ShiftType::query()->where('code', 'weekday_evening')->sole()->id)->update(['optional_count' => 2]);
+            break;
+        case 'mismatched weekday Main':
+            MonthlyShiftCapacity::query()->where('year', 2026)->where('month', 11)
+                ->where('shift_type_id', ShiftType::query()->where('code', 'weekday_day')->sole()->id)->update(['main_count' => 2]);
+            break;
+    }
+    $before = updatedMonthlySetupSavedState();
+
+    $this->actingAs($admin)->post(route('rosters.recreate-updated-setup', ['year' => 2026, 'month' => 11]), $payload)->assertSessionHasErrors($field);
+
+    expect(updatedMonthlySetupSavedState())->toEqual($before);
+})->with([
+    ['final', 'roster'], ['previously final', 'roster'], ['actual work', 'roster'], ['actual work exception', 'roster'], ['later roster', 'roster'],
+    ['history', 'roster'], ['inactive', 'roster'], ['nonparticipating', 'doctor_id'], ['missing participation', 'roster'],
+    ['snapshot', 'roster'], ['missing shift', 'roster'], ['incompatible rotation', 'configuration'],
+    ['no exclusion', 'doctor_id'], ['changed assignments', 'revision'], ['changed capacity', 'roster'], ['mismatched weekday Main', 'roster'],
+]);
+
+it('requires authentication for updated setup recreation', function () {
+    $this->post(route('rosters.recreate-updated-setup', ['year' => 2026, 'month' => 11]), [])->assertRedirect(route('login'));
+});
+
+it('provides reviewed exclusions and saved capacity only for an eligible Draft', function () {
+    ['admin' => $admin, 'roster' => $roster, 'doctor' => $doctor] = updatedMonthlySetupFixture();
+    $this->withoutVite();
+    $before = updatedMonthlySetupSavedState();
+
+    $this->actingAs($admin)->get(route('rosters.show', ['year' => 2026, 'month' => 11]))
+        ->assertInertia(fn (Assert $page) => $page->component('roster')
+            ->where('monthly_setup_recreation.current_optional_count', 2)
+            ->has('monthly_setup_recreation.exclusions', 2)
+            ->where('monthly_setup_recreation.exclusions.1.id', $doctor->id)
+            ->where('monthly_setup_recreation.revision', fn ($value): bool => is_string($value) && strlen($value) === 64));
+
+    expect(updatedMonthlySetupSavedState())->toEqual($before);
+    $roster->update(['status' => RosterStatus::Final, 'finalized_at' => now()]);
+    $this->get(route('rosters.show', ['year' => 2026, 'month' => 11]))
+        ->assertInertia(fn (Assert $page) => $page->where('monthly_setup_recreation', null));
+});
+
+it('rejects updated setup recreation outside the planning period at both request and service boundaries', function () {
+    ['admin' => $admin, 'roster' => $roster, 'doctor' => $doctor, 'payload' => $payload] = updatedMonthlySetupFixture();
+    $this->travelTo(new DateTimeImmutable('2026-12-01 09:00:00'));
+    config(['roster.uat_operational_month' => null]);
+    $before = updatedMonthlySetupSavedState();
+
+    $this->actingAs($admin)->post(route('rosters.recreate-updated-setup', ['year' => 2026, 'month' => 11]), $payload)->assertRedirect(route('dashboard'));
+    expect(fn () => app(RecreateDraftRoster::class)->handleUpdatedSetup($roster, $admin, $doctor->id, 3, true, $payload['revision']))->toThrow(ValidationException::class);
+
+    expect(updatedMonthlySetupSavedState())->toEqual($before);
+});
+
+it('requires the existing coordination lock before changing updated monthly setup', function () {
+    ['admin' => $admin, 'roster' => $roster, 'doctor' => $doctor, 'payload' => $payload] = updatedMonthlySetupFixture();
+    DB::table('weekend_pair_coordination')->where('id', 1)->delete();
+    $before = updatedMonthlySetupSavedState();
+
+    expect(fn () => app(RecreateDraftRoster::class)->handleUpdatedSetup($roster, $admin, $doctor->id, 3, true, $payload['revision']))
+        ->toThrow(LogicException::class, 'The weekend pair coordination row is missing.');
+
+    expect(updatedMonthlySetupSavedState())->toEqual($before);
+});
+
+it('keeps ordinary pair confirmation read only after a Draft exists', function () {
+    ['admin' => $admin, 'roster' => $roster, 'groups' => $groups] = updatedMonthlySetupFixture();
+    $service = app(MonthlyWeekendPairService::class);
+    $state = $service->load(2026, 11);
+    $input = ['revision' => $state['revision'], 'groups' => []];
+    foreach (['A', 'B'] as $group) {
+        $input['groups'][$group] = ['effective_saturday' => $state['groups'][$group]['effective_saturday'], 'doctor_ids' => $groups[$group]];
+    }
+    $before = updatedMonthlySetupSavedState();
+
+    expect(fn () => $service->confirm(2026, 11, $input, $admin->id))->toThrow(ValidationException::class);
+
+    expect(updatedMonthlySetupSavedState())->toEqual($before);
+});
+
+it('rejects updated setup when the saved rotation uses seven doctors', function () {
+    ['admin' => $admin] = mandatoryWeekendFixture(true);
+    $roster = app(RosterStructureService::class)->create(2026, 11, $admin);
+    $doctor = Doctor::query()->where('short_code', 'U')->sole();
+    $before = updatedMonthlySetupSavedState();
+
+    expect(fn () => app(RecreateDraftRoster::class)->handleUpdatedSetup($roster, $admin, $doctor->id, 3, true, str_repeat('0', 64)))
+        ->toThrow(ValidationException::class);
+
+    expect(app(RecreateDraftRoster::class)->monthlySetupReview($roster))->toBeNull();
+    expect(updatedMonthlySetupSavedState())->toEqual($before);
+});
 
 it('generates every exact November Main pair and preserves October Final and all capacity snapshots', function () {
     ['admin' => $admin, 'october' => $october] = mandatoryWeekendFixture();

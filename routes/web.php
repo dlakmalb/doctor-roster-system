@@ -72,6 +72,7 @@ Route::middleware('auth')->group(function (): void {
             Route::post('/generate', RosterAssignmentGenerationController::class)->name('rosters.generate');
             Route::post('/regenerate', RosterAssignmentRegenerationController::class)->name('rosters.regenerate');
             Route::post('/recreate', [RosterController::class, 'recreate'])->middleware(EnsureMonthlySetupPlanningPeriod::class)->name('rosters.recreate');
+            Route::post('/recreate-updated-setup', [RosterController::class, 'recreateUpdatedSetup'])->middleware(EnsureMonthlySetupPlanningPeriod::class)->name('rosters.recreate-updated-setup');
             Route::post('/finalize', RosterFinalizationController::class)->name('rosters.finalize');
             Route::post('/reopen', RosterReopenController::class)->name('rosters.reopen');
             Route::get('/print', RosterPrintController::class)->name('rosters.print');

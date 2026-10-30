@@ -7,6 +7,7 @@ import {
     pdf,
     print,
     recreate,
+    recreateUpdatedSetup,
     regenerate,
     reopen,
     show as showRoster,
@@ -15,7 +16,7 @@ import { edit, undo } from '@/routes/rosters/assignments';
 import { show as showActualWork } from '@/routes/rosters/actual-work';
 import { show as showInitialWorkload } from '@/routes/initial-workload';
 import { Form, Head, Link, router, useForm } from '@inertiajs/react';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 type Slot = {
     slot_number: number;
@@ -48,6 +49,11 @@ type RosterProps = {
     month: { year: number; month: number; label: string };
     status: 'draft' | 'final';
     legacy_weekend_day_main: number | null;
+    monthly_setup_recreation: {
+        revision: string;
+        current_optional_count: number;
+        exclusions: { id: number; name: string; short_code: string }[];
+    } | null;
     can_reopen: boolean;
     history_readiness: {
         ready: boolean;
@@ -78,6 +84,15 @@ type RosterProps = {
     };
     days: Day[];
 };
+
+function updatedSetupFormData(review: RosterProps['monthly_setup_recreation']) {
+    return {
+        doctor_id: '',
+        optional_count: String(review?.current_optional_count ?? ''),
+        confirmation: false,
+        revision: review?.revision ?? '',
+    };
+}
 
 type SelectedSlot = {
     shift_id: number;
@@ -141,6 +156,7 @@ export default function Roster({
     month,
     status,
     legacy_weekend_day_main,
+    monthly_setup_recreation,
     can_reopen,
     history_readiness,
     has_generated,
@@ -153,6 +169,29 @@ export default function Roster({
 }: RosterProps) {
     const regeneration = useForm<Record<string, string>>({});
     const reopening = useForm<Record<string, string>>({});
+    const setupRecreation = useForm(updatedSetupFormData(monthly_setup_recreation));
+    const {
+        setData: setSetupData,
+        setDefaults: setSetupDefaults,
+        clearErrors: clearSetupErrors,
+    } = setupRecreation;
+    const rosterMonthKey = `${month.year}-${month.month}`;
+    const setupMonthKey = useRef(rosterMonthKey);
+
+    useEffect(() => {
+        if (setupMonthKey.current === rosterMonthKey) return;
+        setupMonthKey.current = rosterMonthKey;
+        const values = updatedSetupFormData(monthly_setup_recreation);
+        setSetupDefaults(values);
+        setSetupData(values);
+        clearSetupErrors();
+    }, [rosterMonthKey, monthly_setup_recreation, setSetupDefaults, setSetupData, clearSetupErrors]);
+    const validSetupRecreation = monthly_setup_recreation !== null
+        && monthly_setup_recreation.exclusions.some((doctor) => String(doctor.id) === setupRecreation.data.doctor_id)
+        && /^\d+$/.test(setupRecreation.data.optional_count)
+        && Number(setupRecreation.data.optional_count) <= 255
+        && Number(setupRecreation.data.optional_count) !== monthly_setup_recreation.current_optional_count
+        && setupRecreation.data.confirmation;
     const [picker, setPicker] = useState<SelectedSlot | null>(null);
     const [options, setOptions] = useState<DoctorOption[]>([]);
     const [swapSource, setSwapSource] = useState<SelectedSlot | null>(null);
@@ -468,6 +507,106 @@ export default function Roster({
                         )}
                     </Form>
                 </details>
+            )}
+
+            {status === 'draft' && monthly_setup_recreation !== null && (
+                <details
+                    className="mb-6 rounded-lg border border-red-200 bg-white p-4"
+                    open={Object.keys(setupRecreation.errors).length > 0 || undefined}
+                >
+                    <summary className="cursor-pointer font-semibold text-red-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-700">
+                        Recreate Draft with updated monthly setup
+                    </summary>
+                    <form
+                        className="mt-4 flex flex-col items-start gap-4"
+                        onSubmit={(event) => {
+                            event.preventDefault();
+                            if (validSetupRecreation && !setupRecreation.processing) {
+                                setupRecreation.post(recreateUpdatedSetup.url(month), {
+                                    preserveState: 'errors',
+                                    onSuccess: (page) => {
+                                        const review = page.props.monthly_setup_recreation as RosterProps['monthly_setup_recreation'];
+                                        const values = updatedSetupFormData(review);
+                                        setSetupDefaults(values);
+                                        setSetupData(values);
+                                        clearSetupErrors();
+                                    },
+                                });
+                            }
+                        }}
+                    >
+                        <label className="flex w-full max-w-md flex-col gap-2 text-sm font-semibold">
+                            Remove whole-month exclusion
+                            <select
+                                required
+                                value={setupRecreation.data.doctor_id}
+                                onChange={(event) => setupRecreation.setData('doctor_id', event.target.value)}
+                                className="rounded-lg border border-slate-300 bg-white px-3 py-2 focus-visible:outline-2 focus-visible:outline-teal-700"
+                            >
+                                <option value="">Select an excluded doctor</option>
+                                {monthly_setup_recreation.exclusions.map((doctor) => (
+                                    <option key={doctor.id} value={doctor.id}>
+                                        {doctor.short_code} — {doctor.name}
+                                    </option>
+                                ))}
+                            </select>
+                        </label>
+                        <p className="text-sm text-slate-600">
+                            This removes the selected doctor&apos;s exclusion for the entire month.
+                            Normal scheduling restrictions still apply.
+                        </p>
+                        <label className="flex flex-col gap-2 text-sm font-semibold">
+                            Weekday Day Optional positions (current: {monthly_setup_recreation.current_optional_count})
+                            <input
+                                type="number"
+                                min="0"
+                                max="255"
+                                step="1"
+                                required
+                                value={setupRecreation.data.optional_count}
+                                onChange={(event) => setupRecreation.setData('optional_count', event.target.value)}
+                                className="w-28 rounded-lg border border-slate-300 px-3 py-2 focus-visible:outline-2 focus-visible:outline-teal-700"
+                            />
+                        </label>
+                        <p className="text-sm text-slate-600">
+                            Other shift capacities and both confirmed six-doctor weekend rotations remain unchanged.
+                            Monthly requests and preferences remain saved. Any legacy weekend at the start
+                            of the month, including November 1 when applicable, keeps its saved capacity and handling.
+                        </p>
+                        <label className="flex items-start gap-2 text-sm">
+                            <input
+                                type="checkbox"
+                                required
+                                checked={setupRecreation.data.confirmation}
+                                onChange={(event) => setupRecreation.setData('confirmation', event.target.checked)}
+                                className="mt-1 focus-visible:outline-2 focus-visible:outline-teal-700"
+                            />
+                            I understand that all current Draft assignments, including manual changes, will be replaced.
+                            Monthly requests and approved weekend pair arrangements will be preserved.
+                        </label>
+                        {Object.entries(setupRecreation.errors).map(([field, error]) => (
+                            <p key={field} role="alert" className="text-sm text-red-700">{error}</p>
+                        ))}
+                        <button
+                            type="submit"
+                            disabled={!validSetupRecreation || setupRecreation.processing}
+                            className="cursor-pointer rounded-lg border border-red-600 px-4 py-2 text-sm font-semibold text-red-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-700 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                            {setupRecreation.processing ? 'Recreating…' : 'Recreate Draft with Updated Setup'}
+                        </button>
+                    </form>
+                </details>
+            )}
+
+            {monthly_setup_recreation === null && Object.keys(setupRecreation.errors).length > 0 && (
+                <div role="alert" className="mb-6 rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-800">
+                    {Object.entries(setupRecreation.errors).map(([field, error]) => (
+                        <p key={field}>{error}</p>
+                    ))}
+                    <Link href={showRoster.url(month)} className="mt-2 inline-block font-semibold underline">
+                        Reload roster to review current setup
+                    </Link>
+                </div>
             )}
 
             <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
