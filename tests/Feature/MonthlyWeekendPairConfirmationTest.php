@@ -48,6 +48,221 @@ function monthlyPairPayload(array $state, array $groups): array
     ];
 }
 
+it('confirms ordered six or seven doctor cohorts from the full eligible pools', function (int $poolSize, int $selected, ?int $explicitCapacity) {
+    $groups = monthlyPairFixture($poolSize, $poolSize);
+    $cohorts = ['A' => array_reverse(array_slice($groups['A'], 0, $selected)), 'B' => array_slice($groups['B'], 0, $selected)];
+    $this->actingAs(User::factory()->create());
+    $state = $this->getJson('/monthly-weekend-pairs/2026/12')->assertOk()
+        ->assertJsonCount($poolSize, 'groups.A.doctors')->assertJsonCount($poolSize, 'groups.B.doctors')
+        ->assertJsonPath('issues', [])->json();
+    $payload = monthlyPairPayload($state, $cohorts);
+    if ($explicitCapacity !== null) {
+        $payload['groups']['A']['weekend_day_main_count'] = $explicitCapacity;
+        $payload['groups']['B']['weekend_day_main_count'] = $explicitCapacity;
+    }
+
+    $confirmed = $this->postJson('/monthly-weekend-pairs/2026/12', $payload)->assertOk()
+        ->assertJsonPath('status', 'confirmed')
+        ->assertJsonCount($poolSize, 'groups.A.doctors')->assertJsonCount($poolSize, 'groups.B.doctors')
+        ->assertJsonPath('groups.A.configuration.doctor_ids', $cohorts['A'])
+        ->assertJsonPath('groups.B.configuration.doctor_ids', $cohorts['B'])
+        ->assertJsonPath('groups.A.configuration.mode', $selected)
+        ->assertJsonPath('groups.A.weekend_day_main_count', $selected === 6 ? 2 : 3)->json();
+
+    foreach (['A', 'B'] as $group) {
+        $saved = WeekendPairConfiguration::query()->findOrFail($confirmed['confirmation']['configuration_ids'][$group]);
+        expect($saved->doctors->pluck('doctor_id')->all())->toBe($cohorts[$group]);
+    }
+    $this->assertDatabaseCount('weekend_pair_configuration_doctors', $selected * 2);
+    $this->assertDatabaseCount('monthly_weekend_pair_confirmations', 1);
+    $this->assertDatabaseCount('doctor_monthly_exclusions', 0);
+    $this->assertDatabaseCount('doctor_monthly_participations', 0);
+})->with([
+    'six of seven inferred' => [7, 6, null],
+    'seven of seven inferred' => [7, 7, null],
+    'six of eight explicit' => [8, 6, 2],
+    'seven of eight explicit' => [8, 7, 3],
+]);
+
+it('rejects incompatible explicit group capacities with 422 and no partial configuration', function (int $selected, mixed $capacity) {
+    $groups = monthlyPairFixture(8, 8);
+    $groups = array_map(fn (array $ids): array => array_slice($ids, 0, $selected), $groups);
+    $this->actingAs(User::factory()->create());
+    $state = $this->getJson('/monthly-weekend-pairs/2026/12')->json();
+    $payload = monthlyPairPayload($state, $groups);
+    $payload['groups']['B']['weekend_day_main_count'] = $capacity;
+
+    $this->postJson('/monthly-weekend-pairs/2026/12', $payload)->assertUnprocessable()
+        ->assertJsonValidationErrors('groups.B.weekend_day_main_count');
+
+    $this->assertDatabaseCount('weekend_pair_configurations', 0);
+    $this->assertDatabaseCount('weekend_pair_configuration_doctors', 0);
+    $this->assertDatabaseCount('monthly_weekend_pair_confirmations', 0);
+})->with([
+    'six with three Main' => [6, 3],
+    'seven with two Main' => [7, 2],
+    'unsupported capacity' => [6, 4],
+    'noninteger capacity' => [6, 2.5],
+    'explicit null' => [6, null],
+]);
+
+it('accepts independent explicit per-group capacities through the JSON endpoint', function (int $a, int $b, int $aMain, int $bMain) {
+    $groups = monthlyPairFixture(7, 7);
+    $selected = ['A' => array_slice($groups['A'], 0, $a), 'B' => array_slice($groups['B'], 0, $b)];
+    $this->actingAs(User::factory()->create());
+    $state = $this->getJson('/monthly-weekend-pairs/2026/12')->json();
+    $payload = monthlyPairPayload($state, $selected);
+    $payload['groups']['A']['weekend_day_main_count'] = $aMain;
+    $payload['groups']['B']['weekend_day_main_count'] = $bMain;
+
+    $this->postJson('/monthly-weekend-pairs/2026/12', $payload)->assertOk()
+        ->assertJsonPath('status', 'confirmed')
+        ->assertJsonPath('groups.A.configuration.mode', $a)->assertJsonPath('groups.B.configuration.mode', $b)
+        ->assertJsonPath('groups.A.weekend_day_main_count', $aMain)->assertJsonPath('groups.B.weekend_day_main_count', $bMain);
+
+    $this->assertDatabaseCount('weekend_pair_configuration_doctors', 13);
+    $this->assertDatabaseCount('monthly_weekend_pair_confirmations', 1);
+})->with([
+    'A three B two' => [7, 6, 3, 2],
+    'A two B three' => [6, 7, 2, 3],
+]);
+
+it('requires both groups before confirming a selected cohort', function (string $missingGroup) {
+    $groups = monthlyPairFixture();
+    $this->actingAs(User::factory()->create());
+    $state = $this->getJson('/monthly-weekend-pairs/2026/12')->json();
+    $payload = monthlyPairPayload($state, $groups);
+    unset($payload['groups'][$missingGroup]);
+
+    $this->postJson('/monthly-weekend-pairs/2026/12', $payload)->assertUnprocessable()
+        ->assertJsonValidationErrors("groups.{$missingGroup}");
+
+    $this->assertDatabaseCount('weekend_pair_configurations', 0);
+    $this->assertDatabaseCount('monthly_weekend_pair_confirmations', 0);
+})->with(['A', 'B']);
+
+it('retains the established population fingerprint for a previously confirmed historical boundary', function () {
+    $groups = monthlyPairFixture();
+    $admin = User::factory()->create();
+    $this->actingAs($admin);
+    $state = $this->getJson('/monthly-weekend-pairs/2026/12')->json();
+    $december = $this->postJson('/monthly-weekend-pairs/2026/12', monthlyPairPayload($state, $groups))->assertOk()->json();
+    $memberships = [];
+    foreach ($groups as $group => $ids) {
+        foreach ($ids as $id) {
+            $memberships[$id] = $group;
+        }
+    }
+    $historicalConfiguration = [
+        'id' => $december['confirmation']['configuration_ids']['A'], 'version' => 1,
+        'effective_saturday' => '2026-12-05', 'mode' => 6, 'doctor_ids' => $groups['A'],
+    ];
+    $legacyFingerprint = hash('sha256', json_encode([
+        'doctors' => array_merge($groups['A'], $groups['B']),
+        'memberships' => array_fill_keys(['2027-07-31', '2027-08-07', '2027-08-14', '2027-08-21', '2027-08-28'], $memberships),
+        'boundary' => ['saturday' => '2027-07-31', 'group' => 'A', 'state' => 'pair_rotation', 'configuration' => $historicalConfiguration, 'compatible' => true],
+    ], JSON_THROW_ON_ERROR));
+    MonthlyWeekendPairConfirmation::query()->create([
+        'year' => 2027, 'month' => 8, 'group_a_configuration_id' => $december['confirmation']['configuration_ids']['A'],
+        'group_b_configuration_id' => $december['confirmation']['configuration_ids']['B'],
+        'boundary_configuration_id' => $historicalConfiguration['id'], 'population_fingerprint' => $legacyFingerprint, 'confirmed_by' => $admin->id,
+    ]);
+
+    $this->getJson('/monthly-weekend-pairs/2027/8')->assertOk()->assertJsonPath('status', 'confirmed')
+        ->assertJsonPath('population_fingerprint', $legacyFingerprint)->assertJsonPath('boundary.configuration', $historicalConfiguration);
+
+    $this->assertDatabaseCount('weekend_pair_configurations', 2);
+    $this->assertDatabaseCount('monthly_weekend_pair_confirmations', 2);
+});
+
+it('rejects eight selected doctors with 422 while retaining the full eligible pool', function () {
+    $groups = monthlyPairFixture(8, 6);
+    $this->actingAs(User::factory()->create());
+    $state = $this->getJson('/monthly-weekend-pairs/2026/12')->assertJsonCount(8, 'groups.A.doctors')->json();
+
+    $this->postJson('/monthly-weekend-pairs/2026/12', monthlyPairPayload($state, $groups))
+        ->assertUnprocessable()->assertJsonValidationErrors('groups.A.doctor_ids');
+
+    $this->assertDatabaseCount('weekend_pair_configurations', 0);
+    $this->assertDatabaseCount('monthly_weekend_pair_confirmations', 0);
+});
+
+it('rejects ineligible selected doctors with 422 even when six other eligible doctors remain', function (string $reason) {
+    $groups = monthlyPairFixture(7, 7);
+    $selectedId = $groups['B'][0];
+    if ($reason === 'inactive') {
+        Doctor::query()->whereKey($selectedId)->update(['is_active' => false]);
+    } elseif ($reason === 'excluded') {
+        DoctorMonthlyExclusion::query()->create(['doctor_id' => $selectedId, 'year' => 2026, 'month' => 12]);
+    } elseif ($reason === 'wrong group') {
+        $selectedId = $groups['A'][0];
+    } else {
+        $selectedId = 999999;
+    }
+    $cohorts = array_map(fn (array $ids): array => array_slice($ids, 0, 6), $groups);
+    $cohorts['B'][0] = $selectedId;
+    $this->actingAs(User::factory()->create());
+    $state = $this->getJson('/monthly-weekend-pairs/2026/12')->json();
+
+    $this->postJson('/monthly-weekend-pairs/2026/12', monthlyPairPayload($state, $cohorts))->assertUnprocessable();
+
+    $this->assertDatabaseCount('weekend_pair_configurations', 0);
+    $this->assertDatabaseCount('weekend_pair_configuration_doctors', 0);
+    $this->assertDatabaseCount('monthly_weekend_pair_confirmations', 0);
+})->with(['inactive', 'excluded', 'wrong group', 'missing doctor']);
+
+it('reconfirms an expanded population using the same immutable selected configuration versions', function () {
+    $groups = monthlyPairFixture();
+    $this->actingAs(User::factory()->create());
+    $state = $this->getJson('/monthly-weekend-pairs/2026/12')->json();
+    $initial = $this->postJson('/monthly-weekend-pairs/2026/12', monthlyPairPayload($state, $groups))->assertOk()->json();
+    $original = MonthlyWeekendPairConfirmation::query()->firstOrFail();
+    $attributes = $original->getAttributes();
+    $versions = WeekendPairConfiguration::query()->with('doctors')->orderBy('id')->get()->toArray();
+    $extra = Doctor::query()->create(['name' => 'Ordinary participant', 'short_code' => 'A7', 'is_active' => true]);
+    DoctorWeekendGroupMembership::query()->create(['doctor_id' => $extra->id, 'group_code' => 'A', 'effective_from_saturday' => '2026-12-05']);
+    $state = $this->getJson('/monthly-weekend-pairs/2026/12')->assertJsonPath('status', 'requires_attention')->json();
+
+    $this->postJson('/monthly-weekend-pairs/2026/12', monthlyPairPayload($initial, $groups))
+        ->assertUnprocessable()->assertJsonValidationErrors('revision');
+    $reconfirmed = $this->postJson('/monthly-weekend-pairs/2026/12', monthlyPairPayload($state, $groups))
+        ->assertOk()->assertJsonPath('status', 'confirmed')->assertJsonCount(7, 'groups.A.doctors')
+        ->assertJsonPath('groups.A.configuration.doctor_ids', $groups['A'])->json();
+
+    expect($state['population_fingerprint'])->not->toBe($initial['population_fingerprint']);
+    expect($reconfirmed['confirmation']['configuration_ids'])->toBe($initial['confirmation']['configuration_ids']);
+    expect($original->fresh()->getAttributes())->toBe($attributes);
+    expect(WeekendPairConfiguration::query()->with('doctors')->orderBy('id')->get()->toArray())->toBe($versions);
+    $this->assertDatabaseHas('monthly_weekend_pair_confirmations', ['id' => $reconfirmed['confirmation']['id'], 'supersedes_confirmation_id' => $original->id]);
+    $this->postJson('/monthly-weekend-pairs/2026/12', monthlyPairPayload($reconfirmed, $groups))->assertExactJson($reconfirmed);
+    $this->assertDatabaseCount('monthly_weekend_pair_confirmations', 2);
+    $this->assertDatabaseCount('weekend_pair_configurations', 2);
+});
+
+it('versions a changed selected cohort while leaving ordinary participation and the old positions intact', function () {
+    $groups = monthlyPairFixture(7, 6);
+    $selected = ['A' => array_slice($groups['A'], 0, 6), 'B' => $groups['B']];
+    $this->actingAs(User::factory()->create());
+    $state = $this->getJson('/monthly-weekend-pairs/2026/12')->json();
+    $initial = $this->postJson('/monthly-weekend-pairs/2026/12', monthlyPairPayload($state, $selected))->assertOk()->json();
+    $old = WeekendPairConfiguration::query()->with('doctors')->findOrFail($initial['confirmation']['configuration_ids']['A']);
+    $before = $old->toArray();
+    $selected['A'][2] = $groups['A'][6];
+
+    $corrected = $this->postJson('/monthly-weekend-pairs/2026/12', monthlyPairPayload($initial, $selected))
+        ->assertOk()->assertJsonPath('groups.A.configuration.version', 2)
+        ->assertJsonPath('groups.A.configuration.doctor_ids', $selected['A'])->json();
+
+    expect($corrected['population_fingerprint'])->toBe($initial['population_fingerprint']);
+    expect($old->fresh()->load('doctors')->toArray())->toBe($before);
+    $new = WeekendPairConfiguration::query()->findOrFail($corrected['confirmation']['configuration_ids']['A']);
+    expect($new->pair_anchor_saturday)->toEqual($old->pair_anchor_saturday);
+    expect($new->pair_anchor_phase)->toBe($old->pair_anchor_phase);
+    expect($new->extra_day_anchor_phase)->toBe($old->extra_day_anchor_phase);
+    $this->assertDatabaseCount('weekend_pair_configurations', 3);
+    $this->assertDatabaseCount('monthly_weekend_pair_confirmations', 2);
+});
+
 it('requires authentication for monthly pair endpoints', function () {
     $this->getJson('/monthly-weekend-pairs/2026/12')->assertUnauthorized();
     $this->postJson('/monthly-weekend-pairs/2026/12', [])->assertUnauthorized();
@@ -823,7 +1038,7 @@ it('rejects pair reordering with 422 when a draft or final roster exists', funct
     $this->assertDatabaseCount('weekend_pair_configurations', 2);
 })->with(['draft', 'final']);
 
-it('validates both complete eligible groups before saving reordered pairs', function (string $case) {
+it('validates both selected cohorts before saving reordered pairs', function (string $case) {
     $groups = monthlyPairFixture();
     $this->actingAs(User::factory()->create());
     $state = $this->getJson('/monthly-weekend-pairs/2026/12')->json();
@@ -886,8 +1101,8 @@ it('rejects independently invalid pair populations without changing the confirme
     $payload = monthlyPairPayload($confirmed, $groups);
     if ($case === 'duplicate within group') {
         $payload['groups']['B']['doctor_ids'][0] = $groups['B'][1];
-    } elseif ($case === 'missing eligible doctor') {
-        array_pop($payload['groups']['A']['doctor_ids']);
+    } elseif ($case === 'fewer than six selected doctors') {
+        $payload['groups']['A']['doctor_ids'] = array_slice($groups['A'], 0, 5);
     } else {
         [$payload['groups']['A']['doctor_ids'][0], $payload['groups']['B']['doctor_ids'][0]]
             = [$groups['B'][0], $groups['A'][0]];
@@ -901,8 +1116,8 @@ it('rejects independently invalid pair populations without changing the confirme
         ->assertJsonValidationErrors($errorKeys);
 
     expect(array_keys($response->json('errors')))->toBe($errorKeys);
-    if ($case !== 'duplicate within group') {
-        expect($response->json('errors')['groups.A.doctor_ids'])->toBe(['Select every eligible Group A doctor exactly once.']);
+    if ($case === 'wrong membership without duplicates') {
+        expect($response->json('errors')['groups.A.doctor_ids'])->toBe(['Select six or seven distinct eligible Group A doctors in rotation order.']);
     }
     expect(MonthlyWeekendPairConfirmation::query()->firstOrFail()->getAttributes())->toBe($original);
     $this->getJson('/monthly-weekend-pairs/2026/12')->assertExactJson($confirmed);
@@ -911,6 +1126,6 @@ it('rejects independently invalid pair populations without changing the confirme
     $this->assertDatabaseCount('weekend_pair_configuration_doctors', 14);
 })->with([
     'duplicate within group' => ['duplicate within group', ['groups.B.doctor_ids.0', 'groups.B.doctor_ids.1']],
-    'missing eligible doctor' => ['missing eligible doctor', ['groups.A.doctor_ids']],
+    'fewer than six selected doctors' => ['fewer than six selected doctors', ['groups.A.doctor_ids']],
     'wrong membership without duplicates' => ['wrong membership without duplicates', ['groups.A.doctor_ids']],
 ]);

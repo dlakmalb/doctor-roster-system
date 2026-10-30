@@ -65,6 +65,82 @@ function weekendCapacityShift(Roster $roster, string $date, string $code = 'week
         ->whereHas('shiftType', fn ($query) => $query->where('code', $code))->firstOrFail();
 }
 
+it('snapshots group capacities from selected cohorts while keeping extra doctors participating', function (int $a, int $b, int $aMain, int $bMain) {
+    ['admin' => $admin, 'groups' => $groups] = weekendCapacityFixture(8, 8);
+    $selected = ['A' => array_slice($groups['A'], 0, $a), 'B' => array_slice($groups['B'], 0, $b)];
+    app(MonthlyShiftCapacityService::class)->create(2026, 11, 'weekend_day', 2, 4);
+    $confirmed = confirmWeekendCapacityMonth($admin, $selected);
+
+    $roster = app(RosterStructureService::class)->create(2026, 11, $admin);
+
+    foreach (['2026-11-07' => $bMain, '2026-11-08' => $bMain, '2026-11-14' => $aMain, '2026-11-15' => $aMain] as $date => $main) {
+        expect(weekendCapacityShift($roster, $date)->savedCapacity()->main_count)->toBe($main);
+        expect(weekendCapacityShift($roster, $date, 'weekend_night')->savedCapacity()->main_count)->toBe(2);
+    }
+    expect(weekendCapacityShift($roster, '2026-11-01')->savedCapacity()->main_count)->toBe(2);
+    expect(app(WeekendPairRotationService::class)->forSaturday('2026-10-31'))->toBeNull();
+    expect(app(MonthlyShiftCapacityService::class)->resolve(2026, 11, 'weekend_day'))->toBe(['main_count' => 2, 'optional_count' => 4]);
+    expect(app(MonthlyWeekendPairService::class)->load(2026, 11)['population_fingerprint'])->toBe($confirmed['population_fingerprint']);
+    foreach (array_merge($groups['A'], $groups['B']) as $id) {
+        $this->assertDatabaseHas('doctor_monthly_participations', ['roster_id' => $roster->id, 'doctor_id' => $id, 'is_participating' => true]);
+    }
+    $this->assertDatabaseCount('doctor_monthly_exclusions', 0);
+})->with([
+    'seven A six B' => [7, 6, 3, 2],
+    'six A seven B' => [6, 7, 2, 3],
+]);
+
+it('rejects incompatible Night Main capacity before creating a pair-enabled structure', function (int $nightMain) {
+    ['admin' => $admin, 'groups' => $groups] = weekendCapacityFixture(7, 7);
+    confirmWeekendCapacityMonth($admin, ['A' => array_slice($groups['A'], 0, 6), 'B' => $groups['B']]);
+    app(MonthlyShiftCapacityService::class)->create(2026, 11, 'weekend_night', $nightMain, 1);
+    $confirmations = MonthlyWeekendPairConfirmation::query()->get()->toArray();
+
+    expect(fn () => app(RosterStructureService::class)->create(2026, 11, $admin))
+        ->toThrow(ValidationException::class, 'Pair-enabled weekends require Weekend Night Main capacity of 2.');
+
+    $this->assertDatabaseCount('rosters', 0);
+    $this->assertDatabaseCount('roster_shifts', 0);
+    $this->assertDatabaseCount('doctor_monthly_participations', 0);
+    $this->assertDatabaseCount('roster_shift_capacity_snapshots', 0);
+    expect(app(MonthlyShiftCapacityService::class)->resolve(2026, 11, 'weekend_night'))->toBe(['main_count' => $nightMain, 'optional_count' => 1]);
+    expect(MonthlyWeekendPairConfirmation::query()->get()->toArray())->toBe($confirmations);
+})->with([1, 3]);
+
+it('preserves configured Night Main capacity in months that use only legacy weekends', function () {
+    ['admin' => $admin, 'groups' => $groups] = weekendCapacityFixture();
+    confirmWeekendCapacityMonth($admin, $groups);
+    app(MonthlyShiftCapacityService::class)->create(2026, 10, 'weekend_night', 3, 1);
+
+    $october = app(RosterStructureService::class)->create(2026, 10, $admin);
+
+    expect(weekendCapacityShift($october, '2026-10-31', 'weekend_night')->savedCapacity()->main_count)->toBe(3);
+    expect(app(MonthlyShiftCapacityService::class)->resolve(2026, 10, 'weekend_night'))->toBe(['main_count' => 3, 'optional_count' => 1]);
+});
+
+it('keeps a historical six-doctor Sunday boundary compatible with an extra ordinary participant', function () {
+    ['admin' => $admin, 'groups' => $groups] = weekendCapacityFixture();
+    $julyConfirmation = confirmWeekendCapacityMonth($admin, $groups, 2027, 7);
+    $july = app(RosterStructureService::class)->create(2027, 7, $admin);
+    $july->update(['status' => RosterStatus::Final]);
+    $before = $july->shifts()->with(['capacitySnapshot', 'assignments'])->get()->toArray();
+    $extra = Doctor::query()->create(['name' => 'Ordinary boundary participant', 'short_code' => 'B7', 'is_active' => true]);
+    DoctorWeekendGroupMembership::query()->create(['doctor_id' => $extra->id, 'group_code' => 'B', 'effective_from_saturday' => '2027-07-31']);
+
+    $confirmed = confirmWeekendCapacityMonth($admin, $groups, 2027, 8);
+    $august = app(RosterStructureService::class)->create(2027, 8, $admin);
+
+    expect($confirmed['boundary']['compatible'])->toBeTrue();
+    expect($confirmed['confirmation']['boundary_configuration_id'])->toBe($julyConfirmation['confirmation']['configuration_ids']['B']);
+    expect($confirmed['groups']['B']['doctors'])->toHaveCount(7);
+    expect($confirmed['groups']['B']['configuration']['doctor_ids'])->toBe($groups['B']);
+    expect(weekendCapacityShift($august, '2027-08-01')->savedCapacity()->main_count)->toBe(2);
+    expect(weekendCapacityShift($august, '2027-08-07')->savedCapacity()->main_count)->toBe(2);
+    expect($july->shifts()->with(['capacitySnapshot', 'assignments'])->get()->toArray())->toBe($before);
+    $this->assertDatabaseHas('doctor_monthly_participations', ['roster_id' => $august->id, 'doctor_id' => $extra->id, 'is_participating' => true]);
+    $this->assertDatabaseCount('weekend_pair_configurations', 2);
+});
+
 it('snapshots each scheduled group mode independently on both days without changing other capacities', function (int $a, int $b, int $aMain, int $bMain) {
     ['admin' => $admin, 'groups' => $groups] = weekendCapacityFixture($a, $b);
     $capacities = app(MonthlyShiftCapacityService::class);

@@ -59,11 +59,12 @@ class MonthlyWeekendPairController extends Controller
         return $request->validate([
             'revision' => ['required', 'string', 'size:64'],
             'groups' => ['required', 'array:A,B'],
-            'groups.A' => ['required', 'array:effective_saturday,doctor_ids'],
-            'groups.B' => ['required', 'array:effective_saturday,doctor_ids'],
+            'groups.A' => ['required', 'array:effective_saturday,doctor_ids,weekend_day_main_count'],
+            'groups.B' => ['required', 'array:effective_saturday,doctor_ids,weekend_day_main_count'],
             'groups.*.effective_saturday' => ['required', 'date_format:Y-m-d'],
             'groups.*.doctor_ids' => ['required', 'array', 'min:6', 'max:7'],
             'groups.*.doctor_ids.*' => ['required', 'integer', 'distinct'],
+            'groups.*.weekend_day_main_count' => ['sometimes', 'required', 'integer', 'in:2,3'],
         ]);
     }
 }

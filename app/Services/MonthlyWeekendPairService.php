@@ -8,6 +8,7 @@ use App\Models\Roster;
 use App\Models\WeekendPairConfiguration;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Validator;
 use Illuminate\Validation\ValidationException;
 
 class MonthlyWeekendPairService
@@ -67,13 +68,18 @@ class MonthlyWeekendPairService
                 if ($later) {
                     $result['issues'][] = "Group {$group} has a later configuration version within the month.";
                 }
-                if (! in_array($eligible->count(), [6, 7], true)) {
-                    $result['issues'][] = "Group {$group} needs six or seven eligible doctors; review Weekend Group Management.";
+                if ($eligible->count() < 6) {
+                    $result['issues'][] = "Group {$group} needs at least six eligible doctors; review Weekend Group Management.";
                 }
                 $result['groups'][$group] = [
                     'effective_saturday' => $firstKey,
                     'doctors' => $eligible->map(fn ($doctor): array => ['id' => $doctor->id, 'name' => $doctor->name, 'short_code' => $doctor->short_code])->all(),
                     'configuration' => $this->serializeConfiguration($current),
+                    'weekend_day_main_count' => match ((int) $current?->mode) {
+                        6 => 2,
+                        7 => 3,
+                        default => null,
+                    },
                     'latest_version_id' => $latest?->id,
                 ];
             }
@@ -86,7 +92,8 @@ class MonthlyWeekendPairService
                 } else {
                     $expected = $doctors->filter(fn ($doctor): bool => ($membershipByDate[$saturday][$doctor->id] ?? null) === $boundaryGroup)->pluck('id')->map(fn ($id): int => (int) $id)->sort()->values()->all();
                     $actual = $historical?->doctors->pluck('doctor_id')->map(fn ($id): int => (int) $id)->sort()->values()->all() ?? [];
-                    $compatible = $historical !== null && in_array(count($expected), [6, 7], true) && $expected === $actual;
+                    $compatible = $historical !== null && in_array((int) $historical->mode, [6, 7], true)
+                        && count($actual) === (int) $historical->mode && array_diff($actual, $expected) === [];
                     if ($compatible) {
                         try {
                             $this->rotation->forSaturday($saturday);
@@ -129,6 +136,17 @@ class MonthlyWeekendPairService
      */
     public function confirm(int $year, int $month, array $input, int $userId): array
     {
+        $input = Validator::make($input, [
+            'revision' => ['required', 'string', 'size:64'],
+            'groups' => ['required', 'array:A,B'],
+            'groups.A' => ['required', 'array:effective_saturday,doctor_ids,weekend_day_main_count'],
+            'groups.B' => ['required', 'array:effective_saturday,doctor_ids,weekend_day_main_count'],
+            'groups.*.effective_saturday' => ['required', 'date_format:Y-m-d'],
+            'groups.*.doctor_ids' => ['required', 'array', 'list', 'min:6', 'max:7'],
+            'groups.*.doctor_ids.*' => ['required', 'integer', 'distinct'],
+            'groups.*.weekend_day_main_count' => ['sometimes', 'required', 'integer', 'in:2,3'],
+        ])->validate();
+
         return DB::transaction(function () use ($year, $month, $input, $userId): array {
             $this->coordination->lock();
             $this->configurations->groupAnchor(lock: true);
@@ -147,11 +165,15 @@ class MonthlyWeekendPairService
             foreach (['A', 'B'] as $group) {
                 $submitted = array_map('intval', $input['groups'][$group]['doctor_ids']);
                 $expected = array_map('intval', array_column($state['groups'][$group]['doctors'], 'id'));
-                $sorted = $submitted;
-                sort($sorted);
-                sort($expected);
-                if (! array_is_list($submitted) || count($submitted) !== count(array_unique($submitted)) || $sorted !== $expected) {
-                    throw ValidationException::withMessages(["groups.{$group}.doctor_ids" => "Select every eligible Group {$group} doctor exactly once."]);
+                if (count($submitted) !== count(array_unique($submitted)) || array_diff($submitted, $expected) !== []) {
+                    throw ValidationException::withMessages(["groups.{$group}.doctor_ids" => "Select six or seven distinct eligible Group {$group} doctors in rotation order."]);
+                }
+                $dayMainCount = count($submitted) === 7 ? 3 : 2;
+                if (array_key_exists('weekend_day_main_count', $input['groups'][$group])
+                    && (int) $input['groups'][$group]['weekend_day_main_count'] !== $dayMainCount) {
+                    throw ValidationException::withMessages([
+                        "groups.{$group}.weekend_day_main_count" => 'Weekend Day Main capacity must be 2 for six selected rotation doctors or 3 for seven selected rotation doctors.',
+                    ]);
                 }
                 $effective = $state['groups'][$group]['effective_saturday'];
                 if ($input['groups'][$group]['effective_saturday'] !== $effective) {

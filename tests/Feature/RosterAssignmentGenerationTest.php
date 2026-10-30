@@ -357,7 +357,7 @@ it('rejects existing Main or Optional assignments for a monthly excluded doctor 
 
     $this->actingAs($admin)->from(route('rosters.show', ['year' => 2026, 'month' => 10]))
         ->post(generateUrl())
-        ->assertSessionHasErrors(['roster' => "{$doctor->name} ({$doctor->short_code}) already has an assignment but is excluded for this month. Correct the assignment or regenerate the roster before generating."]);
+        ->assertSessionHasErrors(['roster' => "{$doctor->name} ({$doctor->short_code}) already has an assignment on {$shift->shift_date->toDateString()} {$shift->shiftType->name} but is excluded for this month. Correct the assignment or regenerate the roster before generating."]);
 
     expect(RosterAssignment::query()->orderBy('id')->get()->toArray())->toBe($before)
         ->and($assignment->fresh())->not->toBeNull();

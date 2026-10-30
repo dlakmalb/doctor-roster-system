@@ -118,7 +118,7 @@ class November2026DoctorRequestsSeeder extends Seeder
     }
 
     /** @param Collection<int, Doctor> $doctors
-     * @param Collection<int, ShiftType> $shiftTypes
+     * @param  Collection<int, ShiftType>  $shiftTypes
      * @return list<array{doctor: string, doctor_id: int, request_date: string, request_type: DoctorRequestType, shift_type_id: int|null}>
      */
     private function resolveRequests(Collection $doctors, Collection $shiftTypes): array

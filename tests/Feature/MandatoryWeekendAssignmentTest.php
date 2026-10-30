@@ -182,6 +182,37 @@ it('plans Friday Night and all Optional and Monday duties around the fixed weeke
     assertMandatoryWeekendSafe($roster);
 });
 
+it('keeps an unselected participant in ordinary weekday Main and weekend Optional without displacing mandatory Main', function () {
+    ['admin' => $admin, 'groups' => $groups] = mandatoryWeekendFixture();
+    $extra = Doctor::query()->create(['name' => 'Ordinary participant', 'short_code' => 'B7', 'is_active' => true]);
+    DoctorWeekendGroupMembership::query()->create(['doctor_id' => $extra->id, 'group_code' => 'B', 'effective_from_saturday' => '2026-10-03']);
+    mandatoryWeekendConfirm($admin, $groups);
+    $roster = app(RosterStructureService::class)->create(2026, 11, $admin);
+    $weekday = mandatoryWeekendShift($roster, '2026-11-03', 'weekday_day')->assignments()
+        ->create(['doctor_id' => $extra->id, 'role' => RosterAssignmentRole::Main, 'slot_number' => 1]);
+    $optional = mandatoryWeekendShift($roster, '2026-11-07')->assignments()
+        ->create(['doctor_id' => $extra->id, 'role' => RosterAssignmentRole::Optional, 'slot_number' => 1]);
+    $snapshots = RosterShiftCapacitySnapshot::query()->orderBy('id')->get()->toArray();
+
+    app(RosterAssignmentGenerator::class)->generate($roster, $admin);
+
+    $this->assertModelExists($weekday);
+    $this->assertModelExists($optional);
+    $this->assertDatabaseHas('doctor_monthly_participations', ['roster_id' => $roster->id, 'doctor_id' => $extra->id, 'is_participating' => true]);
+    foreach (['2026-11-07', '2026-11-14', '2026-11-21', '2026-11-28'] as $saturday) {
+        $plan = app(WeekendPairRotationService::class)->forSaturday($saturday);
+        foreach (['saturday' => $saturday, 'sunday' => CarbonImmutable::parse($saturday)->addDay()->toDateString()] as $day => $date) {
+            foreach (['day', 'night'] as $duty) {
+                $actual = mandatoryWeekendMainIds($roster, $date, 'weekend_'.$duty);
+                expect($actual)->toBe($plan['shifts'][$day.'_'.$duty]);
+                expect($actual)->not->toContain($extra->id);
+            }
+        }
+    }
+    expect(RosterShiftCapacitySnapshot::query()->orderBy('id')->get()->toArray())->toBe($snapshots);
+    assertMandatoryWeekendSafe($roster);
+});
+
 it('uses both seven doctor plans including the rotating additional Day doctor', function () {
     ['admin' => $admin, 'groups' => $groups] = mandatoryWeekendFixture(true);
     $roster = app(GenerateRosterFromMonthlySetup::class)->handle(2026, 11, $admin);
@@ -507,8 +538,8 @@ it('allows a Full Day Off doctor in an eligible ordinary Optional position', fun
     assertMandatoryWeekendSafe($roster);
 });
 
-/** @return array{admin: User, groups: array<string, list<int>>, july: Roster, august: Roster, plan: array<string, mixed>} */
-function mandatoryWeekendBoundaryFixture(bool $seven = false): array
+/** @return array{admin: User, groups: array<string, list<int>>, july: Roster, august: Roster, plan: array<string, mixed>, extraId: int|null} */
+function mandatoryWeekendBoundaryFixture(bool $seven = false, bool $extraParticipant = false): array
 {
     ['admin' => $admin, 'groups' => $groups] = mandatoryWeekendFixture($seven);
     mandatoryWeekendConfirm($admin, $groups, 2027, 7);
@@ -521,12 +552,31 @@ function mandatoryWeekendBoundaryFixture(bool $seven = false): array
         }
     }
     $july->update(['status' => RosterStatus::Final]);
+    $extraId = null;
+    if ($extraParticipant) {
+        $extra = Doctor::query()->create(['name' => 'Ordinary boundary participant', 'short_code' => 'B8', 'is_active' => true]);
+        DoctorWeekendGroupMembership::query()->create(['doctor_id' => $extra->id, 'group_code' => 'B', 'effective_from_saturday' => '2027-07-31']);
+        $extraId = $extra->id;
+    }
     $groups = array_map('array_reverse', $groups);
     mandatoryWeekendConfirm($admin, $groups, 2027, 8);
     $august = app(RosterStructureService::class)->create(2027, 8, $admin);
 
-    return compact('admin', 'groups', 'july', 'august', 'plan');
+    return compact('admin', 'groups', 'july', 'august', 'plan', 'extraId');
 }
+
+it('generates the historical Sunday pairs with an additional ordinary participant in the new month', function () {
+    ['admin' => $admin, 'july' => $july, 'august' => $august, 'plan' => $plan, 'extraId' => $extraId] = mandatoryWeekendBoundaryFixture(extraParticipant: true);
+    $before = $july->shifts()->with(['assignments', 'capacitySnapshot'])->get()->toArray();
+
+    app(RosterAssignmentGenerator::class)->generate($august, $admin);
+
+    expect(mandatoryWeekendMainIds($august, '2027-08-01'))->toBe($plan['shifts']['sunday_day']);
+    expect(mandatoryWeekendMainIds($august, '2027-08-01', 'weekend_night'))->toBe($plan['shifts']['sunday_night']);
+    expect($july->shifts()->with(['assignments', 'capacitySnapshot'])->get()->toArray())->toBe($before);
+    $this->assertDatabaseHas('doctor_monthly_participations', ['roster_id' => $august->id, 'doctor_id' => $extraId, 'is_participating' => true]);
+    assertMandatoryWeekendSafe($august);
+});
 
 it('uses the Final historical Saturday plan for Sunday despite a new monthly pair order', function (bool $seven) {
     ['admin' => $admin, 'july' => $july, 'august' => $august, 'plan' => $plan] = mandatoryWeekendBoundaryFixture($seven);

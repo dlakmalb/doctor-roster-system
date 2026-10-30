@@ -53,6 +53,12 @@ class RosterStructureService
                 $monthlyCapacities[$code] = $this->capacities->resolve($year, $month, $shiftType);
             }
             $weekendCapacities = $this->weekendCapacities->forMonth($year, $month, $monthlyCapacities['weekend_day']['main_count']);
+            if ($monthlyCapacities['weekend_night']['main_count'] !== 2
+                && collect($weekendCapacities)->contains(fn (array $weekend): bool => $weekend['source'] === 'confirmed_pairs')) {
+                throw ValidationException::withMessages([
+                    'weekend_capacity' => 'Pair-enabled weekends require Weekend Night Main capacity of 2. Review the monthly shift capacity before creating the roster; saved snapshots cannot be overwritten.',
+                ]);
+            }
 
             $roster = Roster::create([
                 'year' => $year,
