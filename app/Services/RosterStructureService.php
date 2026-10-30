@@ -20,11 +20,13 @@ class RosterStructureService
     public function __construct(
         private DoctorMonthlyParticipationService $participation,
         private MonthlyShiftCapacityService $capacities,
+        private WeekendPairCoordination $coordination,
     ) {}
 
     public function create(int $year, int $month, User $creator): Roster
     {
         return DB::transaction(function () use ($year, $month, $creator): Roster {
+            $this->coordination->lock();
             $requiredCodes = [...self::WEEKDAY_CODES, ...self::WEEKEND_CODES];
             $shiftTypes = ShiftType::query()->whereIn('code', $requiredCodes)->orderBy('id')->lockForUpdate()->get()->keyBy('code');
             $existing = Roster::query()->where('year', $year)->where('month', $month)->first();

@@ -6,10 +6,13 @@ use App\Models\Doctor;
 use App\Models\DoctorMonthlyParticipation;
 use App\Models\Roster;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
 class DoctorMonthlyParticipationService
 {
+    public function __construct(private WeekendPairCoordination $coordination) {}
+
     /**
      * @param  iterable<int|string>  $doctorIds
      * @return Collection<int, bool>
@@ -85,39 +88,45 @@ class DoctorMonthlyParticipationService
 
     public function saveBaseline(int $doctorId, int $year, int $month, bool $isParticipating): void
     {
-        DoctorMonthlyParticipation::query()->updateOrCreate(
-            ['doctor_id' => $doctorId, 'year' => $year, 'month' => $month],
-            ['roster_id' => null, 'is_participating' => $isParticipating],
-        );
+        DB::transaction(function () use ($doctorId, $year, $month, $isParticipating): void {
+            $this->coordination->lock();
+            DoctorMonthlyParticipation::query()->updateOrCreate(
+                ['doctor_id' => $doctorId, 'year' => $year, 'month' => $month],
+                ['roster_id' => null, 'is_participating' => $isParticipating],
+            );
+        });
     }
 
     /** @param Collection<int, Doctor> $participatingDoctors */
     public function snapshotRoster(Roster $roster, Collection $participatingDoctors): void
     {
-        $participatingIds = $participatingDoctors->pluck('id')->map(fn (int|string $doctorId): int => (int) $doctorId)->all();
-        $doctors = Doctor::query()->orderBy('id')->get(['id']);
-        $timestamp = now();
-        $rows = [];
+        DB::transaction(function () use ($roster, $participatingDoctors): void {
+            $this->coordination->lock();
+            $participatingIds = $participatingDoctors->pluck('id')->map(fn (int|string $doctorId): int => (int) $doctorId)->all();
+            $doctors = Doctor::query()->orderBy('id')->get(['id']);
+            $timestamp = now();
+            $rows = [];
 
-        foreach ($doctors as $doctor) {
-            $rows[] = [
-                'doctor_id' => $doctor->id,
-                'roster_id' => $roster->id,
-                'year' => $roster->year,
-                'month' => $roster->month,
-                'is_participating' => in_array($doctor->id, $participatingIds, true),
-                'created_at' => $timestamp,
-                'updated_at' => $timestamp,
-            ];
-        }
+            foreach ($doctors as $doctor) {
+                $rows[] = [
+                    'doctor_id' => $doctor->id,
+                    'roster_id' => $roster->id,
+                    'year' => $roster->year,
+                    'month' => $roster->month,
+                    'is_participating' => in_array($doctor->id, $participatingIds, true),
+                    'created_at' => $timestamp,
+                    'updated_at' => $timestamp,
+                ];
+            }
 
-        foreach (array_chunk($rows, 500) as $chunk) {
-            DoctorMonthlyParticipation::query()->insertOrIgnore($chunk);
-        }
+            foreach (array_chunk($rows, 500) as $chunk) {
+                DoctorMonthlyParticipation::query()->insertOrIgnore($chunk);
+            }
 
-        if ($roster->participation_snapshot_max_doctor_id === null) {
-            $roster->update(['participation_snapshot_max_doctor_id' => $doctors->max('id')]);
-        }
+            if ($roster->participation_snapshot_max_doctor_id === null) {
+                $roster->update(['participation_snapshot_max_doctor_id' => $doctors->max('id')]);
+            }
+        });
     }
 
     /**

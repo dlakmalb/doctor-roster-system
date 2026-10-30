@@ -5,6 +5,7 @@ namespace Database\Seeders;
 use App\Models\Doctor;
 use App\Models\DoctorWeekendGroupMembership;
 use App\Models\WeekendRotationConfiguration;
+use App\Services\WeekendPairCoordination;
 use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
@@ -24,6 +25,7 @@ class October2026WeekendRotationSeeder extends Seeder
         }
 
         DB::transaction(function (): void {
+            app(WeekendPairCoordination::class)->lock();
             $configuration = WeekendRotationConfiguration::query()->first();
             if ($configuration !== null && ($configuration->anchor_saturday->toDateString() !== '2026-09-26' || $configuration->anchor_group !== 'B')) {
                 throw ValidationException::withMessages(['weekend_rotation' => 'An incompatible weekend rotation anchor already exists.']);

@@ -12,6 +12,7 @@ use App\Http\Controllers\InitialWorkloadSetupController;
 use App\Http\Controllers\MonthlySetupController;
 use App\Http\Controllers\MonthlySetupRosterGenerationController;
 use App\Http\Controllers\MonthlyShiftCapacityController;
+use App\Http\Controllers\MonthlyWeekendPairController;
 use App\Http\Controllers\RosterAssignmentGenerationController;
 use App\Http\Controllers\RosterAssignmentOptionsController;
 use App\Http\Controllers\RosterAssignmentRegenerationController;
@@ -38,6 +39,13 @@ Route::middleware('guest')->group(function (): void {
 Route::middleware('auth')->group(function (): void {
     Route::post('/logout', LogoutController::class)->name('logout');
     Route::get('/dashboard', DashboardController::class)->name('dashboard');
+
+    Route::get('/monthly-weekend-pairs/{year}/{month}', [MonthlyWeekendPairController::class, 'show'])
+        ->where(['year' => '[1-9][0-9]{3}', 'month' => '(?:[1-9]|1[0-2])'])
+        ->name('monthly-weekend-pairs.show');
+    Route::post('/monthly-weekend-pairs/{year}/{month}', [MonthlyWeekendPairController::class, 'store'])
+        ->where(['year' => '[1-9][0-9]{3}', 'month' => '(?:[1-9]|1[0-2])'])
+        ->name('monthly-weekend-pairs.store');
 
     Route::get('/weekend-groups/{year}/{month}', [WeekendGroupManagementController::class, 'show'])
         ->where(['year' => '[1-9][0-9]{3}', 'month' => '(?:[1-9]|1[0-2])'])

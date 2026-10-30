@@ -17,6 +17,7 @@ class InitialWorkloadSetupService
         private DoctorMonthlyWorkloadService $workloads,
         private DoctorMonthlyParticipationService $participation,
         private PreviousNightBoundaryService $nightBoundary,
+        private WeekendPairCoordination $coordination,
     ) {}
 
     public function assertAllowedPeriod(int $year, int $month): void
@@ -36,6 +37,7 @@ class InitialWorkloadSetupService
     public function save(int $year, int $month, array $entries, array $previousNightDoctorIds): void
     {
         DB::transaction(function () use ($year, $month, $entries, $previousNightDoctorIds): void {
+            $this->coordination->lock();
             $existing = DoctorMonthlyWorkload::query()->lockForUpdate()->orderBy('year')->orderBy('month')->get();
             $this->assertAllowedPeriod($year, $month);
             $firstRoster = Roster::query()->orderBy('year')->orderBy('month')->first();

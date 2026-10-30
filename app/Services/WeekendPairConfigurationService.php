@@ -3,6 +3,8 @@
 namespace App\Services;
 
 use App\Models\DoctorWeekendGroupMembership;
+use App\Models\MonthlyWeekendPairConfirmation;
+use App\Models\Roster;
 use App\Models\WeekendPairConfiguration;
 use App\Models\WeekendRotationConfiguration;
 use Carbon\CarbonImmutable;
@@ -13,10 +15,10 @@ use Illuminate\Validation\ValidationException;
 
 class WeekendPairConfigurationService
 {
-    public function __construct(private WeekendGroupRotationService $groups) {}
+    public function __construct(private WeekendGroupRotationService $groups, private WeekendPairCoordination $coordination) {}
 
     /** @param array<string, mixed> $input */
-    public function create(array $input, int $createdBy): WeekendPairConfiguration
+    public function create(array $input, int $createdBy, ?int $confirmationId = null): WeekendPairConfiguration
     {
         $data = Validator::make($input, [
             'group_code' => ['required', Rule::in(['A', 'B'])],
@@ -37,15 +39,35 @@ class WeekendPairConfigurationService
             throw ValidationException::withMessages(['effective_saturday' => 'Choose a Saturday and supply consecutive ordered doctor positions.']);
         }
 
-        return DB::transaction(function () use ($data, $effective, $createdBy): WeekendPairConfiguration {
+        return DB::transaction(function () use ($data, $effective, $createdBy, $confirmationId): WeekendPairConfiguration {
+            $this->coordination->lock();
             $groupAnchor = $this->groupAnchor(lock: true);
             if ($this->groups->scheduledGroupFor($groupAnchor, $effective) !== $data['group_code']) {
                 throw ValidationException::withMessages(['effective_saturday' => 'The effective Saturday must be scheduled for this group.']);
             }
             $this->groups->assertChangeAllowed($effective->toDateString());
 
-            $previous = WeekendPairConfiguration::query()->where('group_code', $data['group_code'])->orderByDesc('effective_saturday')->first();
-            if ($previous && ($effective->lte($previous->effective_saturday)
+            $previous = WeekendPairConfiguration::query()->where('group_code', $data['group_code'])->orderByDesc('effective_saturday')->orderByDesc('version')->first();
+            $correction = false;
+            if ($confirmationId !== null) {
+                $confirmation = MonthlyWeekendPairConfirmation::query()->find($confirmationId);
+                $currentConfirmation = $confirmation === null ? null : MonthlyWeekendPairConfirmation::query()
+                    ->where('year', $confirmation->year)->where('month', $confirmation->month)->orderByDesc('id')->first();
+                if ($confirmation === null || $currentConfirmation?->id !== $confirmation->id
+                    || (int) $confirmation->year !== $effective->year || (int) $confirmation->month !== $effective->month) {
+                    throw ValidationException::withMessages(['revision' => 'The monthly confirmation changed. Reload before confirming.']);
+                }
+                $reference = $data['group_code'] === 'A' ? 'group_a_configuration_id' : 'group_b_configuration_id';
+                $correction = $previous !== null && (int) $confirmation->{$reference} === $previous->id
+                    && $effective->eq($previous->effective_saturday);
+                if (Roster::query()->where(function ($query) use ($effective): void {
+                    $query->where('year', '>', $effective->year)
+                        ->orWhere(fn ($query) => $query->where('year', $effective->year)->where('month', '>=', $effective->month));
+                })->exists()) {
+                    throw ValidationException::withMessages(['roster' => 'A Draft or Final roster could be affected by this correction.']);
+                }
+            }
+            if ($previous && (($effective->lte($previous->effective_saturday) && ! $correction)
                 || (int) $data['pair_anchor_phase'] !== (int) $previous->pair_anchor_phase
                 || (int) $data['extra_day_anchor_phase'] !== (int) $previous->extra_day_anchor_phase)) {
                 throw ValidationException::withMessages(['effective_saturday' => 'Versions must be appended in date order and retain both anchor phases.']);

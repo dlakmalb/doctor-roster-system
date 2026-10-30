@@ -26,6 +26,7 @@ class RosterAssignmentGenerator
         private DoctorMonthlyParticipationService $participation,
         private WeekendGroupRotationService $weekendRotation,
         private PreviousNightBoundaryService $nightBoundary,
+        private WeekendPairCoordination $coordination,
     ) {}
 
     public function generate(Roster $roster, User $admin): void
@@ -41,6 +42,7 @@ class RosterAssignmentGenerator
     private function run(Roster $roster, User $admin, bool $replace): void
     {
         DB::transaction(function () use ($roster, $admin, $replace): void {
+            $this->coordination->lock();
             $roster = Roster::query()->lockForUpdate()->findOrFail($roster->id);
             if ($roster->status !== RosterStatus::Draft) {
                 throw ValidationException::withMessages(['roster' => 'Assignments can only be generated for a Draft roster.']);

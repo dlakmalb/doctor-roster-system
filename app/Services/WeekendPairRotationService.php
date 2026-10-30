@@ -28,7 +28,7 @@ class WeekendPairRotationService
         $groupAnchor = $this->configurations->groupAnchor();
         $group = $this->groups->scheduledGroupFor($groupAnchor, $saturday);
         $configuration = WeekendPairConfiguration::query()->with('doctors')->where('group_code', $group)
-            ->whereDate('effective_saturday', '<=', $date)->orderByDesc('effective_saturday')->first();
+            ->whereDate('effective_saturday', '<=', $date)->orderByDesc('effective_saturday')->orderByDesc('version')->first();
         if ($configuration === null) {
             return null;
         }

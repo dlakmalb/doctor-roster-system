@@ -11,7 +11,7 @@ use Illuminate\Validation\ValidationException;
 
 class RosterLifecycleService
 {
-    public function __construct(private RosterDraftValidationService $validation) {}
+    public function __construct(private RosterDraftValidationService $validation, private WeekendPairCoordination $coordination) {}
 
     /**
      * @return array{status: 'finalized'|'errors'|'confirmation_required'|'stale_confirmation', errors: list<array{severity: string, message: string, target: string}>, warnings: list<array{severity: string, message: string, target: string}>, warning_signature: string|null}
@@ -19,6 +19,7 @@ class RosterLifecycleService
     public function finalize(Roster $roster, User $admin, ?string $confirmedSignature): array
     {
         $result = DB::transaction(function () use ($roster, $admin, $confirmedSignature): array {
+            $this->coordination->lock();
             $roster = Roster::query()->lockForUpdate()->findOrFail($roster->id);
             if ($roster->status !== RosterStatus::Draft) {
                 throw ValidationException::withMessages(['roster' => 'Only a Draft roster can be finalized.']);
@@ -67,6 +68,7 @@ class RosterLifecycleService
     public function reopen(Roster $roster, User $admin): void
     {
         DB::transaction(function () use ($roster, $admin): void {
+            $this->coordination->lock();
             $roster = Roster::query()->lockForUpdate()->findOrFail($roster->id);
             if ($roster->status !== RosterStatus::Final) {
                 throw ValidationException::withMessages(['roster' => 'Only a Final roster can be reopened.']);

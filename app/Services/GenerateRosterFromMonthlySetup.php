@@ -16,6 +16,7 @@ class GenerateRosterFromMonthlySetup
         private RosterStructureService $structure,
         private RosterAssignmentGenerator $generator,
         private RosterHistoryReadinessService $history,
+        private WeekendPairCoordination $coordination,
     ) {}
 
     public function handle(int $year, int $month, User $admin): Roster
@@ -30,6 +31,7 @@ class GenerateRosterFromMonthlySetup
 
         try {
             return DB::transaction(function () use ($year, $month, $admin): Roster {
+                $this->coordination->lock();
                 $roster = Roster::query()
                     ->where('year', $year)
                     ->where('month', $month)
